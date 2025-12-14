@@ -1,4 +1,0 @@
-module P256K {
-    header "/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/.build/arm64-apple-macosx/debug/P256K.build/P256K-Swift.h"
-    requires objc
-}

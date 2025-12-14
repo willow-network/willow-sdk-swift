@@ -1,4 +1,0 @@
-module ZKP {
-    header "/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/.build/index-build/arm64-apple-macosx/debug/ZKP.build/ZKP-Swift.h"
-    requires objc
-}

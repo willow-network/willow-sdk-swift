@@ -1,4 +1,0 @@
-module libsecp256k1_zkp {
-    umbrella "/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/.build/checkouts/secp256k1.swift/Sources/libsecp256k1_zkp/include"
-    export *
-}

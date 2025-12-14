@@ -1,4 +1,0 @@
-module Willow {
-    header "/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/.build/index-build/arm64-apple-macosx/debug/Willow.build/Willow-Swift.h"
-    requires objc
-}
