@@ -1,0 +1,95 @@
+{
+  "": {
+    "swift-dependencies": "/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/.build/arm64-apple-macosx/debug/Willow.build/master.swiftdeps"
+  },
+  "/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/Sources/Willow/Auth.swift": {
+    "dependencies": "/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/.build/arm64-apple-macosx/debug/Willow.build/Auth.d",
+    "object": "/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/.build/arm64-apple-macosx/debug/Willow.build/Auth.swift.o",
+    "swiftmodule": "/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/.build/arm64-apple-macosx/debug/Willow.build/Auth~partial.swiftmodule",
+    "swift-dependencies": "/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/.build/arm64-apple-macosx/debug/Willow.build/Auth.swiftdeps"
+  },
+  "/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/Sources/Willow/Client.swift": {
+    "dependencies": "/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/.build/arm64-apple-macosx/debug/Willow.build/Client.d",
+    "object": "/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/.build/arm64-apple-macosx/debug/Willow.build/Client.swift.o",
+    "swiftmodule": "/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/.build/arm64-apple-macosx/debug/Willow.build/Client~partial.swiftmodule",
+    "swift-dependencies": "/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/.build/arm64-apple-macosx/debug/Willow.build/Client.swiftdeps"
+  },
+  "/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/Sources/Willow/Consensus.swift": {
+    "dependencies": "/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/.build/arm64-apple-macosx/debug/Willow.build/Consensus.d",
+    "object": "/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/.build/arm64-apple-macosx/debug/Willow.build/Consensus.swift.o",
+    "swiftmodule": "/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/.build/arm64-apple-macosx/debug/Willow.build/Consensus~partial.swiftmodule",
+    "swift-dependencies": "/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/.build/arm64-apple-macosx/debug/Willow.build/Consensus.swiftdeps"
+  },
+  "/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/Sources/Willow/Data.swift": {
+    "dependencies": "/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/.build/arm64-apple-macosx/debug/Willow.build/Data.d",
+    "object": "/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/.build/arm64-apple-macosx/debug/Willow.build/Data.swift.o",
+    "swiftmodule": "/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/.build/arm64-apple-macosx/debug/Willow.build/Data~partial.swiftmodule",
+    "swift-dependencies": "/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/.build/arm64-apple-macosx/debug/Willow.build/Data.swiftdeps"
+  },
+  "/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/Sources/Willow/Devnet.swift": {
+    "dependencies": "/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/.build/arm64-apple-macosx/debug/Willow.build/Devnet.d",
+    "object": "/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/.build/arm64-apple-macosx/debug/Willow.build/Devnet.swift.o",
+    "swiftmodule": "/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/.build/arm64-apple-macosx/debug/Willow.build/Devnet~partial.swiftmodule",
+    "swift-dependencies": "/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/.build/arm64-apple-macosx/debug/Willow.build/Devnet.swiftdeps"
+  },
+  "/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/Sources/Willow/Errors.swift": {
+    "dependencies": "/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/.build/arm64-apple-macosx/debug/Willow.build/Errors.d",
+    "object": "/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/.build/arm64-apple-macosx/debug/Willow.build/Errors.swift.o",
+    "swiftmodule": "/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/.build/arm64-apple-macosx/debug/Willow.build/Errors~partial.swiftmodule",
+    "swift-dependencies": "/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/.build/arm64-apple-macosx/debug/Willow.build/Errors.swiftdeps"
+  },
+  "/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/Sources/Willow/GroveDB/GroveDBTypes.swift": {
+    "dependencies": "/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/.build/arm64-apple-macosx/debug/Willow.build/GroveDBTypes.d",
+    "object": "/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/.build/arm64-apple-macosx/debug/Willow.build/GroveDBTypes.swift.o",
+    "swiftmodule": "/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/.build/arm64-apple-macosx/debug/Willow.build/GroveDBTypes~partial.swiftmodule",
+    "swift-dependencies": "/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/.build/arm64-apple-macosx/debug/Willow.build/GroveDBTypes.swiftdeps"
+  },
+  "/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/Sources/Willow/GroveDB/Verifier.swift": {
+    "dependencies": "/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/.build/arm64-apple-macosx/debug/Willow.build/Verifier.d",
+    "object": "/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/.build/arm64-apple-macosx/debug/Willow.build/Verifier.swift.o",
+    "swiftmodule": "/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/.build/arm64-apple-macosx/debug/Willow.build/Verifier~partial.swiftmodule",
+    "swift-dependencies": "/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/.build/arm64-apple-macosx/debug/Willow.build/Verifier.swiftdeps"
+  },
+  "/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/Sources/Willow/Indexing.swift": {
+    "dependencies": "/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/.build/arm64-apple-macosx/debug/Willow.build/Indexing.d",
+    "object": "/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/.build/arm64-apple-macosx/debug/Willow.build/Indexing.swift.o",
+    "swiftmodule": "/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/.build/arm64-apple-macosx/debug/Willow.build/Indexing~partial.swiftmodule",
+    "swift-dependencies": "/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/.build/arm64-apple-macosx/debug/Willow.build/Indexing.swiftdeps"
+  },
+  "/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/Sources/Willow/LightClient/LightClient.swift": {
+    "dependencies": "/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/.build/arm64-apple-macosx/debug/Willow.build/LightClient.d",
+    "object": "/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/.build/arm64-apple-macosx/debug/Willow.build/LightClient.swift.o",
+    "swiftmodule": "/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/.build/arm64-apple-macosx/debug/Willow.build/LightClient~partial.swiftmodule",
+    "swift-dependencies": "/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/.build/arm64-apple-macosx/debug/Willow.build/LightClient.swiftdeps"
+  },
+  "/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/Sources/Willow/LightClient/LightClientTypes.swift": {
+    "dependencies": "/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/.build/arm64-apple-macosx/debug/Willow.build/LightClientTypes.d",
+    "object": "/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/.build/arm64-apple-macosx/debug/Willow.build/LightClientTypes.swift.o",
+    "swiftmodule": "/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/.build/arm64-apple-macosx/debug/Willow.build/LightClientTypes~partial.swiftmodule",
+    "swift-dependencies": "/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/.build/arm64-apple-macosx/debug/Willow.build/LightClientTypes.swiftdeps"
+  },
+  "/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/Sources/Willow/Registration.swift": {
+    "dependencies": "/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/.build/arm64-apple-macosx/debug/Willow.build/Registration.d",
+    "object": "/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/.build/arm64-apple-macosx/debug/Willow.build/Registration.swift.o",
+    "swiftmodule": "/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/.build/arm64-apple-macosx/debug/Willow.build/Registration~partial.swiftmodule",
+    "swift-dependencies": "/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/.build/arm64-apple-macosx/debug/Willow.build/Registration.swiftdeps"
+  },
+  "/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/Sources/Willow/Token.swift": {
+    "dependencies": "/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/.build/arm64-apple-macosx/debug/Willow.build/Token.d",
+    "object": "/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/.build/arm64-apple-macosx/debug/Willow.build/Token.swift.o",
+    "swiftmodule": "/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/.build/arm64-apple-macosx/debug/Willow.build/Token~partial.swiftmodule",
+    "swift-dependencies": "/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/.build/arm64-apple-macosx/debug/Willow.build/Token.swiftdeps"
+  },
+  "/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/Sources/Willow/Types.swift": {
+    "dependencies": "/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/.build/arm64-apple-macosx/debug/Willow.build/Types.d",
+    "object": "/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/.build/arm64-apple-macosx/debug/Willow.build/Types.swift.o",
+    "swiftmodule": "/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/.build/arm64-apple-macosx/debug/Willow.build/Types~partial.swiftmodule",
+    "swift-dependencies": "/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/.build/arm64-apple-macosx/debug/Willow.build/Types.swiftdeps"
+  },
+  "/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/Sources/Willow/Validators.swift": {
+    "dependencies": "/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/.build/arm64-apple-macosx/debug/Willow.build/Validators.d",
+    "object": "/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/.build/arm64-apple-macosx/debug/Willow.build/Validators.swift.o",
+    "swiftmodule": "/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/.build/arm64-apple-macosx/debug/Willow.build/Validators~partial.swiftmodule",
+    "swift-dependencies": "/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/.build/arm64-apple-macosx/debug/Willow.build/Validators.swiftdeps"
+  }
+}

@@ -1,0 +1,4 @@
+module WillowPackageTests {
+    header "/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/.build/arm64-apple-macosx/debug/WillowPackageTests.build/WillowPackageTests-Swift.h"
+    requires objc
+}

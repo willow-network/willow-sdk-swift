@@ -1,0 +1,43 @@
+/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/.build/index-build/checkouts/secp256k1.swift/Sources/ZKP/ASN1/ASN1.swift
+'/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/.build/index-build/checkouts/secp256k1.swift/Sources/ZKP/ASN1/Basic ASN1 Types/ASN1Any.swift'
+'/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/.build/index-build/checkouts/secp256k1.swift/Sources/ZKP/ASN1/Basic ASN1 Types/ASN1BitString.swift'
+'/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/.build/index-build/checkouts/secp256k1.swift/Sources/ZKP/ASN1/Basic ASN1 Types/ASN1Boolean.swift'
+'/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/.build/index-build/checkouts/secp256k1.swift/Sources/ZKP/ASN1/Basic ASN1 Types/ASN1Identifier.swift'
+'/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/.build/index-build/checkouts/secp256k1.swift/Sources/ZKP/ASN1/Basic ASN1 Types/ASN1Integer.swift'
+'/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/.build/index-build/checkouts/secp256k1.swift/Sources/ZKP/ASN1/Basic ASN1 Types/ASN1Null.swift'
+'/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/.build/index-build/checkouts/secp256k1.swift/Sources/ZKP/ASN1/Basic ASN1 Types/ASN1OctetString.swift'
+'/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/.build/index-build/checkouts/secp256k1.swift/Sources/ZKP/ASN1/Basic ASN1 Types/ASN1Strings.swift'
+'/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/.build/index-build/checkouts/secp256k1.swift/Sources/ZKP/ASN1/Basic ASN1 Types/ArraySliceBigint.swift'
+'/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/.build/index-build/checkouts/secp256k1.swift/Sources/ZKP/ASN1/Basic ASN1 Types/GeneralizedTime.swift'
+'/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/.build/index-build/checkouts/secp256k1.swift/Sources/ZKP/ASN1/Basic ASN1 Types/ObjectIdentifier.swift'
+/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/.build/index-build/checkouts/secp256k1.swift/Sources/ZKP/ASN1/ECDSASignature.swift
+/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/.build/index-build/checkouts/secp256k1.swift/Sources/ZKP/ASN1/PEMDocument.swift
+/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/.build/index-build/checkouts/secp256k1.swift/Sources/ZKP/ASN1/PKCS8PrivateKey.swift
+/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/.build/index-build/checkouts/secp256k1.swift/Sources/ZKP/ASN1/SEC1PrivateKey.swift
+/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/.build/index-build/checkouts/secp256k1.swift/Sources/ZKP/ASN1/SubjectPublicKeyInfo.swift
+/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/.build/index-build/checkouts/secp256k1.swift/Sources/ZKP/Asymmetric.swift
+/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/.build/index-build/checkouts/secp256k1.swift/Sources/ZKP/Combine.swift
+/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/.build/index-build/checkouts/secp256k1.swift/Sources/ZKP/Context.swift
+/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/.build/index-build/checkouts/secp256k1.swift/Sources/ZKP/CryptoKitErrors.swift
+/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/.build/index-build/checkouts/secp256k1.swift/Sources/ZKP/DH.swift
+/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/.build/index-build/checkouts/secp256k1.swift/Sources/ZKP/Digest.swift
+/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/.build/index-build/checkouts/secp256k1.swift/Sources/ZKP/ECDH.swift
+/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/.build/index-build/checkouts/secp256k1.swift/Sources/ZKP/ECDSA.swift
+/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/.build/index-build/checkouts/secp256k1.swift/Sources/ZKP/EdDSA.swift
+/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/.build/index-build/checkouts/secp256k1.swift/Sources/ZKP/Errors.swift
+/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/.build/index-build/checkouts/secp256k1.swift/Sources/ZKP/HashDigest.swift
+/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/.build/index-build/checkouts/secp256k1.swift/Sources/ZKP/MuSig.swift
+/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/.build/index-build/checkouts/secp256k1.swift/Sources/ZKP/Nonces.swift
+/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/.build/index-build/checkouts/secp256k1.swift/Sources/ZKP/P256K.swift
+/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/.build/index-build/checkouts/secp256k1.swift/Sources/ZKP/PrettyBytes.swift
+/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/.build/index-build/checkouts/secp256k1.swift/Sources/ZKP/RNG_boring.swift
+/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/.build/index-build/checkouts/secp256k1.swift/Sources/ZKP/Recovery.swift
+/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/.build/index-build/checkouts/secp256k1.swift/Sources/ZKP/SHA256.swift
+/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/.build/index-build/checkouts/secp256k1.swift/Sources/ZKP/SafeCompare.swift
+/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/.build/index-build/checkouts/secp256k1.swift/Sources/ZKP/Schnorr.swift
+/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/.build/index-build/checkouts/secp256k1.swift/Sources/ZKP/SecureBytes.swift
+/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/.build/index-build/checkouts/secp256k1.swift/Sources/ZKP/Signature.swift
+/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/.build/index-build/checkouts/secp256k1.swift/Sources/ZKP/Tweak.swift
+/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/.build/index-build/checkouts/secp256k1.swift/Sources/ZKP/UInt256.swift
+/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/.build/index-build/checkouts/secp256k1.swift/Sources/ZKP/Utility.swift
+/Users/pauldelucia/Documents/Willow/willow/sdk/willow-swift/.build/index-build/checkouts/secp256k1.swift/Sources/ZKP/Zeroization.swift
