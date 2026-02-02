@@ -476,6 +476,136 @@ public struct QueryResponse: Codable {
     }
 }
 
+// MARK: - Historical Query Types
+
+/// A request for historical checkpoint data.
+public struct HistoricalQueryRequest: Codable {
+    public var path: [[UInt8]]
+    public var key: [UInt8]?
+    public var queryType: String?
+    public var includeProof: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case path
+        case key
+        case queryType = "query_type"
+        case includeProof = "include_proof"
+    }
+
+    public init(path: [[UInt8]], key: [UInt8]? = nil, queryType: String? = nil, includeProof: Bool = false) {
+        self.path = path
+        self.key = key
+        self.queryType = queryType
+        self.includeProof = includeProof
+    }
+}
+
+/// Response from a historical query.
+public struct HistoricalQueryResponse: Codable {
+    public let success: Bool
+    public let providerDid: String?
+    public let providerEndpoint: String?
+    public let stateRoot: String
+    public let blockRange: (UInt64, UInt64)
+    public let data: AnyCodable
+    public let proof: String?
+    public let canReindex: Bool?
+    public let error: String?
+
+    enum CodingKeys: String, CodingKey {
+        case success
+        case providerDid = "provider_did"
+        case providerEndpoint = "provider_endpoint"
+        case stateRoot = "state_root"
+        case blockRange = "block_range"
+        case data
+        case proof
+        case canReindex = "can_reindex"
+        case error
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        success = try container.decode(Bool.self, forKey: .success)
+        providerDid = try container.decodeIfPresent(String.self, forKey: .providerDid)
+        providerEndpoint = try container.decodeIfPresent(String.self, forKey: .providerEndpoint)
+        stateRoot = try container.decode(String.self, forKey: .stateRoot)
+        data = try container.decode(AnyCodable.self, forKey: .data)
+        proof = try container.decodeIfPresent(String.self, forKey: .proof)
+        canReindex = try container.decodeIfPresent(Bool.self, forKey: .canReindex)
+        error = try container.decodeIfPresent(String.self, forKey: .error)
+
+        // Decode block_range as array of two UInt64
+        let blockRangeArray = try container.decode([UInt64].self, forKey: .blockRange)
+        guard blockRangeArray.count == 2 else {
+            throw DecodingError.dataCorruptedError(forKey: .blockRange, in: container, debugDescription: "Expected array of 2 elements for block_range")
+        }
+        blockRange = (blockRangeArray[0], blockRangeArray[1])
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(success, forKey: .success)
+        try container.encodeIfPresent(providerDid, forKey: .providerDid)
+        try container.encodeIfPresent(providerEndpoint, forKey: .providerEndpoint)
+        try container.encode(stateRoot, forKey: .stateRoot)
+        try container.encode([blockRange.0, blockRange.1], forKey: .blockRange)
+        try container.encode(data, forKey: .data)
+        try container.encodeIfPresent(proof, forKey: .proof)
+        try container.encodeIfPresent(canReindex, forKey: .canReindex)
+        try container.encodeIfPresent(error, forKey: .error)
+    }
+}
+
+/// Information about a checkpoint.
+public struct CheckpointInfo: Codable {
+    public let checkpointId: String
+    public let subgroveId: String
+    public let stateRoot: String
+    public let blockRange: (UInt64, UInt64)
+    public let indexerDid: String
+    public let submittedAt: UInt64
+    public let isTrusted: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case checkpointId = "checkpoint_id"
+        case subgroveId = "subgrove_id"
+        case stateRoot = "state_root"
+        case blockRange = "block_range"
+        case indexerDid = "indexer_did"
+        case submittedAt = "submitted_at"
+        case isTrusted = "is_trusted"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        checkpointId = try container.decode(String.self, forKey: .checkpointId)
+        subgroveId = try container.decode(String.self, forKey: .subgroveId)
+        stateRoot = try container.decode(String.self, forKey: .stateRoot)
+        indexerDid = try container.decode(String.self, forKey: .indexerDid)
+        submittedAt = try container.decode(UInt64.self, forKey: .submittedAt)
+        isTrusted = try container.decode(Bool.self, forKey: .isTrusted)
+
+        // Decode block_range as array of two UInt64
+        let blockRangeArray = try container.decode([UInt64].self, forKey: .blockRange)
+        guard blockRangeArray.count == 2 else {
+            throw DecodingError.dataCorruptedError(forKey: .blockRange, in: container, debugDescription: "Expected array of 2 elements for block_range")
+        }
+        blockRange = (blockRangeArray[0], blockRangeArray[1])
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(checkpointId, forKey: .checkpointId)
+        try container.encode(subgroveId, forKey: .subgroveId)
+        try container.encode(stateRoot, forKey: .stateRoot)
+        try container.encode([blockRange.0, blockRange.1], forKey: .blockRange)
+        try container.encode(indexerDid, forKey: .indexerDid)
+        try container.encode(submittedAt, forKey: .submittedAt)
+        try container.encode(isTrusted, forKey: .isTrusted)
+    }
+}
+
 // MARK: - GraphQL Types
 
 /// A GraphQL query request.

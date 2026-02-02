@@ -108,6 +108,59 @@ public class DataOperations {
         try await client.delete(path: path)
     }
 
+    // MARK: - Historical Query Operations
+
+    /// Gets checkpoint state root information.
+    public func getCheckpointStateRoot(subgroveId: String, checkpointId: String) async throws -> CheckpointInfo {
+        guard let client = client else { throw NetworkError("Client deallocated") }
+
+        let path = "/checkpoints/\(subgroveId)/\(checkpointId)/state-root"
+        return try await client.get(path: path)
+    }
+
+    /// Queries historical indexed data from a checkpoint.
+    /// Routes through consensus to available indexer nodes that serve historical data.
+    public func queryHistorical(subgroveId: String, checkpointId: String, request: HistoricalQueryRequest) async throws -> HistoricalQueryResponse {
+        guard let client = client else { throw NetworkError("Client deallocated") }
+
+        let path = "/historical/query/\(subgroveId)/\(checkpointId)"
+        return try await client.post(path: path, body: request)
+    }
+
+    /// Queries historical data with automatic proof verification.
+    /// Forces proof inclusion and verifies the proof against the checkpoint's state root.
+    public func queryHistoricalVerified(subgroveId: String, checkpointId: String, request: HistoricalQueryRequest) async throws -> HistoricalQueryResponse {
+        // Force proof inclusion
+        var requestWithProof = request
+        requestWithProof.includeProof = true
+
+        let response = try await queryHistorical(subgroveId: subgroveId, checkpointId: checkpointId, request: requestWithProof)
+
+        // Verify the proof against checkpoint state root
+        guard let proofHex = response.proof, !proofHex.isEmpty else {
+            throw ProofError("Historical query did not return proof data despite include_proof=true")
+        }
+
+        // Decode hex proof
+        let cleanHex = proofHex.hasPrefix("0x") ? String(proofHex.dropFirst(2)) : proofHex
+        guard let proofBytes = Data(hexString: cleanHex) else {
+            throw ProofError("Failed to decode historical proof hex")
+        }
+
+        // Verify proof and get computed root hash
+        let result = try GroveDBVerifier.verifyProof(proofBytes: proofBytes)
+
+        // Normalize and compare root hashes
+        let computedRoot = result.rootHash.lowercased().replacingOccurrences(of: "0x", with: "")
+        let expectedRoot = response.stateRoot.lowercased().replacingOccurrences(of: "0x", with: "")
+
+        if computedRoot != expectedRoot {
+            throw ProofError("Historical proof verification failed: computed root \(result.rootHash) does not match checkpoint state root \(response.stateRoot)")
+        }
+
+        return response
+    }
+
     // MARK: - Proof Verification
 
     private func verifyProof(_ proofData: Data, client: WillowClient) async throws {
