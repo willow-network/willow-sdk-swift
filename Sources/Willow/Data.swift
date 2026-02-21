@@ -38,6 +38,7 @@ public class DataOperations {
     // MARK: - Query Operations
 
     /// Queries data with automatic proof verification.
+    /// Applies computed fields if registered for the app/subgrove combination.
     public func query(appId: String, subgroveId: String, query: QueryRequest) async throws -> QueryResponse {
         guard let client = client else { throw NetworkError("Client deallocated") }
 
@@ -45,22 +46,35 @@ public class DataOperations {
         queryWithProof.includeProof = true
 
         let path = "/apps/\(appId)/subgroves/\(subgroveId)/query"
-        let response: QueryResponse = try await client.post(path: path, body: queryWithProof)
+        var response: QueryResponse = try await client.post(path: path, body: queryWithProof)
 
         // Verify proof if available
         if let proofData = response.proof {
             try await verifyProof(proofData, client: client)
         }
 
+        // Apply computed fields if registered
+        if let fields = client.computedFieldRegistry.get(appId: appId, datasetId: subgroveId) {
+            response = applyComputedFieldsToResponse(response: response, fields: fields)
+        }
+
         return response
     }
 
     /// Queries data without proof verification.
+    /// Applies computed fields if registered for the app/subgrove combination.
     public func queryUnverified(appId: String, subgroveId: String, query: QueryRequest) async throws -> QueryResponse {
         guard let client = client else { throw NetworkError("Client deallocated") }
 
         let path = "/apps/\(appId)/subgroves/\(subgroveId)/query"
-        return try await client.post(path: path, body: query)
+        var response: QueryResponse = try await client.post(path: path, body: query)
+
+        // Apply computed fields if registered
+        if let fields = client.computedFieldRegistry.get(appId: appId, datasetId: subgroveId) {
+            response = applyComputedFieldsToResponse(response: response, fields: fields)
+        }
+
+        return response
     }
 
     // MARK: - Store Operations

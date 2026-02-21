@@ -51,6 +51,9 @@ public class WillowClient {
     /// Indexing operations.
     public private(set) lazy var indexing: IndexingOperations = IndexingOperations(client: self)
 
+    /// Computed fields registry for SDK-layer derived field computation.
+    public let computedFieldRegistry = ComputedFieldRegistry()
+
     /// Creates a new Willow client.
     public init(baseURL: String, timeout: TimeInterval = 30, autoVerify: Bool = true) throws {
         guard let url = URL(string: baseURL) else {
@@ -324,6 +327,21 @@ public class WillowClient {
 
     private func shouldRetry(statusCode: Int) -> Bool {
         return statusCode >= 500 || statusCode == 429
+    }
+
+    // MARK: - Computed Fields
+
+    /// Registers computed fields for a specific app/dataset combination.
+    ///
+    /// Computed fields are SDK-layer derived values calculated from proven data.
+    /// For example, price ratios computed from proven reserve amounts.
+    ///
+    /// - Parameters:
+    ///   - appId: The application ID
+    ///   - datasetId: The dataset ID
+    ///   - fields: The computed field definitions
+    public func registerComputedFields(appId: String, datasetId: String, fields: ComputedFieldSet) {
+        computedFieldRegistry.register(appId: appId, datasetId: datasetId, fields: fields)
     }
 
     /// Closes the client and releases resources.
