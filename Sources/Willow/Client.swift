@@ -31,7 +31,6 @@ public class WillowClient {
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
 
-    private var currentSession: Session?
     private var currentIdentity: Identity?
     private var lightClient: LightClient?
     private var lightClientInitTask: Task<LightClient, Error>?
@@ -147,69 +146,38 @@ public class WillowClient {
         return lc
     }
 
-    // MARK: - Authentication
-
-    /// Returns the current session.
-    public func getSession() -> Session? {
-        return currentSession
-    }
+    // MARK: - Identity Management
 
     /// Returns the current identity.
     public func getIdentity() -> Identity? {
         return currentIdentity
     }
 
-    /// Checks if the client is authenticated.
-    public var isAuthenticated: Bool {
-        guard let session = currentSession else { return false }
-        return !session.isExpired
+    /// Sets the identity for request signing.
+    public func setIdentity(_ identity: Identity) {
+        self.currentIdentity = identity
     }
 
-    /// Throws if not authenticated.
+    /// Checks if an identity is set.
+    public func hasIdentity() -> Bool {
+        return currentIdentity != nil
+    }
+
+    /// Clears the current identity.
+    public func clearIdentity() {
+        currentIdentity = nil
+    }
+
+    /// Throws if no identity is set.
     public func requireAuth() throws {
-        guard isAuthenticated else {
-            throw WillowErrors.notAuthenticated
+        guard hasIdentity() else {
+            throw AuthenticationError("Identity not set. Call setIdentity() first.")
         }
     }
 
     /// Registers a DID.
     public func registerDID(_ document: DidDocument) async throws -> DidInfo {
         return try await post(path: "/did/register", body: document)
-    }
-
-    /// Authenticates with an identity.
-    public func authenticate(_ identity: Identity) async throws -> Session {
-        // Step 1: Get challenge
-        let challengeRequest = ["did": identity.did]
-        let challenge: AuthenticationChallenge = try await post(path: "/auth/challenge", body: challengeRequest)
-
-        // Step 2: Sign challenge
-        let signature = try signAuthenticationChallenge(
-            challenge: challenge,
-            did: identity.did,
-            keyPair: identity.keyPair
-        )
-
-        // Step 3: Submit response
-        let response = AuthenticationResponse(
-            did: identity.did,
-            challenge: challenge.challenge,
-            nonce: challenge.nonce,
-            signature: signature,
-            publicKeyId: identity.publicKeyId
-        )
-
-        let session: Session = try await post(path: "/auth/authenticate", body: response)
-
-        self.currentSession = session
-        self.currentIdentity = identity
-        return session
-    }
-
-    /// Logs out and clears the session.
-    public func logout() {
-        currentSession = nil
-        currentIdentity = nil
     }
 
     // MARK: - Root Hash
@@ -248,7 +216,7 @@ public class WillowClient {
         let url = config.baseURL.appendingPathComponent(path)
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
-        addAuthHeaders(&request)
+        addAuthHeaders(&request, method: "GET", path: path)
         return try await execute(request)
     }
 
@@ -258,7 +226,7 @@ public class WillowClient {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try encoder.encode(body)
-        addAuthHeaders(&request)
+        addAuthHeaders(&request, method: "POST", path: path)
         return try await execute(request)
     }
 
@@ -268,7 +236,7 @@ public class WillowClient {
         request.httpMethod = "PUT"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try encoder.encode(body)
-        addAuthHeaders(&request)
+        addAuthHeaders(&request, method: "PUT", path: path)
         return try await execute(request)
     }
 
@@ -276,13 +244,17 @@ public class WillowClient {
         let url = config.baseURL.appendingPathComponent(path)
         var request = URLRequest(url: url)
         request.httpMethod = "DELETE"
-        addAuthHeaders(&request)
+        addAuthHeaders(&request, method: "DELETE", path: path)
         let _: EmptyResponse = try await execute(request)
     }
 
-    private func addAuthHeaders(_ request: inout URLRequest) {
-        if let session = currentSession, let token = session.token {
-            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+    private func addAuthHeaders(_ request: inout URLRequest, method: String, path: String) {
+        if let identity = currentIdentity {
+            if let headers = try? signRequest(method: method, path: path, identity: identity) {
+                for (key, value) in headers {
+                    request.setValue(value, forHTTPHeaderField: key)
+                }
+            }
         }
     }
 

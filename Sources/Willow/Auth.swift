@@ -196,22 +196,26 @@ private func verifySecp256k1(publicKey: Data, message: Data, signature: Data) th
     return verifyingKey.isValidSignature(ecdsaSignature, for: message)
 }
 
-// MARK: - Authentication Challenge Signing
+// MARK: - Per-Request Signing
 
-/// Signs an authentication challenge.
-public func signAuthenticationChallenge(
-    challenge: AuthenticationChallenge,
-    did: String,
-    keyPair: KeyPair
-) throws -> String {
-    // Create message to sign: challenge + nonce + expiresAt
-    let message = "\(challenge.challenge):\(challenge.nonce):\(challenge.expiresAt)"
+/// Signs a request and returns the authentication headers.
+/// Message format: {METHOD}:{PATH}:{TIMESTAMP}
+public func signRequest(method: String, path: String, identity: Identity) throws -> [String: String] {
+    let timestamp = String(Int(Date().timeIntervalSince1970))
+    let message = "\(method):\(path):\(timestamp)"
     guard let messageData = message.data(using: .utf8) else {
-        throw CryptoError("Failed to encode challenge message")
+        throw CryptoError("Failed to encode request message")
     }
 
-    let signature = try keyPair.sign(messageData)
-    return signature.map { String(format: "%02x", $0) }.joined()
+    let signature = try identity.sign(messageData)
+    let signatureHex = signature.map { String(format: "%02x", $0) }.joined()
+
+    return [
+        "X-DID": identity.did,
+        "X-Public-Key-ID": identity.publicKeyId,
+        "X-Signature": signatureHex,
+        "X-Timestamp": timestamp,
+    ]
 }
 
 // MARK: - Helper Functions

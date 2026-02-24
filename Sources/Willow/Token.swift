@@ -36,11 +36,11 @@ public class TokenOperations {
         guard let client = client else { throw NetworkError("Client deallocated") }
         try client.requireAuth()
 
-        guard let session = client.getSession() else {
-            throw AuthenticationError("No active session")
+        guard let identity = client.getIdentity() else {
+            throw AuthenticationError("Identity not set")
         }
 
-        return try await getBalance(did: session.did)
+        return try await getBalance(did: identity.did)
     }
 
     /// Retrieves the current fee schedule.

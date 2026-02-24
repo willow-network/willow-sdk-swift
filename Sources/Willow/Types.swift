@@ -78,56 +78,6 @@ public struct DidInfo: Codable {
     }
 }
 
-// MARK: - Authentication Types
-
-/// A challenge for DID authentication.
-public struct AuthenticationChallenge: Codable {
-    public let challenge: String
-    public let nonce: String
-    public let expiresAt: Int64
-
-    enum CodingKeys: String, CodingKey {
-        case challenge
-        case nonce
-        case expiresAt = "expires_at"
-    }
-}
-
-/// Response to an authentication challenge.
-public struct AuthenticationResponse: Codable {
-    public let did: String
-    public let challenge: String
-    public let nonce: String
-    public let signature: String
-    public let publicKeyId: String
-
-    enum CodingKeys: String, CodingKey {
-        case did
-        case challenge
-        case nonce
-        case signature
-        case publicKeyId = "public_key_id"
-    }
-}
-
-/// An authenticated session.
-public struct Session: Codable {
-    public let did: String
-    public let token: String?
-    public let expiresAt: Int64
-
-    enum CodingKeys: String, CodingKey {
-        case did
-        case token
-        case expiresAt = "expires_at"
-    }
-
-    /// Checks if the session has expired.
-    public var isExpired: Bool {
-        return Date().timeIntervalSince1970 > Double(expiresAt)
-    }
-}
-
 // MARK: - Schema Types
 
 /// A field in a schema.

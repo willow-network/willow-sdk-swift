@@ -105,7 +105,6 @@ public struct InsufficientFundsError: Error, LocalizedError {
 /// Common error instances for comparison.
 public enum WillowErrors {
     public static let notAuthenticated = WillowError(type: .authentication, message: "not authenticated")
-    public static let sessionExpired = WillowError(type: .authentication, message: "session expired")
 }
 
 // MARK: - Error Factory Functions
@@ -181,14 +180,6 @@ public func LightClientConfigError(_ message: String) -> WillowError {
 public func isNotAuthenticated(_ error: Error) -> Bool {
     if let willowError = error as? WillowError {
         return willowError == WillowErrors.notAuthenticated
-    }
-    return false
-}
-
-/// Checks if an error indicates session expired.
-public func isSessionExpired(_ error: Error) -> Bool {
-    if let willowError = error as? WillowError {
-        return willowError == WillowErrors.sessionExpired
     }
     return false
 }
