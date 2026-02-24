@@ -40,13 +40,13 @@ struct GraphQLIndexingExample {
             print("   Client created with trustless verification enabled")
             print()
 
-            // 2. List available subgraphs
-            print("2. Listing available subgraphs...")
+            // 2. List available subgroves
+            print("2. Listing available subgroves...")
             do {
-                let subgraphs = try await client.indexing.listSubgraphs()
-                print("   Found \(subgraphs.count) subgraphs:")
-                for subgraph in subgraphs {
-                    print("   - \(subgraph.name) (\(subgraph.network)): block \(subgraph.currentBlock)")
+                let subgroves = try await client.indexing.listSubgroves()
+                print("   Found \(subgroves.count) subgroves:")
+                for subgrove in subgroves {
+                    print("   - \(subgrove.name) (\(subgrove.network)): block \(subgrove.currentBlock)")
                 }
             } catch {
                 print("   Note: \(error.localizedDescription)")
@@ -76,7 +76,7 @@ struct GraphQLIndexingExample {
 
             do {
                 let response = try await client.indexing.execute(
-                    subgraphId: "uniswap-v3-mainnet",
+                    subgroveId: "uniswap-v3-mainnet",
                     query: tradesQuery,
                     variables: ["limit": 5]
                 )
@@ -113,7 +113,7 @@ struct GraphQLIndexingExample {
 
             do {
                 let response = try await client.indexing.query(
-                    subgraphId: "uniswap-v3-mainnet",
+                    subgroveId: "uniswap-v3-mainnet",
                     request: request
                 )
 
@@ -139,7 +139,7 @@ struct GraphQLIndexingExample {
 
             do {
                 let response = try await client.indexing.queryUnverified(
-                    subgraphId: "uniswap-v3-mainnet",
+                    subgroveId: "uniswap-v3-mainnet",
                     request: quickQuery
                 )
                 print("   Quick query completed (unverified)")

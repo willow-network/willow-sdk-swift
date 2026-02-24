@@ -12,8 +12,8 @@ public class IndexingOperations {
 
     // MARK: - GraphQL Queries
 
-    /// Executes a GraphQL query against a subgraph.
-    public func query(subgraphId: String, request: GraphQLRequest) async throws -> GraphQLResponse {
+    /// Executes a GraphQL query against a subgrove.
+    public func query(subgroveId: String, request: GraphQLRequest) async throws -> GraphQLResponse {
         guard let client = client else { throw NetworkError("Client deallocated") }
 
         // Enable proof by default if light client is available
@@ -22,7 +22,7 @@ public class IndexingOperations {
             requestWithProof.includeProof = true
         }
 
-        let path = "/graphql/\(subgraphId)"
+        let path = "/graphql/\(subgroveId)"
         let response: GraphQLResponse = try await client.post(path: path, body: requestWithProof)
 
         // Verify proof if available
@@ -34,28 +34,28 @@ public class IndexingOperations {
     }
 
     /// Executes a GraphQL query without proof verification (faster).
-    public func queryUnverified(subgraphId: String, request: GraphQLRequest) async throws -> GraphQLResponse {
+    public func queryUnverified(subgroveId: String, request: GraphQLRequest) async throws -> GraphQLResponse {
         guard let client = client else { throw NetworkError("Client deallocated") }
 
         var requestNoProof = request
         requestNoProof.includeProof = false
 
-        let path = "/graphql/\(subgraphId)"
+        let path = "/graphql/\(subgroveId)"
         return try await client.post(path: path, body: requestNoProof)
     }
 
     /// Convenience method for executing GraphQL queries.
-    public func execute(subgraphId: String, query: String, variables: [String: Any]? = nil) async throws -> GraphQLResponse {
+    public func execute(subgroveId: String, query: String, variables: [String: Any]? = nil) async throws -> GraphQLResponse {
         let request = GraphQLRequest(
             query: query,
             variables: variables?.mapValues { AnyCodable($0) }
         )
-        return try await self.query(subgraphId: subgraphId, request: request)
+        return try await self.query(subgroveId: subgroveId, request: request)
     }
 
     /// Executes a query and decodes the result into the provided type.
-    public func executeWithResult<T: Decodable>(subgraphId: String, query: String, variables: [String: Any]? = nil, resultType: T.Type) async throws -> T {
-        let response = try await execute(subgraphId: subgraphId, query: query, variables: variables)
+    public func executeWithResult<T: Decodable>(subgroveId: String, query: String, variables: [String: Any]? = nil, resultType: T.Type) async throws -> T {
+        let response = try await execute(subgroveId: subgroveId, query: query, variables: variables)
 
         if let errors = response.errors, !errors.isEmpty {
             throw GraphQLQueryError("GraphQL error: \(errors[0].message)")
@@ -70,20 +70,20 @@ public class IndexingOperations {
         return try decoder.decode(T.self, from: data)
     }
 
-    // MARK: - Subgraph Operations
+    // MARK: - Subgrove Operations
 
-    /// Lists all available subgraphs.
-    public func listSubgraphs() async throws -> [SubgraphInfo] {
+    /// Lists all available subgroves.
+    public func listSubgroves() async throws -> [SubgroveInfo] {
         guard let client = client else { throw NetworkError("Client deallocated") }
 
-        return try await client.get(path: "/subgraphs")
+        return try await client.get(path: "/subgroves")
     }
 
-    /// Retrieves information about a specific subgraph.
-    public func getSubgraph(subgraphId: String) async throws -> SubgraphInfo {
+    /// Retrieves information about a specific subgrove.
+    public func getSubgrove(subgroveId: String) async throws -> SubgroveInfo {
         guard let client = client else { throw NetworkError("Client deallocated") }
 
-        return try await client.get(path: "/subgraphs/\(subgraphId)")
+        return try await client.get(path: "/subgroves/\(subgroveId)")
     }
 
     // MARK: - Indexer Operations
@@ -102,11 +102,11 @@ public class IndexingOperations {
         return try await client.get(path: "/indexers/\(indexerId)")
     }
 
-    /// Retrieves the status of an indexer for a subgraph.
-    public func getIndexerStatus(indexerId: String, subgraphId: String) async throws -> IndexerInfo {
+    /// Retrieves the status of an indexer for a subgrove.
+    public func getIndexerStatus(indexerId: String, subgroveId: String) async throws -> IndexerInfo {
         guard let client = client else { throw NetworkError("Client deallocated") }
 
-        let path = "/indexers/\(indexerId)/status/\(subgraphId)"
+        let path = "/indexers/\(indexerId)/status/\(subgroveId)"
         return try await client.get(path: path)
     }
 
@@ -184,9 +184,9 @@ public class GraphQLQueryBuilder {
 
 extension IndexingOperations {
     /// Queries with a builder pattern.
-    public func query(subgraphId: String, _ configure: (GraphQLQueryBuilder) -> Void) async throws -> GraphQLResponse {
+    public func query(subgroveId: String, _ configure: (GraphQLQueryBuilder) -> Void) async throws -> GraphQLResponse {
         let builder = GraphQLQueryBuilder(query: "")
         configure(builder)
-        return try await query(subgraphId: subgraphId, request: builder.build())
+        return try await query(subgroveId: subgroveId, request: builder.build())
     }
 }

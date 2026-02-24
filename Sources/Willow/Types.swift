@@ -601,10 +601,10 @@ public struct GraphQLResponse: Codable {
     public let proof: Data?
 }
 
-// MARK: - Subgraph Types
+// MARK: - Subgrove Types
 
-/// Information about a subgraph (indexed blockchain data).
-public struct SubgraphInfo: Codable {
+/// Information about a subgrove (indexed blockchain data).
+public struct SubgroveInfo: Codable {
     public let id: String
     public let name: String
     public let description: String?
@@ -633,7 +633,7 @@ public struct IndexerInfo: Codable {
     public let id: String
     public let address: String
     public let stake: UInt64
-    public let subgraphs: [String]
+    public let subgroves: [String]
     public let status: String
     public let performance: Double
 }
