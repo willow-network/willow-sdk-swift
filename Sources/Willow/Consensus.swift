@@ -144,15 +144,77 @@ public struct RegisterAppTx: Codable {
     }
 }
 
+/// DataStorage mode configuration for a subgrove.
+public struct SubgroveDataStorage: Codable {
+    public var name: String
+    public var writers: [String]
+    public var freeReaders: [String]
+
+    enum CodingKeys: String, CodingKey {
+        case name
+        case writers
+        case freeReaders = "free_readers"
+    }
+
+    public init(name: String = "", writers: [String] = [], freeReaders: [String] = []) {
+        self.name = name
+        self.writers = writers
+        self.freeReaders = freeReaders
+    }
+}
+
+/// BlockchainIndexing mode configuration for a subgrove.
+public struct SubgroveBlockchainIndexing: Codable {
+    public var manifestIpfs: String
+
+    enum CodingKeys: String, CodingKey {
+        case manifestIpfs = "manifest_ipfs"
+    }
+
+    public init(manifestIpfs: String) {
+        self.manifestIpfs = manifestIpfs
+    }
+}
+
+/// SubgroveMode: DataStorage or BlockchainIndexing.
+public enum SubgroveMode: Codable {
+    case dataStorage(SubgroveDataStorage)
+    case blockchainIndexing(SubgroveBlockchainIndexing)
+
+    enum CodingKeys: String, CodingKey {
+        case dataStorage = "DataStorage"
+        case blockchainIndexing = "BlockchainIndexing"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        if let ds = try container.decodeIfPresent(SubgroveDataStorage.self, forKey: .dataStorage) {
+            self = .dataStorage(ds)
+        } else if let bi = try container.decodeIfPresent(SubgroveBlockchainIndexing.self, forKey: .blockchainIndexing) {
+            self = .blockchainIndexing(bi)
+        } else {
+            self = .dataStorage(SubgroveDataStorage())
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        switch self {
+        case .dataStorage(let ds):
+            try container.encode(ds, forKey: .dataStorage)
+        case .blockchainIndexing(let bi):
+            try container.encode(bi, forKey: .blockchainIndexing)
+        }
+    }
+}
+
 /// Subgrove registration transaction.
 public struct RegisterSubgroveTx: Codable {
     public var subgroveId: String
     public var appId: String
-    public var name: String
     public var schema: String
     public var ownerDid: String
-    public var writers: [String]
-    public var readers: [String]
+    public var mode: SubgroveMode?
     public var signature: String
     public var publicKeyId: String
     public var nonce: Int
@@ -160,11 +222,9 @@ public struct RegisterSubgroveTx: Codable {
     enum CodingKeys: String, CodingKey {
         case subgroveId = "subgrove_id"
         case appId = "app_id"
-        case name
         case schema
         case ownerDid = "owner_did"
-        case writers
-        case readers
+        case mode
         case signature
         case publicKeyId = "public_key_id"
         case nonce
@@ -173,22 +233,18 @@ public struct RegisterSubgroveTx: Codable {
     public init(
         subgroveId: String,
         appId: String,
-        name: String,
         schema: String,
         ownerDid: String,
-        writers: [String] = [],
-        readers: [String] = [],
+        mode: SubgroveMode? = nil,
         signature: String = "",
         publicKeyId: String,
         nonce: Int
     ) {
         self.subgroveId = subgroveId
         self.appId = appId
-        self.name = name
         self.schema = schema
         self.ownerDid = ownerDid
-        self.writers = writers
-        self.readers = readers
+        self.mode = mode
         self.signature = signature
         self.publicKeyId = publicKeyId
         self.nonce = nonce
@@ -359,25 +415,21 @@ public class ConsensusClient {
     public func registerSubgrove(
         subgroveId: String,
         appId: String,
-        name: String,
         schema: String,
         ownerDid: String,
         privateKey: Data,
         publicKeyId: String,
         signFunction: (Data, Data) throws -> Data,
-        writers: [String] = [],
-        readers: [String] = []
+        mode: SubgroveMode? = nil
     ) async throws -> BroadcastResult {
         let nonce = try await getNextNonce(did: ownerDid)
 
         var tx = RegisterSubgroveTx(
             subgroveId: subgroveId,
             appId: appId,
-            name: name,
             schema: schema,
             ownerDid: ownerDid,
-            writers: writers,
-            readers: readers,
+            mode: mode,
             publicKeyId: publicKeyId,
             nonce: nonce
         )
@@ -697,15 +749,43 @@ public class ConsensusClient {
     }
 
     private func createSignMessageForSubgrove(tx: RegisterSubgroveTx) -> String {
+        if let mode = tx.mode {
+            switch mode {
+            case .blockchainIndexing(let bi):
+                return """
+                RegisterSubgrove
+                Subgrove ID: \(tx.subgroveId)
+                App ID: \(tx.appId)
+                Mode: BlockchainIndexing
+                Schema: \(tx.schema)
+                ManifestIPFS: \(bi.manifestIpfs)
+                Owner: \(tx.ownerDid)
+                Nonce: \(tx.nonce)
+                """
+            case .dataStorage(let ds):
+                return """
+                RegisterSubgrove
+                Subgrove ID: \(tx.subgroveId)
+                App ID: \(tx.appId)
+                Name: \(ds.name)
+                Schema: \(tx.schema)
+                Owner: \(tx.ownerDid)
+                Writers: \(ds.writers.joined(separator: ","))
+                Readers: \(ds.freeReaders.joined(separator: ","))
+                Nonce: \(tx.nonce)
+                """
+            }
+        }
+        // Default: DataStorage with empty values
         return """
         RegisterSubgrove
         Subgrove ID: \(tx.subgroveId)
         App ID: \(tx.appId)
-        Name: \(tx.name)
+        Name: \
         Schema: \(tx.schema)
         Owner: \(tx.ownerDid)
-        Writers: \(tx.writers.joined(separator: ","))
-        Readers: \(tx.readers.joined(separator: ","))
+        Writers: \
+        Readers: \
         Nonce: \(tx.nonce)
         """
     }
