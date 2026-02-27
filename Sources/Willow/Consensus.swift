@@ -105,6 +105,7 @@ public struct RegisterAppTx: Codable {
     public var appType: String
     public var ownerDid: String
     public var admins: [String]
+    public var initialFunding: Int?
     public var signature: String
     public var publicKeyId: String
     public var nonce: Int
@@ -116,6 +117,7 @@ public struct RegisterAppTx: Codable {
         case appType = "app_type"
         case ownerDid = "owner_did"
         case admins
+        case initialFunding = "initial_funding"
         case signature
         case publicKeyId = "public_key_id"
         case nonce
@@ -128,6 +130,7 @@ public struct RegisterAppTx: Codable {
         appType: String,
         ownerDid: String,
         admins: [String] = [],
+        initialFunding: Int? = nil,
         signature: String = "",
         publicKeyId: String,
         nonce: Int
@@ -138,6 +141,7 @@ public struct RegisterAppTx: Codable {
         self.appType = appType
         self.ownerDid = ownerDid
         self.admins = admins
+        self.initialFunding = initialFunding
         self.signature = signature
         self.publicKeyId = publicKeyId
         self.nonce = nonce
@@ -736,7 +740,7 @@ public class ConsensusClient {
     }
 
     private func createSignMessageForApp(tx: RegisterAppTx) -> String {
-        return """
+        var msg = """
         RegisterApp
         App ID: \(tx.appId)
         Name: \(tx.name)
@@ -746,6 +750,10 @@ public class ConsensusClient {
         Admins: \(tx.admins.joined(separator: ","))
         Nonce: \(tx.nonce)
         """
+        if let funding = tx.initialFunding, funding > 0 {
+            msg += "\nFunding: \(funding)"
+        }
+        return msg
     }
 
     private func createSignMessageForSubgrove(tx: RegisterSubgroveTx) -> String {
