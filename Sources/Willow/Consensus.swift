@@ -169,15 +169,7 @@ public struct SubgroveDataStorage: Codable {
 
 /// BlockchainIndexing mode configuration for a subgrove.
 public struct SubgroveBlockchainIndexing: Codable {
-    public var manifestIpfs: String
-
-    enum CodingKeys: String, CodingKey {
-        case manifestIpfs = "manifest_ipfs"
-    }
-
-    public init(manifestIpfs: String) {
-        self.manifestIpfs = manifestIpfs
-    }
+    public init() {}
 }
 
 /// SubgroveMode: DataStorage or BlockchainIndexing.
@@ -766,7 +758,6 @@ public class ConsensusClient {
                 App ID: \(tx.appId)
                 Mode: BlockchainIndexing
                 Schema: \(tx.schema)
-                ManifestIPFS: \(bi.manifestIpfs)
                 Owner: \(tx.ownerDid)
                 Nonce: \(tx.nonce)
                 """
