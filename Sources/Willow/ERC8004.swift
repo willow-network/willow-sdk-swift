@@ -235,6 +235,47 @@ public struct Erc8004Registration: Codable {
     }
 }
 
+// MARK: - Agent Discovery Types
+
+/// Brief reputation summary in agent listings.
+public struct AgentReputationBrief: Codable {
+    public var score: Int64
+    public var tier: String
+}
+
+/// A single agent in the discovery listing.
+public struct Erc8004AgentListItem: Codable {
+    public var did: String
+    public var ethAddress: String?
+    public var agentUri: String
+    public var chainId: UInt64
+    public var agentId: UInt64
+    public var reputation: AgentReputationBrief
+    public var validationCount: Int
+    public var averageValidationScore: Double
+    public var registeredAt: UInt64
+
+    enum CodingKeys: String, CodingKey {
+        case did
+        case ethAddress = "eth_address"
+        case agentUri = "agent_uri"
+        case chainId = "chain_id"
+        case agentId = "agent_id"
+        case reputation
+        case validationCount = "validation_count"
+        case averageValidationScore = "average_validation_score"
+        case registeredAt = "registered_at"
+    }
+}
+
+/// Paginated response from the agent discovery endpoint.
+public struct Erc8004AgentListResponse: Codable {
+    public var agents: [Erc8004AgentListItem]
+    public var total: Int
+    public var offset: Int
+    public var limit: Int
+}
+
 // MARK: - Validation Registry Types
 
 /// A single ERC-8004 validation record.
@@ -332,6 +373,18 @@ public class Erc8004Client {
     public init(baseURL: String, session: URLSession = .shared) {
         self.baseURL = baseURL.hasSuffix("/") ? String(baseURL.dropLast()) : baseURL
         self.session = session
+    }
+
+    /// List/search ERC-8004 registered agents with optional filters.
+    public func listAgents(limit: Int? = nil, offset: Int? = nil, minScore: Int64? = nil, tier: String? = nil) async throws -> Erc8004AgentListResponse {
+        var params: [String] = []
+        if let limit = limit { params.append("limit=\(limit)") }
+        if let offset = offset { params.append("offset=\(offset)") }
+        if let minScore = minScore { params.append("min_score=\(minScore)") }
+        if let tier = tier { params.append("tier=\(tier)") }
+        let qs = params.isEmpty ? "" : "?\(params.joined(separator: "&"))"
+        let data = try await get(path: "/agents\(qs)")
+        return try JSONDecoder().decode(Erc8004AgentListResponse.self, from: data)
     }
 
     /// Fetch the ERC-8004 registration JSON for an agent DID.
