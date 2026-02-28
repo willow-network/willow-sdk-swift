@@ -63,7 +63,7 @@ public class IndexingOperations {
         guard let client = client else { throw NetworkError("Client deallocated") }
 
         let request = SqlRequest(query: query, includeProof: includeProof)
-        let path = "/sql/\(subgroveId)"
+        let path = "/sql/\(appId)/\(subgroveId)"
         let response: SqlResponse = try await client.post(path: path, body: request)
         return response
     }
