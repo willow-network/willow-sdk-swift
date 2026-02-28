@@ -53,6 +53,21 @@ public class IndexingOperations {
         return try await self.query(subgroveId: subgroveId, request: request)
     }
 
+    /// Execute a SQL query against a subgrove.
+    public func sqlQuery(
+        appId: String,
+        subgroveId: String,
+        query: String,
+        includeProof: Bool = true
+    ) async throws -> SqlResponse {
+        guard let client = client else { throw NetworkError("Client deallocated") }
+
+        let request = SqlRequest(query: query, includeProof: includeProof)
+        let path = "/sql/\(subgroveId)"
+        let response: SqlResponse = try await client.post(path: path, body: request)
+        return response
+    }
+
     /// Executes a query and decodes the result into the provided type.
     public func executeWithResult<T: Decodable>(subgroveId: String, query: String, variables: [String: Any]? = nil, resultType: T.Type) async throws -> T {
         let response = try await execute(subgroveId: subgroveId, query: query, variables: variables)

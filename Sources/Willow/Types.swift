@@ -601,6 +601,46 @@ public struct GraphQLResponse: Codable {
     public let proof: Data?
 }
 
+// MARK: - SQL Query Types
+
+/// A cryptographic proof returned with a query result.
+public struct QueryProof: Codable {
+    public let rootHash: String
+    public let proofBytes: Data
+    public let height: Int64
+
+    enum CodingKeys: String, CodingKey {
+        case rootHash = "root_hash"
+        case proofBytes = "proof_bytes"
+        case height
+    }
+}
+
+/// Request body for SQL queries.
+public struct SqlRequest: Codable {
+    public let query: String
+    public let includeProof: Bool?
+
+    enum CodingKeys: String, CodingKey {
+        case query
+        case includeProof = "include_proof"
+    }
+
+    public init(query: String, includeProof: Bool? = nil) {
+        self.query = query
+        self.includeProof = includeProof
+    }
+}
+
+/// Response from a SQL query.
+public struct SqlResponse: Codable {
+    public let columns: [String]
+    public let rows: [[AnyCodable]]
+    public let total: UInt64?
+    public let warnings: [String]?
+    public let proof: QueryProof?
+}
+
 // MARK: - Subgrove Types
 
 /// Information about a subgrove (indexed blockchain data).
