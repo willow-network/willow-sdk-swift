@@ -601,6 +601,14 @@ public class ConsensusClient {
 
     // MARK: - Private Methods
 
+    internal func broadcastPrivacyTransaction<T: Encodable>(txType: String, transaction: T) async throws -> BroadcastResult {
+        return try await broadcastTransaction(txType: txType, transaction: transaction)
+    }
+
+    internal func getNextNonce(did: String) async throws -> Int {
+        return try await _getNextNonce(did: did)
+    }
+
     private func broadcastTransaction<T: Encodable>(txType: String, transaction: T) async throws -> BroadcastResult {
         let wrapper = [txType: transaction]
         let txData = try JSONEncoder().encode(wrapper)
@@ -682,7 +690,7 @@ public class ConsensusClient {
         throw lastError ?? ConsensusClientError("Request failed after \(config.maxRetries + 1) attempts")
     }
 
-    private func getNextNonce(did: String) async throws -> Int {
+    private func _getNextNonce(did: String) async throws -> Int {
         do {
             let currentNonce = try await getAccountNonce(did: did)
             let nextNonce = currentNonce + 1
