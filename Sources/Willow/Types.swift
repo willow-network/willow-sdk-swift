@@ -273,14 +273,18 @@ public struct TokenInfo: Codable {
     public let name: String
     public let symbol: String
     public let decimals: UInt8
-    public let totalSupply: UInt64
-    public let circulatingSupply: UInt64
+    public let genesisSupply: String
+    public let mintedSupply: String
+    public let maxSupply: String
+    public let circulatingSupply: String
 
     enum CodingKeys: String, CodingKey {
         case name
         case symbol
         case decimals
-        case totalSupply = "total_supply"
+        case genesisSupply = "genesis_supply"
+        case mintedSupply = "minted_supply"
+        case maxSupply = "max_supply"
         case circulatingSupply = "circulating_supply"
     }
 }
