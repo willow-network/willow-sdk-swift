@@ -56,20 +56,23 @@ public class TokenOperations {
     }
 
     /// Estimates the storage fee for the given data size.
-    public func estimateStorageFee(dataSizeBytes: UInt64) async throws -> UInt64 {
+    public func estimateStorageFee(dataSizeBytes: UInt64) async throws -> String {
         let schedule = try await getFeeSchedule()
-        return dataSizeBytes * schedule.storageFeePerByte
+        guard let costPerByte = UInt64(schedule.costPerByte) else { return "0" }
+        return String(dataSizeBytes * costPerByte)
     }
 
-    /// Estimates the query fee for the given result count.
-    public func estimateQueryFee(resultCount: UInt64) async throws -> UInt64 {
+    /// Estimates the query fee.
+    public func estimateQueryFee() async throws -> String {
         let schedule = try await getFeeSchedule()
-        return schedule.queryFeeBase + (resultCount * schedule.queryFeePerResult)
+        return schedule.queryFee
     }
 
-    /// Estimates the transaction fee.
-    public func estimateTransactionFee() async throws -> UInt64 {
+    /// Estimates the transaction fee for the given data size.
+    public func estimateTransactionFee(dataSizeBytes: UInt64) async throws -> String {
         let schedule = try await getFeeSchedule()
-        return schedule.transactionFeeBase
+        guard let baseTxCost = UInt64(schedule.baseTxCost),
+              let costPerByte = UInt64(schedule.costPerByte) else { return "0" }
+        return String(baseTxCost + dataSizeBytes * costPerByte)
     }
 }

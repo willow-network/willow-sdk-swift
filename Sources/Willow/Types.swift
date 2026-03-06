@@ -297,18 +297,28 @@ public struct BalanceInfo: Codable {
     public let locked: UInt64
 }
 
-/// Fee schedule for storage operations.
+/// Fee schedule for operations.
 public struct FeeSchedule: Codable {
-    public let storageFeePerByte: UInt64
-    public let queryFeeBase: UInt64
-    public let queryFeePerResult: UInt64
-    public let transactionFeeBase: UInt64
+    public let didRegistration: String
+    public let appRegistration: String
+    public let subgroveRegistration: String
+    public let baseTxCost: String
+    public let costPerByte: String
+    public let queryFee: String
+    public let transferFeePercentage: UInt32
+    public let maxTxSizeBytes: UInt64
+    public let maxDataPayloadBytes: UInt64
 
     enum CodingKeys: String, CodingKey {
-        case storageFeePerByte = "storage_fee_per_byte"
-        case queryFeeBase = "query_fee_base"
-        case queryFeePerResult = "query_fee_per_result"
-        case transactionFeeBase = "transaction_fee_base"
+        case didRegistration = "did_registration"
+        case appRegistration = "app_registration"
+        case subgroveRegistration = "subgrove_registration"
+        case baseTxCost = "base_tx_cost"
+        case costPerByte = "cost_per_byte"
+        case queryFee = "query_fee"
+        case transferFeePercentage = "transfer_fee_percentage"
+        case maxTxSizeBytes = "max_tx_size_bytes"
+        case maxDataPayloadBytes = "max_data_payload_bytes"
     }
 }
 
