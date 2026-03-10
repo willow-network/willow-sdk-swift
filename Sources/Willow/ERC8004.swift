@@ -65,16 +65,12 @@ public struct RegisterErc8004AgentTx: Codable {
 
 /// Summary of an agent's reputation.
 public struct AgentReputationSummary: Codable {
-    public var score: UInt32
-    public var tier: String
     public var checkpointSuccessRate: Double
     public var verificationAccuracy: Double
     public var activeDays: UInt32
     public var lastUpdated: UInt64
 
     enum CodingKeys: String, CodingKey {
-        case score
-        case tier
         case checkpointSuccessRate = "checkpoint_success_rate"
         case verificationAccuracy = "verification_accuracy"
         case activeDays = "active_days"
@@ -110,8 +106,6 @@ public struct AgentRegistrationJson: Codable {
 /// Reputation attestation with GroveDB Merkle proof.
 public struct ReputationAttestation: Codable {
     public var did: String
-    public var score: UInt32
-    public var tier: String
     public var metrics: [String: AnyCodable]
     public var proof: String
     public var blockHeight: UInt64
@@ -119,8 +113,6 @@ public struct ReputationAttestation: Codable {
 
     enum CodingKeys: String, CodingKey {
         case did
-        case score
-        case tier
         case metrics
         case proof
         case blockHeight = "block_height"
@@ -131,16 +123,12 @@ public struct ReputationAttestation: Codable {
 /// A single reputation history event.
 public struct ReputationHistoryEvent: Codable {
     public var eventType: String
-    public var scoreDelta: Int32
-    public var newScore: UInt32
     public var blockHeight: UInt64
     public var timestamp: UInt64
     public var reference: String?
 
     enum CodingKeys: String, CodingKey {
         case eventType = "event_type"
-        case scoreDelta = "score_delta"
-        case newScore = "new_score"
         case blockHeight = "block_height"
         case timestamp
         case reference
@@ -160,44 +148,7 @@ public struct ReputationHistoryResponse: Codable {
     }
 }
 
-/// Type-erased Codable wrapper for dynamic JSON values.
-public struct AnyCodable: Codable {
-    public let value: Any
-
-    public init(_ value: Any) {
-        self.value = value
-    }
-
-    public init(from decoder: Decoder) throws {
-        let container = try decoder.singleValueContainer()
-        if let intVal = try? container.decode(Int.self) {
-            value = intVal
-        } else if let doubleVal = try? container.decode(Double.self) {
-            value = doubleVal
-        } else if let stringVal = try? container.decode(String.self) {
-            value = stringVal
-        } else if let boolVal = try? container.decode(Bool.self) {
-            value = boolVal
-        } else {
-            value = try container.decode([String: AnyCodable].self)
-        }
-    }
-
-    public func encode(to encoder: Encoder) throws {
-        var container = encoder.singleValueContainer()
-        if let intVal = value as? Int {
-            try container.encode(intVal)
-        } else if let doubleVal = value as? Double {
-            try container.encode(doubleVal)
-        } else if let stringVal = value as? String {
-            try container.encode(stringVal)
-        } else if let boolVal = value as? Bool {
-            try container.encode(boolVal)
-        } else if let dictVal = value as? [String: AnyCodable] {
-            try container.encode(dictVal)
-        }
-    }
-}
+// AnyCodable is defined in Types.swift
 
 /// A service advertised by the agent.
 public struct AgentService: Codable {
@@ -237,12 +188,6 @@ public struct Erc8004Registration: Codable {
 
 // MARK: - Agent Discovery Types
 
-/// Brief reputation summary in agent listings.
-public struct AgentReputationBrief: Codable {
-    public var score: Int64
-    public var tier: String
-}
-
 /// A single agent in the discovery listing.
 public struct Erc8004AgentListItem: Codable {
     public var did: String
@@ -250,9 +195,7 @@ public struct Erc8004AgentListItem: Codable {
     public var agentUri: String
     public var chainId: UInt64
     public var agentId: UInt64
-    public var reputation: AgentReputationBrief
     public var validationCount: Int
-    public var averageValidationScore: Double
     public var registeredAt: UInt64
 
     enum CodingKeys: String, CodingKey {
@@ -261,9 +204,7 @@ public struct Erc8004AgentListItem: Codable {
         case agentUri = "agent_uri"
         case chainId = "chain_id"
         case agentId = "agent_id"
-        case reputation
         case validationCount = "validation_count"
-        case averageValidationScore = "average_validation_score"
         case registeredAt = "registered_at"
     }
 }
@@ -376,12 +317,10 @@ public class Erc8004Client {
     }
 
     /// List/search ERC-8004 registered agents with optional filters.
-    public func listAgents(limit: Int? = nil, offset: Int? = nil, minScore: Int64? = nil, tier: String? = nil) async throws -> Erc8004AgentListResponse {
+    public func listAgents(limit: Int? = nil, offset: Int? = nil) async throws -> Erc8004AgentListResponse {
         var params: [String] = []
         if let limit = limit { params.append("limit=\(limit)") }
         if let offset = offset { params.append("offset=\(offset)") }
-        if let minScore = minScore { params.append("min_score=\(minScore)") }
-        if let tier = tier { params.append("tier=\(tier)") }
         let qs = params.isEmpty ? "" : "?\(params.joined(separator: "&"))"
         let data = try await get(path: "/agents\(qs)")
         return try JSONDecoder().decode(Erc8004AgentListResponse.self, from: data)
