@@ -670,11 +670,14 @@ public enum RetentionWindow: Codable, Equatable {
     case seconds(UInt64)
     /// Never prune (default).
     case indefinite
+    /// Verify and discard: consensus verifies but does not store raw data.
+    case verifyOnly
 
     enum CodingKeys: String, CodingKey {
         case blocks = "Blocks"
         case seconds = "Seconds"
         case indefinite = "Indefinite"
+        case verifyOnly = "VerifyOnly"
     }
 
     public init(from decoder: Decoder) throws {
@@ -691,6 +694,10 @@ public enum RetentionWindow: Codable, Equatable {
             self = .indefinite
             return
         }
+        if container.contains(.verifyOnly) {
+            self = .verifyOnly
+            return
+        }
 
         // Try single-value string for simple variant
         let singleContainer = try decoder.singleValueContainer()
@@ -698,6 +705,8 @@ public enum RetentionWindow: Codable, Equatable {
         switch value {
         case "Indefinite":
             self = .indefinite
+        case "VerifyOnly":
+            self = .verifyOnly
         default:
             throw DecodingError.dataCorruptedError(
                 in: singleContainer,
@@ -715,6 +724,8 @@ public enum RetentionWindow: Codable, Equatable {
             try container.encode(n, forKey: .seconds)
         case .indefinite:
             try container.encode("Indefinite", forKey: .indefinite)
+        case .verifyOnly:
+            try container.encode("VerifyOnly", forKey: .verifyOnly)
         }
     }
 }
