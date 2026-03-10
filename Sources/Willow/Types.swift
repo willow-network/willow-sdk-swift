@@ -207,6 +207,7 @@ public struct RegisterSubgroveRequest: Codable {
     public var writers: [String]
     public var readers: [String]
     public var rewardRate: UInt64
+    public var retentionWindow: RetentionWindow?
 
     enum CodingKeys: String, CodingKey {
         case subgroveId = "subgrove_id"
@@ -218,9 +219,10 @@ public struct RegisterSubgroveRequest: Codable {
         case writers
         case readers
         case rewardRate = "reward_rate"
+        case retentionWindow = "retention_window"
     }
 
-    public init(subgroveId: String, appId: String, name: String, description: String? = nil, schema: SchemaDefinition = SchemaDefinition(name: ""), ownerDid: String = "", writers: [String] = [], readers: [String] = [], rewardRate: UInt64 = 0) {
+    public init(subgroveId: String, appId: String, name: String, description: String? = nil, schema: SchemaDefinition = SchemaDefinition(name: ""), ownerDid: String = "", writers: [String] = [], readers: [String] = [], rewardRate: UInt64 = 0, retentionWindow: RetentionWindow? = nil) {
         self.subgroveId = subgroveId
         self.appId = appId
         self.name = name
@@ -230,6 +232,7 @@ public struct RegisterSubgroveRequest: Codable {
         self.writers = writers
         self.readers = readers
         self.rewardRate = rewardRate
+        self.retentionWindow = retentionWindow
     }
 }
 
@@ -244,6 +247,7 @@ public struct SubgroveRegistration: Codable {
     public let writers: [String]?
     public let readers: [String]?
     public let rewardRate: UInt64?
+    public let retentionWindow: RetentionWindow?
     public let itemCount: UInt64
     public let storageUsed: UInt64
     public let createdAt: Int64
@@ -259,6 +263,7 @@ public struct SubgroveRegistration: Codable {
         case writers
         case readers
         case rewardRate = "reward_rate"
+        case retentionWindow = "retention_window"
         case itemCount = "item_count"
         case storageUsed = "storage_used"
         case createdAt = "created_at"
@@ -653,6 +658,65 @@ public struct SqlResponse: Codable {
     public let total: UInt64?
     public let warnings: [String]?
     public let proof: QueryProof?
+}
+
+// MARK: - Retention Window
+
+/// How long real-time indexed data is retained on consensus nodes.
+public enum RetentionWindow: Codable, Equatable {
+    /// Retain for N consensus blocks.
+    case blocks(UInt64)
+    /// Retain for N seconds.
+    case seconds(UInt64)
+    /// Never prune (default).
+    case indefinite
+
+    enum CodingKeys: String, CodingKey {
+        case blocks = "Blocks"
+        case seconds = "Seconds"
+        case indefinite = "Indefinite"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        if let n = try? container.decode(UInt64.self, forKey: .blocks) {
+            self = .blocks(n)
+            return
+        }
+        if let n = try? container.decode(UInt64.self, forKey: .seconds) {
+            self = .seconds(n)
+            return
+        }
+        if container.contains(.indefinite) {
+            self = .indefinite
+            return
+        }
+
+        // Try single-value string for simple variant
+        let singleContainer = try decoder.singleValueContainer()
+        let value = try singleContainer.decode(String.self)
+        switch value {
+        case "Indefinite":
+            self = .indefinite
+        default:
+            throw DecodingError.dataCorruptedError(
+                in: singleContainer,
+                debugDescription: "Unknown RetentionWindow value: \(value)"
+            )
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        switch self {
+        case .blocks(let n):
+            try container.encode(n, forKey: .blocks)
+        case .seconds(let n):
+            try container.encode(n, forKey: .seconds)
+        case .indefinite:
+            try container.encode("Indefinite", forKey: .indefinite)
+        }
+    }
 }
 
 // MARK: - Subgrove Types

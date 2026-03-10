@@ -169,7 +169,16 @@ public struct SubgroveDataStorage: Codable {
 
 /// BlockchainIndexing mode configuration for a subgrove.
 public struct SubgroveBlockchainIndexing: Codable {
-    public init() {}
+    /// How long real-time indexed data is retained on consensus nodes.
+    public var retentionWindow: RetentionWindow?
+
+    enum CodingKeys: String, CodingKey {
+        case retentionWindow = "retention_window"
+    }
+
+    public init(retentionWindow: RetentionWindow? = nil) {
+        self.retentionWindow = retentionWindow
+    }
 }
 
 /// SubgroveMode: DataStorage or BlockchainIndexing.
@@ -211,6 +220,7 @@ public struct RegisterSubgroveTx: Codable {
     public var schema: String
     public var ownerDid: String
     public var mode: SubgroveMode?
+    public var retentionWindow: RetentionWindow?
     public var signature: String
     public var publicKeyId: String
     public var nonce: Int
@@ -221,6 +231,7 @@ public struct RegisterSubgroveTx: Codable {
         case schema
         case ownerDid = "owner_did"
         case mode
+        case retentionWindow = "retention_window"
         case signature
         case publicKeyId = "public_key_id"
         case nonce
@@ -232,6 +243,7 @@ public struct RegisterSubgroveTx: Codable {
         schema: String,
         ownerDid: String,
         mode: SubgroveMode? = nil,
+        retentionWindow: RetentionWindow? = nil,
         signature: String = "",
         publicKeyId: String,
         nonce: Int
@@ -241,6 +253,7 @@ public struct RegisterSubgroveTx: Codable {
         self.schema = schema
         self.ownerDid = ownerDid
         self.mode = mode
+        self.retentionWindow = retentionWindow
         self.signature = signature
         self.publicKeyId = publicKeyId
         self.nonce = nonce
@@ -416,7 +429,8 @@ public class ConsensusClient {
         privateKey: Data,
         publicKeyId: String,
         signFunction: (Data, Data) throws -> Data,
-        mode: SubgroveMode? = nil
+        mode: SubgroveMode? = nil,
+        retentionWindow: RetentionWindow? = nil
     ) async throws -> BroadcastResult {
         let nonce = try await getNextNonce(did: ownerDid)
 
@@ -426,6 +440,7 @@ public class ConsensusClient {
             schema: schema,
             ownerDid: ownerDid,
             mode: mode,
+            retentionWindow: retentionWindow,
             publicKeyId: publicKeyId,
             nonce: nonce
         )

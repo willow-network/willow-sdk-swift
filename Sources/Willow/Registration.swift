@@ -254,6 +254,13 @@ public class SubgroveBuilder {
         return self
     }
 
+    /// Sets the retention window for indexed data.
+    @discardableResult
+    public func retentionWindow(_ window: RetentionWindow) -> SubgroveBuilder {
+        request.retentionWindow = window
+        return self
+    }
+
     /// Builds the RegisterSubgroveRequest.
     public func build() -> RegisterSubgroveRequest {
         return request
