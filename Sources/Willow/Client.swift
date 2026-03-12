@@ -50,6 +50,9 @@ public class WillowClient {
     /// Indexing operations.
     public private(set) lazy var indexing: IndexingOperations = IndexingOperations(client: self)
 
+    /// File storage operations.
+    public private(set) lazy var files: FileOperations = FileOperations(client: self)
+
     /// Computed fields registry for SDK-layer derived field computation.
     public let computedFieldRegistry = ComputedFieldRegistry()
 

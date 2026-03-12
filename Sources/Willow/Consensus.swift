@@ -834,6 +834,139 @@ public class ConsensusClient {
         Nonce: \(tx.nonce)
         """
     }
+
+    private func createSignMessageForStoreFile(appId: String, subgroveId: String, fileKey: String, contentHash: String, totalSize: Int) -> String {
+        return "store_file:\(appId):\(subgroveId):\(fileKey):\(contentHash):\(totalSize)"
+    }
+
+    private func createSignMessageForDeleteFile(appId: String, subgroveId: String, fileKey: String) -> String {
+        return "delete_file:\(appId):\(subgroveId):\(fileKey)"
+    }
+
+    // MARK: - File Manifest Transaction Methods
+
+    /// Store a file manifest on the blockchain.
+    public func storeFileManifest(
+        appId: String,
+        subgroveId: String,
+        fileKey: String,
+        filename: String,
+        contentType: String,
+        totalSize: Int,
+        contentHash: String,
+        chunkCount: Int,
+        chunkSize: Int,
+        chunkMerkleRoot: String,
+        ownerDid: String,
+        privateKey: Data,
+        publicKeyId: String,
+        signFunction: (Data, Data) throws -> Data
+    ) async throws -> BroadcastResult {
+        let nonce = try await getNextNonce(did: ownerDid)
+
+        let signMessage = createSignMessageForStoreFile(
+            appId: appId,
+            subgroveId: subgroveId,
+            fileKey: fileKey,
+            contentHash: contentHash,
+            totalSize: totalSize
+        )
+        let signatureData = try signFunction(Data(signMessage.utf8), privateKey)
+        let signatureBytes = Array(signatureData).map { Int($0) }
+
+        let tx = StoreFileManifestConsensusTx(
+            StoreFileManifest: StoreFileManifestConsensusBody(
+                app_id: appId,
+                subgrove_id: subgroveId,
+                file_key: fileKey,
+                filename: filename,
+                content_type: contentType,
+                total_size: totalSize,
+                content_hash: contentHash,
+                chunk_count: chunkCount,
+                chunk_size: chunkSize,
+                chunk_merkle_root: chunkMerkleRoot,
+                owner_did: ownerDid,
+                signature: signatureBytes,
+                public_key_id: publicKeyId,
+                nonce: nonce
+            )
+        )
+
+        return try await broadcastTransaction(txType: "StoreFileManifest", transaction: tx.StoreFileManifest)
+    }
+
+    /// Delete a file manifest from the blockchain.
+    public func deleteFileManifest(
+        appId: String,
+        subgroveId: String,
+        fileKey: String,
+        ownerDid: String,
+        privateKey: Data,
+        publicKeyId: String,
+        signFunction: (Data, Data) throws -> Data
+    ) async throws -> BroadcastResult {
+        let nonce = try await getNextNonce(did: ownerDid)
+
+        let signMessage = createSignMessageForDeleteFile(
+            appId: appId,
+            subgroveId: subgroveId,
+            fileKey: fileKey
+        )
+        let signatureData = try signFunction(Data(signMessage.utf8), privateKey)
+        let signatureBytes = Array(signatureData).map { Int($0) }
+
+        let tx = DeleteFileManifestConsensusTx(
+            DeleteFileManifest: DeleteFileManifestConsensusBody(
+                app_id: appId,
+                subgrove_id: subgroveId,
+                file_key: fileKey,
+                owner_did: ownerDid,
+                signature: signatureBytes,
+                public_key_id: publicKeyId,
+                nonce: nonce
+            )
+        )
+
+        return try await broadcastTransaction(txType: "DeleteFileManifest", transaction: tx.DeleteFileManifest)
+    }
+}
+
+// MARK: - File Manifest Consensus Transaction Types
+
+private struct StoreFileManifestConsensusBody: Encodable {
+    let app_id: String
+    let subgrove_id: String
+    let file_key: String
+    let filename: String
+    let content_type: String
+    let total_size: Int
+    let content_hash: String
+    let chunk_count: Int
+    let chunk_size: Int
+    let chunk_merkle_root: String
+    let owner_did: String
+    let signature: [Int]
+    let public_key_id: String
+    let nonce: Int
+}
+
+private struct StoreFileManifestConsensusTx: Encodable {
+    let StoreFileManifest: StoreFileManifestConsensusBody
+}
+
+private struct DeleteFileManifestConsensusBody: Encodable {
+    let app_id: String
+    let subgrove_id: String
+    let file_key: String
+    let owner_did: String
+    let signature: [Int]
+    let public_key_id: String
+    let nonce: Int
+}
+
+private struct DeleteFileManifestConsensusTx: Encodable {
+    let DeleteFileManifest: DeleteFileManifestConsensusBody
 }
 
 // MARK: - Error
