@@ -77,7 +77,6 @@ public class FileOperations {
 
     /// Upload a file to a FileStorage subgrove.
     public func upload(
-        appId: String,
         subgroveId: String,
         fileKey: String,
         filename: String,
@@ -107,7 +106,7 @@ public class FileOperations {
             publicKeyId = signing.publicKeyId
             nonce = signing.nonce
 
-            let signMessage = "store_file:\(appId):\(subgroveId):\(fileKey):\(contentHashHex):\(data.count)"
+            let signMessage = "store_file:\(subgroveId):\(fileKey):\(contentHashHex):\(data.count)"
             let signatureData = try signing.signFunction(Data(signMessage.utf8), signing.privateKey)
             signatureBytes = Array(signatureData).map { Int($0) }
         } else {
@@ -121,7 +120,6 @@ public class FileOperations {
         guard let client = client else { throw NetworkError("Client deallocated") }
         let manifestTx = StoreFileManifestTx(
             StoreFileManifest: StoreFileManifestTxBody(
-                app_id: appId,
                 subgrove_id: subgroveId,
                 file_key: fileKey,
                 filename: filename,
@@ -141,7 +139,7 @@ public class FileOperations {
 
         // Upload chunks to storage node
         for (i, chunk) in chunks.enumerated() {
-            let url = URL(string: "\(storageNodeEndpoint)/upload/\(appId)/\(subgroveId)/\(fileKey)?chunk_index=\(i)&chunk_count=\(chunkCount)&content_hash=\(contentHashHex)")!
+            let url = URL(string: "\(storageNodeEndpoint)/upload/\(subgroveId)/\(fileKey)?chunk_index=\(i)&chunk_count=\(chunkCount)&content_hash=\(contentHashHex)")!
             var request = URLRequest(url: url)
             request.httpMethod = "POST"
             request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
@@ -173,17 +171,16 @@ public class FileOperations {
 
     /// Download a file from a FileStorage subgrove.
     public func download(
-        appId: String,
         subgroveId: String,
         fileKey: String,
         storageNodeEndpoint: String
     ) async throws -> Data {
-        let manifest = try await metadata(appId: appId, subgroveId: subgroveId, fileKey: fileKey)
+        let manifest = try await metadata(subgroveId: subgroveId, fileKey: fileKey)
 
         var fileData = Data()
         var chunkHashes: [Data] = []
         for i in 0..<manifest.chunkCount {
-            let url = URL(string: "\(storageNodeEndpoint)/chunk/\(appId)/\(subgroveId)/\(fileKey)/\(i)?content_hash=\(manifest.contentHash)")!
+            let url = URL(string: "\(storageNodeEndpoint)/chunk/\(subgroveId)/\(fileKey)/\(i)?content_hash=\(manifest.contentHash)")!
             let (chunkData, response) = try await URLSession.shared.data(from: url)
             guard let httpResponse = response as? HTTPURLResponse,
                   (200...299).contains(httpResponse.statusCode) else {
@@ -211,22 +208,22 @@ public class FileOperations {
     }
 
     /// Get file manifest metadata.
-    public func metadata(appId: String, subgroveId: String, fileKey: String) async throws -> FileManifest {
+    public func metadata(subgroveId: String, fileKey: String) async throws -> FileManifest {
         guard let client = client else { throw NetworkError("Client deallocated") }
-        let path = "/files/\(appId)/\(subgroveId)/\(fileKey)"
+        let path = "/files/\(subgroveId)/\(fileKey)"
         return try await client.get(path: path)
     }
 
     /// List all files in a subgrove.
-    public func list(appId: String, subgroveId: String) async throws -> [FileManifest] {
+    public func list(subgroveId: String) async throws -> [FileManifest] {
         guard let client = client else { throw NetworkError("Client deallocated") }
-        let path = "/files/\(appId)/\(subgroveId)"
+        let path = "/files/\(subgroveId)"
         let response: FileListResponse = try await client.get(path: path)
         return response.files
     }
 
     /// Delete a file (submits DeleteFileManifestTx to consensus).
-    public func delete(appId: String, subgroveId: String, fileKey: String, signing: FileSigningOptions? = nil) async throws {
+    public func delete(subgroveId: String, fileKey: String, signing: FileSigningOptions? = nil) async throws {
         guard let client = client else { throw NetworkError("Client deallocated") }
 
         let ownerDid: String
@@ -239,7 +236,7 @@ public class FileOperations {
             publicKeyId = signing.publicKeyId
             nonce = signing.nonce
 
-            let signMessage = "delete_file:\(appId):\(subgroveId):\(fileKey)"
+            let signMessage = "delete_file:\(subgroveId):\(fileKey)"
             let signatureData = try signing.signFunction(Data(signMessage.utf8), signing.privateKey)
             signatureBytes = Array(signatureData).map { Int($0) }
         } else {
@@ -251,7 +248,6 @@ public class FileOperations {
 
         let deleteTx = DeleteFileManifestTx(
             DeleteFileManifest: DeleteFileManifestTxBody(
-                app_id: appId,
                 subgrove_id: subgroveId,
                 file_key: fileKey,
                 owner_did: ownerDid,
@@ -286,7 +282,6 @@ public class FileOperations {
 // MARK: - Transaction Types
 
 private struct StoreFileManifestTxBody: Encodable {
-    let app_id: String
     let subgrove_id: String
     let file_key: String
     let filename: String
@@ -307,7 +302,6 @@ private struct StoreFileManifestTx: Encodable {
 }
 
 private struct DeleteFileManifestTxBody: Encodable {
-    let app_id: String
     let subgrove_id: String
     let file_key: String
     let owner_did: String

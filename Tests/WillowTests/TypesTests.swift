@@ -61,29 +61,6 @@ final class TypesTests: XCTestCase {
         XCTAssertEqual(schema.indexes.count, 1)
     }
 
-    // MARK: - App Tests
-
-    func testAppType() {
-        XCTAssertEqual(AppType.standard.rawValue, "standard")
-        XCTAssertEqual(AppType.indexer.rawValue, "indexer")
-    }
-
-    func testRegisterAppRequest() {
-        let request = RegisterAppRequest(
-            appId: "my-app",
-            name: "My App",
-            description: "Test app",
-            appType: .standard,
-            ownerDid: "did:willow:Ed25519:abc123",
-            admins: ["did:willow:Ed25519:admin1"]
-        )
-
-        XCTAssertEqual(request.appId, "my-app")
-        XCTAssertEqual(request.name, "My App")
-        XCTAssertEqual(request.appType, .standard)
-        XCTAssertEqual(request.admins.count, 1)
-    }
-
     // MARK: - Validator Tests
 
     func testValidatorStatus() {

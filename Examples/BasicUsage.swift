@@ -62,7 +62,6 @@ struct BasicUsageExample {
 
             do {
                 try await client.data.store(
-                    appId: "my-app",
                     subgroveId: "users",
                     key: "alice",
                     data: testData
@@ -77,7 +76,6 @@ struct BasicUsageExample {
             print("6. Retrieving data (with proof verification)...")
             do {
                 let response = try await client.data.get(
-                    appId: "my-app",
                     subgroveId: "users",
                     key: "alice"
                 )
@@ -92,7 +90,6 @@ struct BasicUsageExample {
             print("7. Retrieving data (without verification)...")
             do {
                 let response = try await client.data.getUnverified(
-                    appId: "my-app",
                     subgroveId: "users",
                     key: "alice"
                 )

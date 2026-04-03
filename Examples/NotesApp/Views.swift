@@ -188,7 +188,7 @@ struct LoginView: View {
             do {
                 let result = try await appState.generateAndRegister()
                 generatedKey = result.privateKey
-                await appState.checkAppRegistration()
+                await appState.checkSubgroveRegistration()
             } catch {
                 appState.error = error.localizedDescription
             }
@@ -201,7 +201,7 @@ struct LoginView: View {
         Task {
             do {
                 try await appState.login(with: privateKey)
-                await appState.checkAppRegistration()
+                await appState.checkSubgroveRegistration()
             } catch {
                 appState.error = error.localizedDescription
             }
@@ -254,9 +254,8 @@ struct SetupView: View {
                     Text("What happens during setup:")
                         .font(.headline)
 
-                    SetupStepRow(number: 1, text: "Register your app on the Willow network")
-                    SetupStepRow(number: 2, text: "Create a secure, indexed collection for your notes")
-                    SetupStepRow(number: 3, text: "Set up cryptographic proofs for data verification")
+                    SetupStepRow(number: 1, text: "Create a secure, indexed subgrove for your notes on the Willow network")
+                    SetupStepRow(number: 2, text: "Set up cryptographic proofs for data verification")
                 }
                 .padding()
                 .background(Color(.systemGray6))
@@ -285,7 +284,7 @@ struct SetupView: View {
 
     private func setup() {
         isLoading = true
-        statusMessage = "Registering application..."
+        statusMessage = "Registering subgrove..."
 
         Task {
             do {
@@ -342,7 +341,6 @@ struct MainView: View {
             // Status bar
             StatusBar(
                 balance: appState.balance,
-                appBalance: appState.appBalance,
                 notesCount: viewModel.notesCount
             )
 
@@ -415,14 +413,11 @@ struct MainView: View {
 
 struct StatusBar: View {
     let balance: Double
-    let appBalance: Double
     let notesCount: Int
 
     var body: some View {
         HStack {
             Label("\(Int(balance)) WILL", systemImage: "wallet.pass")
-            Spacer()
-            Label("\(Int(appBalance)) App", systemImage: "app.badge")
             Spacer()
             Label("\(notesCount) Notes", systemImage: "note.text")
         }

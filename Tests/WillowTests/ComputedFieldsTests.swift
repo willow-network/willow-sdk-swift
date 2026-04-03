@@ -88,9 +88,9 @@ final class ComputedFieldsTests: XCTestCase {
             )
         ]
 
-        registry.register(appId: "app1", datasetId: "dataset1", fields: fields)
+        registry.register(datasetId: "dataset1", fields: fields)
 
-        let result = registry.get(appId: "app1", datasetId: "dataset1")
+        let result = registry.get(datasetId: "dataset1")
         XCTAssertNotNil(result)
         XCTAssertEqual(result?.count, 1)
         XCTAssertEqual(result?[0].name, "testField")
@@ -100,27 +100,27 @@ final class ComputedFieldsTests: XCTestCase {
         let registry = ComputedFieldRegistry()
         let fields: ComputedFieldSet = []
 
-        XCTAssertFalse(registry.has(appId: "app1", datasetId: "dataset1"))
+        XCTAssertFalse(registry.has(datasetId: "dataset1"))
 
-        registry.register(appId: "app1", datasetId: "dataset1", fields: fields)
+        registry.register(datasetId: "dataset1", fields: fields)
 
-        XCTAssertTrue(registry.has(appId: "app1", datasetId: "dataset1"))
-        XCTAssertFalse(registry.has(appId: "app1", datasetId: "other"))
+        XCTAssertTrue(registry.has(datasetId: "dataset1"))
+        XCTAssertFalse(registry.has(datasetId: "other"))
     }
 
     func testRegistryUnregister() {
         let registry = ComputedFieldRegistry()
         let fields: ComputedFieldSet = []
 
-        registry.register(appId: "app1", datasetId: "dataset1", fields: fields)
-        XCTAssertTrue(registry.has(appId: "app1", datasetId: "dataset1"))
+        registry.register(datasetId: "dataset1", fields: fields)
+        XCTAssertTrue(registry.has(datasetId: "dataset1"))
 
-        let removed = registry.unregister(appId: "app1", datasetId: "dataset1")
+        let removed = registry.unregister(datasetId: "dataset1")
         XCTAssertTrue(removed)
-        XCTAssertFalse(registry.has(appId: "app1", datasetId: "dataset1"))
+        XCTAssertFalse(registry.has(datasetId: "dataset1"))
 
         // Second unregister returns false
-        let removedAgain = registry.unregister(appId: "app1", datasetId: "dataset1")
+        let removedAgain = registry.unregister(datasetId: "dataset1")
         XCTAssertFalse(removedAgain)
     }
 
@@ -128,16 +128,16 @@ final class ComputedFieldsTests: XCTestCase {
         let registry = ComputedFieldRegistry()
         let fields: ComputedFieldSet = []
 
-        registry.register(appId: "app1", datasetId: "dataset1", fields: fields)
-        registry.register(appId: "app2", datasetId: "dataset2", fields: fields)
+        registry.register(datasetId: "dataset1", fields: fields)
+        registry.register(datasetId: "dataset2", fields: fields)
 
-        XCTAssertTrue(registry.has(appId: "app1", datasetId: "dataset1"))
-        XCTAssertTrue(registry.has(appId: "app2", datasetId: "dataset2"))
+        XCTAssertTrue(registry.has(datasetId: "dataset1"))
+        XCTAssertTrue(registry.has(datasetId: "dataset2"))
 
         registry.clear()
 
-        XCTAssertFalse(registry.has(appId: "app1", datasetId: "dataset1"))
-        XCTAssertFalse(registry.has(appId: "app2", datasetId: "dataset2"))
+        XCTAssertFalse(registry.has(datasetId: "dataset1"))
+        XCTAssertFalse(registry.has(datasetId: "dataset2"))
     }
 
     // MARK: - ApplyComputedFields Tests
@@ -429,9 +429,9 @@ final class ComputedFieldsTests: XCTestCase {
             )
         ]
 
-        globalComputedFieldRegistry.register(appId: "global-app", datasetId: "global-dataset", fields: fields)
+        globalComputedFieldRegistry.register(datasetId: "global-dataset", fields: fields)
 
-        XCTAssertTrue(globalComputedFieldRegistry.has(appId: "global-app", datasetId: "global-dataset"))
+        XCTAssertTrue(globalComputedFieldRegistry.has(datasetId: "global-dataset"))
 
         // Cleanup
         globalComputedFieldRegistry.clear()

@@ -78,7 +78,6 @@ struct LightClientExample {
 
             do {
                 try await client.data.store(
-                    appId: "test-app",
                     subgroveId: "secure-data",
                     key: "entry-1",
                     data: testData
@@ -99,7 +98,6 @@ struct LightClientExample {
 
             do {
                 let response = try await client.data.get(
-                    appId: "test-app",
                     subgroveId: "secure-data",
                     key: "entry-1"
                 )
@@ -118,7 +116,6 @@ struct LightClientExample {
 
             do {
                 let queryResponse = try await client.data.query(
-                    appId: "test-app",
                     subgroveId: "secure-data",
                     query: query
                 )

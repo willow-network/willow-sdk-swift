@@ -2,7 +2,7 @@ import Foundation
 
 // MARK: - Registration Operations
 
-/// Provides methods for app and subgrove registration.
+/// Provides methods for subgrove registration.
 public class RegistrationOperations {
     private weak var client: WillowClient?
 
@@ -10,98 +10,47 @@ public class RegistrationOperations {
         self.client = client
     }
 
-    // MARK: - App Operations
-
-    /// Registers a new application.
-    public func registerApp(_ request: RegisterAppRequest) async throws -> AppRegistration {
-        guard let client = client else { throw NetworkError("Client deallocated") }
-        try client.requireAuth()
-
-        return try await client.post(path: "/apps", body: request)
-    }
-
-    /// Retrieves information about an app.
-    public func getApp(appId: String) async throws -> AppRegistration {
-        guard let client = client else { throw NetworkError("Client deallocated") }
-
-        return try await client.get(path: "/apps/\(appId)")
-    }
-
-    /// Lists all registered applications.
-    public func listApps() async throws -> [AppRegistration] {
-        guard let client = client else { throw NetworkError("Client deallocated") }
-
-        return try await client.get(path: "/apps")
-    }
-
-    /// Lists apps owned by the authenticated user.
-    public func listMyApps() async throws -> [AppRegistration] {
-        guard let client = client else { throw NetworkError("Client deallocated") }
-        try client.requireAuth()
-
-        return try await client.get(path: "/apps?owned=true")
-    }
-
-    /// Updates an existing application.
-    public func updateApp(appId: String, updates: [String: Any]) async throws -> AppRegistration {
-        guard let client = client else { throw NetworkError("Client deallocated") }
-        try client.requireAuth()
-
-        let body = updates.mapValues { AnyCodable($0) }
-        return try await client.put(path: "/apps/\(appId)", body: body)
-    }
-
-    /// Deletes an application.
-    public func deleteApp(appId: String) async throws {
-        guard let client = client else { throw NetworkError("Client deallocated") }
-        try client.requireAuth()
-
-        try await client.delete(path: "/apps/\(appId)")
-    }
-
     // MARK: - Subgrove Operations
 
-    /// Registers a new subgrove within an app.
+    /// Registers a new subgrove.
     public func registerSubgrove(_ request: RegisterSubgroveRequest) async throws -> SubgroveRegistration {
         guard let client = client else { throw NetworkError("Client deallocated") }
         try client.requireAuth()
 
-        let path = "/apps/\(request.appId)/subgroves"
-        return try await client.post(path: path, body: request)
+        return try await client.post(path: "/subgroves", body: request)
     }
 
     /// Retrieves information about a subgrove.
-    public func getSubgrove(appId: String, subgroveId: String) async throws -> SubgroveRegistration {
+    public func getSubgrove(subgroveId: String) async throws -> SubgroveRegistration {
         guard let client = client else { throw NetworkError("Client deallocated") }
 
-        let path = "/apps/\(appId)/subgroves/\(subgroveId)"
+        let path = "/subgroves/\(subgroveId)"
         return try await client.get(path: path)
     }
 
-    /// Lists all subgroves for an app.
-    public func listSubgroves(appId: String) async throws -> [SubgroveRegistration] {
+    /// Lists all subgroves.
+    public func listSubgroves() async throws -> [SubgroveRegistration] {
         guard let client = client else { throw NetworkError("Client deallocated") }
 
-        let path = "/apps/\(appId)/subgroves"
-        return try await client.get(path: path)
+        return try await client.get(path: "/subgroves")
     }
 
     /// Updates an existing subgrove.
-    public func updateSubgrove(appId: String, subgroveId: String, updates: [String: Any]) async throws -> SubgroveRegistration {
+    public func updateSubgrove(subgroveId: String, updates: [String: Any]) async throws -> SubgroveRegistration {
         guard let client = client else { throw NetworkError("Client deallocated") }
         try client.requireAuth()
 
-        let path = "/apps/\(appId)/subgroves/\(subgroveId)"
+        let path = "/subgroves/\(subgroveId)"
         let body = updates.mapValues { AnyCodable($0) }
         return try await client.put(path: path, body: body)
     }
 
     /// Deletes a subgrove.
-    public func deleteSubgrove(appId: String, subgroveId: String) async throws {
+    public func deleteSubgrove(subgroveId: String) async throws {
         guard let client = client else { throw NetworkError("Client deallocated") }
         try client.requireAuth()
 
-        let path = "/apps/\(appId)/subgroves/\(subgroveId)"
+        let path = "/subgroves/\(subgroveId)"
         try await client.delete(path: path)
     }
 
@@ -123,70 +72,16 @@ public class RegistrationOperations {
     }
 
     /// Revokes a permission from a DID.
-    public func revokePermission(did: String, appId: String, subgroveId: String? = nil) async throws {
+    public func revokePermission(did: String, subgroveId: String) async throws {
         guard let client = client else { throw NetworkError("Client deallocated") }
         try client.requireAuth()
 
-        var path = "/permissions/\(did)/\(appId)"
-        if let subgroveId = subgroveId {
-            path += "/\(subgroveId)"
-        }
+        let path = "/permissions/\(did)/\(subgroveId)"
         try await client.delete(path: path)
     }
 }
 
 private struct EmptyResponse: Codable {}
-
-// MARK: - App Builder
-
-/// Builder for constructing app registrations.
-public class AppBuilder {
-    private var request: RegisterAppRequest
-
-    public init(appId: String, name: String) {
-        self.request = RegisterAppRequest(appId: appId, name: name)
-    }
-
-    /// Sets the app description.
-    @discardableResult
-    public func description(_ desc: String) -> AppBuilder {
-        request.description = desc
-        return self
-    }
-
-    /// Sets the app type.
-    @discardableResult
-    public func type(_ appType: AppType) -> AppBuilder {
-        request.appType = appType
-        return self
-    }
-
-    /// Sets the owner DID.
-    @discardableResult
-    public func owner(_ did: String) -> AppBuilder {
-        request.ownerDid = did
-        return self
-    }
-
-    /// Sets the admin DIDs.
-    @discardableResult
-    public func admins(_ dids: [String]) -> AppBuilder {
-        request.admins = dids
-        return self
-    }
-
-    /// Adds an admin DID.
-    @discardableResult
-    public func addAdmin(_ did: String) -> AppBuilder {
-        request.admins.append(did)
-        return self
-    }
-
-    /// Builds the RegisterAppRequest.
-    public func build() -> RegisterAppRequest {
-        return request
-    }
-}
 
 // MARK: - Subgrove Builder
 
@@ -194,8 +89,8 @@ public class AppBuilder {
 public class SubgroveBuilder {
     private var request: RegisterSubgroveRequest
 
-    public init(subgroveId: String, appId: String, name: String) {
-        self.request = RegisterSubgroveRequest(subgroveId: subgroveId, appId: appId, name: name)
+    public init(subgroveId: String, name: String) {
+        self.request = RegisterSubgroveRequest(subgroveId: subgroveId, name: name)
     }
 
     /// Sets the subgrove description.

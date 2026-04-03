@@ -13,10 +13,10 @@ public class DataOperations {
     // MARK: - Get Operations
 
     /// Gets an item with automatic proof verification.
-    public func get(appId: String, subgroveId: String, key: String) async throws -> DataResponse {
+    public func get(subgroveId: String, key: String) async throws -> DataResponse {
         guard let client = client else { throw NetworkError("Client deallocated") }
 
-        let path = "/apps/\(appId)/subgroves/\(subgroveId)/data/\(key)?include_proof=true"
+        let path = "/subgroves/\(subgroveId)/data/\(key)?include_proof=true"
         let response: DataResponse = try await client.get(path: path)
 
         // Verify proof if available
@@ -28,24 +28,24 @@ public class DataOperations {
     }
 
     /// Gets an item without proof verification (faster but less secure).
-    public func getUnverified(appId: String, subgroveId: String, key: String) async throws -> DataResponse {
+    public func getUnverified(subgroveId: String, key: String) async throws -> DataResponse {
         guard let client = client else { throw NetworkError("Client deallocated") }
 
-        let path = "/apps/\(appId)/subgroves/\(subgroveId)/data/\(key)"
+        let path = "/subgroves/\(subgroveId)/data/\(key)"
         return try await client.get(path: path)
     }
 
     // MARK: - Query Operations
 
     /// Queries data with automatic proof verification.
-    /// Applies computed fields if registered for the app/subgrove combination.
-    public func query(appId: String, subgroveId: String, query: QueryRequest) async throws -> QueryResponse {
+    /// Applies computed fields if registered for the subgrove.
+    public func query(subgroveId: String, query: QueryRequest) async throws -> QueryResponse {
         guard let client = client else { throw NetworkError("Client deallocated") }
 
         var queryWithProof = query
         queryWithProof.includeProof = true
 
-        let path = "/apps/\(appId)/subgroves/\(subgroveId)/query"
+        let path = "/subgroves/\(subgroveId)/query"
         var response: QueryResponse = try await client.post(path: path, body: queryWithProof)
 
         // Verify proof if available
@@ -54,7 +54,7 @@ public class DataOperations {
         }
 
         // Apply computed fields if registered
-        if let fields = client.computedFieldRegistry.get(appId: appId, datasetId: subgroveId) {
+        if let fields = client.computedFieldRegistry.get(datasetId: subgroveId) {
             response = applyComputedFieldsToResponse(response: response, fields: fields)
         }
 
@@ -62,15 +62,15 @@ public class DataOperations {
     }
 
     /// Queries data without proof verification.
-    /// Applies computed fields if registered for the app/subgrove combination.
-    public func queryUnverified(appId: String, subgroveId: String, query: QueryRequest) async throws -> QueryResponse {
+    /// Applies computed fields if registered for the subgrove.
+    public func queryUnverified(subgroveId: String, query: QueryRequest) async throws -> QueryResponse {
         guard let client = client else { throw NetworkError("Client deallocated") }
 
-        let path = "/apps/\(appId)/subgroves/\(subgroveId)/query"
+        let path = "/subgroves/\(subgroveId)/query"
         var response: QueryResponse = try await client.post(path: path, body: query)
 
         // Apply computed fields if registered
-        if let fields = client.computedFieldRegistry.get(appId: appId, datasetId: subgroveId) {
+        if let fields = client.computedFieldRegistry.get(datasetId: subgroveId) {
             response = applyComputedFieldsToResponse(response: response, fields: fields)
         }
 
@@ -80,21 +80,21 @@ public class DataOperations {
     // MARK: - Store Operations
 
     /// Stores an item.
-    public func store(appId: String, subgroveId: String, key: String, data: [String: Any]) async throws {
+    public func store(subgroveId: String, key: String, data: [String: Any]) async throws {
         guard let client = client else { throw NetworkError("Client deallocated") }
         try client.requireAuth()
 
         let request = StoreRequest(key: key, data: data)
-        let path = "/apps/\(appId)/subgroves/\(subgroveId)/data"
+        let path = "/subgroves/\(subgroveId)/data"
         let _: EmptyStoreResponse = try await client.post(path: path, body: request)
     }
 
     /// Stores multiple items in batch.
-    public func batchStore(appId: String, subgroveId: String, items: [StoreRequest]) async throws {
+    public func batchStore(subgroveId: String, items: [StoreRequest]) async throws {
         guard let client = client else { throw NetworkError("Client deallocated") }
         try client.requireAuth()
 
-        let path = "/apps/\(appId)/subgroves/\(subgroveId)/data/batch"
+        let path = "/subgroves/\(subgroveId)/data/batch"
         let batchRequest = BatchStoreRequest(items: items)
         let _: EmptyStoreResponse = try await client.post(path: path, body: batchRequest)
     }
@@ -102,11 +102,11 @@ public class DataOperations {
     // MARK: - Update Operations
 
     /// Updates an item.
-    public func update(appId: String, subgroveId: String, key: String, data: [String: Any]) async throws {
+    public func update(subgroveId: String, key: String, data: [String: Any]) async throws {
         guard let client = client else { throw NetworkError("Client deallocated") }
         try client.requireAuth()
 
-        let path = "/apps/\(appId)/subgroves/\(subgroveId)/data/\(key)"
+        let path = "/subgroves/\(subgroveId)/data/\(key)"
         let body = data.mapValues { AnyCodable($0) }
         let _: EmptyStoreResponse = try await client.put(path: path, body: body)
     }
@@ -114,11 +114,11 @@ public class DataOperations {
     // MARK: - Delete Operations
 
     /// Deletes an item.
-    public func delete(appId: String, subgroveId: String, key: String) async throws {
+    public func delete(subgroveId: String, key: String) async throws {
         guard let client = client else { throw NetworkError("Client deallocated") }
         try client.requireAuth()
 
-        let path = "/apps/\(appId)/subgroves/\(subgroveId)/data/\(key)"
+        let path = "/subgroves/\(subgroveId)/data/\(key)"
         try await client.delete(path: path)
     }
 

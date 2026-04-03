@@ -3,90 +3,19 @@ import XCTest
 
 final class BuildersTests: XCTestCase {
 
-    // MARK: - AppBuilder Tests
-
-    func testAppBuilderBasic() {
-        let request = AppBuilder(appId: "my-app", name: "My App")
-            .build()
-
-        XCTAssertEqual(request.appId, "my-app")
-        XCTAssertEqual(request.name, "My App")
-        XCTAssertEqual(request.appType, .standard)
-    }
-
-    func testAppBuilderWithDescription() {
-        let request = AppBuilder(appId: "my-app", name: "My App")
-            .description("A test application")
-            .build()
-
-        XCTAssertEqual(request.description, "A test application")
-    }
-
-    func testAppBuilderWithType() {
-        let request = AppBuilder(appId: "indexer-app", name: "Indexer App")
-            .type(.indexer)
-            .build()
-
-        XCTAssertEqual(request.appType, .indexer)
-    }
-
-    func testAppBuilderWithOwner() {
-        let request = AppBuilder(appId: "my-app", name: "My App")
-            .owner("did:willow:Ed25519:owner123")
-            .build()
-
-        XCTAssertEqual(request.ownerDid, "did:willow:Ed25519:owner123")
-    }
-
-    func testAppBuilderWithAdmins() {
-        let request = AppBuilder(appId: "my-app", name: "My App")
-            .admins(["did:admin1", "did:admin2"])
-            .build()
-
-        XCTAssertEqual(request.admins.count, 2)
-    }
-
-    func testAppBuilderAddAdmin() {
-        let request = AppBuilder(appId: "my-app", name: "My App")
-            .addAdmin("did:admin1")
-            .addAdmin("did:admin2")
-            .build()
-
-        XCTAssertEqual(request.admins.count, 2)
-        XCTAssertTrue(request.admins.contains("did:admin1"))
-        XCTAssertTrue(request.admins.contains("did:admin2"))
-    }
-
-    func testAppBuilderChaining() {
-        let request = AppBuilder(appId: "full-app", name: "Full App")
-            .description("Full featured app")
-            .type(.standard)
-            .owner("did:owner")
-            .admins(["did:admin1"])
-            .addAdmin("did:admin2")
-            .build()
-
-        XCTAssertEqual(request.appId, "full-app")
-        XCTAssertEqual(request.description, "Full featured app")
-        XCTAssertEqual(request.appType, .standard)
-        XCTAssertEqual(request.ownerDid, "did:owner")
-        XCTAssertEqual(request.admins.count, 2)
-    }
-
     // MARK: - SubgroveBuilder Tests
 
     func testSubgroveBuilderBasic() {
-        let request = SubgroveBuilder(subgroveId: "users", appId: "my-app", name: "Users")
+        let request = SubgroveBuilder(subgroveId: "users", name: "Users")
             .build()
 
         XCTAssertEqual(request.subgroveId, "users")
-        XCTAssertEqual(request.appId, "my-app")
         XCTAssertEqual(request.name, "Users")
     }
 
     func testSubgroveBuilderWithSchema() {
         let schema = SchemaDefinition(name: "user_schema")
-        let request = SubgroveBuilder(subgroveId: "users", appId: "my-app", name: "Users")
+        let request = SubgroveBuilder(subgroveId: "users", name: "Users")
             .schema(schema)
             .build()
 
@@ -94,7 +23,7 @@ final class BuildersTests: XCTestCase {
     }
 
     func testSubgroveBuilderWithOwner() {
-        let request = SubgroveBuilder(subgroveId: "users", appId: "my-app", name: "Users")
+        let request = SubgroveBuilder(subgroveId: "users", name: "Users")
             .owner("did:owner")
             .build()
 
@@ -102,7 +31,7 @@ final class BuildersTests: XCTestCase {
     }
 
     func testSubgroveBuilderWithWriters() {
-        let request = SubgroveBuilder(subgroveId: "users", appId: "my-app", name: "Users")
+        let request = SubgroveBuilder(subgroveId: "users", name: "Users")
             .writers(["did:writer1", "did:writer2"])
             .build()
 
@@ -110,7 +39,7 @@ final class BuildersTests: XCTestCase {
     }
 
     func testSubgroveBuilderAddWriter() {
-        let request = SubgroveBuilder(subgroveId: "users", appId: "my-app", name: "Users")
+        let request = SubgroveBuilder(subgroveId: "users", name: "Users")
             .addWriter("did:writer1")
             .addWriter("did:writer2")
             .build()
@@ -119,7 +48,7 @@ final class BuildersTests: XCTestCase {
     }
 
     func testSubgroveBuilderWithReaders() {
-        let request = SubgroveBuilder(subgroveId: "users", appId: "my-app", name: "Users")
+        let request = SubgroveBuilder(subgroveId: "users", name: "Users")
             .readers(["did:reader1"])
             .addReader("did:reader2")
             .build()
@@ -128,7 +57,7 @@ final class BuildersTests: XCTestCase {
     }
 
     func testSubgroveBuilderWithRewardRate() {
-        let request = SubgroveBuilder(subgroveId: "users", appId: "my-app", name: "Users")
+        let request = SubgroveBuilder(subgroveId: "users", name: "Users")
             .rewardRate(1000)
             .build()
 

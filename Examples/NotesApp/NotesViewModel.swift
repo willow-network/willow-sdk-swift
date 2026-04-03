@@ -66,7 +66,6 @@ class NotesViewModel: ObservableObject {
         do {
             let client = try appState.getClient()
             let response = try await client.data.query(
-                appId: appState.appId,
                 subgroveId: appState.collectionId,
                 query: QueryRequest(limit: 100)
             )
@@ -94,7 +93,6 @@ class NotesViewModel: ObservableObject {
         do {
             let client = try appState.getClient()
             try await client.data.store(
-                appId: appState.appId,
                 subgroveId: appState.collectionId,
                 key: note.id,
                 data: note.toDictionary()
@@ -117,7 +115,6 @@ class NotesViewModel: ObservableObject {
         do {
             let client = try appState.getClient()
             try await client.data.update(
-                appId: appState.appId,
                 subgroveId: appState.collectionId,
                 key: note.id,
                 data: note.toDictionary()
@@ -143,7 +140,6 @@ class NotesViewModel: ObservableObject {
         do {
             let client = try appState.getClient()
             try await client.data.delete(
-                appId: appState.appId,
                 subgroveId: appState.collectionId,
                 key: note.id
             )

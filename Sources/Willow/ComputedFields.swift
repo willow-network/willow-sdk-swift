@@ -31,33 +31,29 @@ public class ComputedFieldRegistry {
 
     public init() {}
 
-    public func register(appId: String, datasetId: String, fields: ComputedFieldSet) {
-        let key = "\(appId):\(datasetId)"
+    public func register(datasetId: String, fields: ComputedFieldSet) {
         lock.lock()
         defer { lock.unlock() }
-        registry[key] = fields
+        registry[datasetId] = fields
     }
 
-    public func get(appId: String, datasetId: String) -> ComputedFieldSet? {
-        let key = "\(appId):\(datasetId)"
+    public func get(datasetId: String) -> ComputedFieldSet? {
         lock.lock()
         defer { lock.unlock() }
-        return registry[key]
+        return registry[datasetId]
     }
 
-    public func has(appId: String, datasetId: String) -> Bool {
-        let key = "\(appId):\(datasetId)"
+    public func has(datasetId: String) -> Bool {
         lock.lock()
         defer { lock.unlock() }
-        return registry[key] != nil
+        return registry[datasetId] != nil
     }
 
     @discardableResult
-    public func unregister(appId: String, datasetId: String) -> Bool {
-        let key = "\(appId):\(datasetId)"
+    public func unregister(datasetId: String) -> Bool {
         lock.lock()
         defer { lock.unlock() }
-        return registry.removeValue(forKey: key) != nil
+        return registry.removeValue(forKey: datasetId) != nil
     }
 
     public func clear() {

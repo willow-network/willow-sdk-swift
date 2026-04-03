@@ -97,57 +97,6 @@ public struct RegisterDidTx: Codable {
     }
 }
 
-/// App registration transaction.
-public struct RegisterAppTx: Codable {
-    public var appId: String
-    public var name: String
-    public var description: String
-    public var appType: String
-    public var ownerDid: String
-    public var admins: [String]
-    public var initialFunding: Int?
-    public var signature: String
-    public var publicKeyId: String
-    public var nonce: Int
-
-    enum CodingKeys: String, CodingKey {
-        case appId = "app_id"
-        case name
-        case description
-        case appType = "app_type"
-        case ownerDid = "owner_did"
-        case admins
-        case initialFunding = "initial_funding"
-        case signature
-        case publicKeyId = "public_key_id"
-        case nonce
-    }
-
-    public init(
-        appId: String,
-        name: String,
-        description: String,
-        appType: String,
-        ownerDid: String,
-        admins: [String] = [],
-        initialFunding: Int? = nil,
-        signature: String = "",
-        publicKeyId: String,
-        nonce: Int
-    ) {
-        self.appId = appId
-        self.name = name
-        self.description = description
-        self.appType = appType
-        self.ownerDid = ownerDid
-        self.admins = admins
-        self.initialFunding = initialFunding
-        self.signature = signature
-        self.publicKeyId = publicKeyId
-        self.nonce = nonce
-    }
-}
-
 /// DataStorage mode configuration for a subgrove.
 public struct SubgroveDataStorage: Codable {
     public var name: String
@@ -216,7 +165,6 @@ public enum SubgroveMode: Codable {
 /// Subgrove registration transaction.
 public struct RegisterSubgroveTx: Codable {
     public var subgroveId: String
-    public var appId: String
     public var schema: String
     public var ownerDid: String
     public var mode: SubgroveMode?
@@ -227,7 +175,6 @@ public struct RegisterSubgroveTx: Codable {
 
     enum CodingKeys: String, CodingKey {
         case subgroveId = "subgrove_id"
-        case appId = "app_id"
         case schema
         case ownerDid = "owner_did"
         case mode
@@ -239,7 +186,6 @@ public struct RegisterSubgroveTx: Codable {
 
     public init(
         subgroveId: String,
-        appId: String,
         schema: String,
         ownerDid: String,
         mode: SubgroveMode? = nil,
@@ -249,7 +195,6 @@ public struct RegisterSubgroveTx: Codable {
         nonce: Int
     ) {
         self.subgroveId = subgroveId
-        self.appId = appId
         self.schema = schema
         self.ownerDid = ownerDid
         self.mode = mode
@@ -301,7 +246,6 @@ public struct TransferTx: Codable {
 
 /// Data storage transaction.
 public struct DataStoreTx: Codable {
-    public var appId: String
     public var subgroveId: String
     public var key: String
     public var data: String
@@ -311,7 +255,6 @@ public struct DataStoreTx: Codable {
     public var nonce: Int
 
     enum CodingKeys: String, CodingKey {
-        case appId = "app_id"
         case subgroveId = "subgrove_id"
         case key
         case data
@@ -322,7 +265,6 @@ public struct DataStoreTx: Codable {
     }
 
     public init(
-        appId: String,
         subgroveId: String,
         key: String,
         data: String,
@@ -331,7 +273,6 @@ public struct DataStoreTx: Codable {
         publicKeyId: String,
         nonce: Int
     ) {
-        self.appId = appId
         self.subgroveId = subgroveId
         self.key = key
         self.data = data
@@ -388,42 +329,9 @@ public class ConsensusClient {
         return try await broadcastTransaction(txType: "RegisterDid", transaction: tx)
     }
 
-    /// Register an application on the blockchain.
-    public func registerApp(
-        appId: String,
-        name: String,
-        description: String,
-        appType: String,
-        ownerDid: String,
-        privateKey: Data,
-        publicKeyId: String,
-        signFunction: (Data, Data) throws -> Data,
-        admins: [String] = []
-    ) async throws -> BroadcastResult {
-        let nonce = try await getNextNonce(did: ownerDid)
-
-        var tx = RegisterAppTx(
-            appId: appId,
-            name: name,
-            description: description,
-            appType: appType,
-            ownerDid: ownerDid,
-            admins: admins,
-            publicKeyId: publicKeyId,
-            nonce: nonce
-        )
-
-        let signMessage = createSignMessageForApp(tx: tx)
-        let signatureData = try signFunction(Data(signMessage.utf8), privateKey)
-        tx.signature = signatureData.map { String(format: "%02x", $0) }.joined()
-
-        return try await broadcastTransaction(txType: "RegisterApp", transaction: tx)
-    }
-
     /// Register a subgrove (dataset) on the blockchain.
     public func registerSubgrove(
         subgroveId: String,
-        appId: String,
         schema: String,
         ownerDid: String,
         privateKey: Data,
@@ -436,7 +344,6 @@ public class ConsensusClient {
 
         var tx = RegisterSubgroveTx(
             subgroveId: subgroveId,
-            appId: appId,
             schema: schema,
             ownerDid: ownerDid,
             mode: mode,
@@ -482,7 +389,6 @@ public class ConsensusClient {
 
     /// Store data on the blockchain.
     public func storeData(
-        appId: String,
         subgroveId: String,
         key: String,
         data: Any,
@@ -497,7 +403,6 @@ public class ConsensusClient {
         let dataString = String(data: jsonData, encoding: .utf8) ?? "{}"
 
         var tx = DataStoreTx(
-            appId: appId,
             subgroveId: subgroveId,
             key: key,
             data: dataString,
@@ -754,23 +659,6 @@ public class ConsensusClient {
         return "{}"
     }
 
-    private func createSignMessageForApp(tx: RegisterAppTx) -> String {
-        var msg = """
-        RegisterApp
-        App ID: \(tx.appId)
-        Name: \(tx.name)
-        Description: \(tx.description)
-        Type: \(tx.appType)
-        Owner: \(tx.ownerDid)
-        Admins: \(tx.admins.joined(separator: ","))
-        Nonce: \(tx.nonce)
-        """
-        if let funding = tx.initialFunding, funding > 0 {
-            msg += "\nFunding: \(funding)"
-        }
-        return msg
-    }
-
     private func createSignMessageForSubgrove(tx: RegisterSubgroveTx) -> String {
         if let mode = tx.mode {
             switch mode {
@@ -778,7 +666,6 @@ public class ConsensusClient {
                 return """
                 RegisterSubgrove
                 Subgrove ID: \(tx.subgroveId)
-                App ID: \(tx.appId)
                 Mode: BlockchainIndexing
                 Schema: \(tx.schema)
                 Owner: \(tx.ownerDid)
@@ -788,7 +675,6 @@ public class ConsensusClient {
                 return """
                 RegisterSubgrove
                 Subgrove ID: \(tx.subgroveId)
-                App ID: \(tx.appId)
                 Name: \(ds.name)
                 Schema: \(tx.schema)
                 Owner: \(tx.ownerDid)
@@ -802,7 +688,6 @@ public class ConsensusClient {
         return """
         RegisterSubgrove
         Subgrove ID: \(tx.subgroveId)
-        App ID: \(tx.appId)
         Name: \
         Schema: \(tx.schema)
         Owner: \(tx.ownerDid)
@@ -826,7 +711,6 @@ public class ConsensusClient {
     private func createSignMessageForDataStore(tx: DataStoreTx) -> String {
         return """
         DataStore
-        App ID: \(tx.appId)
         Subgrove ID: \(tx.subgroveId)
         Key: \(tx.key)
         Data: \(tx.data)
@@ -835,19 +719,18 @@ public class ConsensusClient {
         """
     }
 
-    private func createSignMessageForStoreFile(appId: String, subgroveId: String, fileKey: String, contentHash: String, totalSize: Int) -> String {
-        return "store_file:\(appId):\(subgroveId):\(fileKey):\(contentHash):\(totalSize)"
+    private func createSignMessageForStoreFile(subgroveId: String, fileKey: String, contentHash: String, totalSize: Int) -> String {
+        return "store_file:\(subgroveId):\(fileKey):\(contentHash):\(totalSize)"
     }
 
-    private func createSignMessageForDeleteFile(appId: String, subgroveId: String, fileKey: String) -> String {
-        return "delete_file:\(appId):\(subgroveId):\(fileKey)"
+    private func createSignMessageForDeleteFile(subgroveId: String, fileKey: String) -> String {
+        return "delete_file:\(subgroveId):\(fileKey)"
     }
 
     // MARK: - File Manifest Transaction Methods
 
     /// Store a file manifest on the blockchain.
     public func storeFileManifest(
-        appId: String,
         subgroveId: String,
         fileKey: String,
         filename: String,
@@ -865,7 +748,6 @@ public class ConsensusClient {
         let nonce = try await getNextNonce(did: ownerDid)
 
         let signMessage = createSignMessageForStoreFile(
-            appId: appId,
             subgroveId: subgroveId,
             fileKey: fileKey,
             contentHash: contentHash,
@@ -876,7 +758,6 @@ public class ConsensusClient {
 
         let tx = StoreFileManifestConsensusTx(
             StoreFileManifest: StoreFileManifestConsensusBody(
-                app_id: appId,
                 subgrove_id: subgroveId,
                 file_key: fileKey,
                 filename: filename,
@@ -898,7 +779,6 @@ public class ConsensusClient {
 
     /// Delete a file manifest from the blockchain.
     public func deleteFileManifest(
-        appId: String,
         subgroveId: String,
         fileKey: String,
         ownerDid: String,
@@ -909,7 +789,6 @@ public class ConsensusClient {
         let nonce = try await getNextNonce(did: ownerDid)
 
         let signMessage = createSignMessageForDeleteFile(
-            appId: appId,
             subgroveId: subgroveId,
             fileKey: fileKey
         )
@@ -918,7 +797,6 @@ public class ConsensusClient {
 
         let tx = DeleteFileManifestConsensusTx(
             DeleteFileManifest: DeleteFileManifestConsensusBody(
-                app_id: appId,
                 subgrove_id: subgroveId,
                 file_key: fileKey,
                 owner_did: ownerDid,
@@ -935,7 +813,6 @@ public class ConsensusClient {
 // MARK: - File Manifest Consensus Transaction Types
 
 private struct StoreFileManifestConsensusBody: Encodable {
-    let app_id: String
     let subgrove_id: String
     let file_key: String
     let filename: String
@@ -956,7 +833,6 @@ private struct StoreFileManifestConsensusTx: Encodable {
 }
 
 private struct DeleteFileManifestConsensusBody: Encodable {
-    let app_id: String
     let subgrove_id: String
     let file_key: String
     let owner_did: String

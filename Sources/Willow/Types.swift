@@ -133,73 +133,11 @@ public struct SchemaDefinition: Codable, Equatable {
     }
 }
 
-// MARK: - App Types
-
-/// Type of application.
-public enum AppType: String, Codable {
-    case standard = "standard"
-    case indexer = "indexer"
-}
-
-/// Request to register a new app.
-public struct RegisterAppRequest: Codable {
-    public var appId: String
-    public var name: String
-    public var description: String?
-    public var appType: AppType
-    public var ownerDid: String
-    public var admins: [String]
-
-    enum CodingKeys: String, CodingKey {
-        case appId = "app_id"
-        case name
-        case description
-        case appType = "app_type"
-        case ownerDid = "owner_did"
-        case admins
-    }
-
-    public init(appId: String, name: String, description: String? = nil, appType: AppType = .standard, ownerDid: String = "", admins: [String] = []) {
-        self.appId = appId
-        self.name = name
-        self.description = description
-        self.appType = appType
-        self.ownerDid = ownerDid
-        self.admins = admins
-    }
-}
-
-/// A registered application.
-public struct AppRegistration: Codable {
-    public let appId: String
-    public let name: String
-    public let description: String?
-    public let appType: AppType
-    public let ownerDid: String
-    public let admins: [String]?
-    public let balance: UInt64
-    public let createdAt: Int64
-    public let updatedAt: Int64
-
-    enum CodingKeys: String, CodingKey {
-        case appId = "app_id"
-        case name
-        case description
-        case appType = "app_type"
-        case ownerDid = "owner_did"
-        case admins
-        case balance
-        case createdAt = "created_at"
-        case updatedAt = "updated_at"
-    }
-}
-
 // MARK: - Subgrove Types
 
 /// Request to register a new subgrove.
 public struct RegisterSubgroveRequest: Codable {
     public var subgroveId: String
-    public var appId: String
     public var name: String
     public var description: String?
     public var schema: SchemaDefinition
@@ -211,7 +149,6 @@ public struct RegisterSubgroveRequest: Codable {
 
     enum CodingKeys: String, CodingKey {
         case subgroveId = "subgrove_id"
-        case appId = "app_id"
         case name
         case description
         case schema
@@ -222,9 +159,8 @@ public struct RegisterSubgroveRequest: Codable {
         case retentionWindow = "retention_window"
     }
 
-    public init(subgroveId: String, appId: String, name: String, description: String? = nil, schema: SchemaDefinition = SchemaDefinition(name: ""), ownerDid: String = "", writers: [String] = [], readers: [String] = [], rewardRate: UInt64 = 0, retentionWindow: RetentionWindow? = nil) {
+    public init(subgroveId: String, name: String, description: String? = nil, schema: SchemaDefinition = SchemaDefinition(name: ""), ownerDid: String = "", writers: [String] = [], readers: [String] = [], rewardRate: UInt64 = 0, retentionWindow: RetentionWindow? = nil) {
         self.subgroveId = subgroveId
-        self.appId = appId
         self.name = name
         self.description = description
         self.schema = schema
@@ -239,7 +175,6 @@ public struct RegisterSubgroveRequest: Codable {
 /// A registered subgrove.
 public struct SubgroveRegistration: Codable {
     public let subgroveId: String
-    public let appId: String
     public let name: String
     public let description: String?
     public let schema: SchemaDefinition
@@ -255,7 +190,6 @@ public struct SubgroveRegistration: Codable {
 
     enum CodingKeys: String, CodingKey {
         case subgroveId = "subgrove_id"
-        case appId = "app_id"
         case name
         case description
         case schema
@@ -294,7 +228,7 @@ public struct TokenInfo: Codable {
     }
 }
 
-/// Balance information for a DID or app.
+/// Balance information for a DID.
 public struct BalanceInfo: Codable {
     public let id: String
     public let balance: UInt64
@@ -305,7 +239,6 @@ public struct BalanceInfo: Codable {
 /// Fee schedule for operations.
 public struct FeeSchedule: Codable {
     public let didRegistration: String
-    public let appRegistration: String
     public let subgroveRegistration: String
     public let baseTxCost: String
     public let costPerByte: String
@@ -316,7 +249,6 @@ public struct FeeSchedule: Codable {
 
     enum CodingKeys: String, CodingKey {
         case didRegistration = "did_registration"
-        case appRegistration = "app_registration"
         case subgroveRegistration = "subgrove_registration"
         case baseTxCost = "base_tx_cost"
         case costPerByte = "cost_per_byte"
@@ -828,7 +760,6 @@ public struct StoreRequest: Codable {
 /// A permission entry.
 public struct Permission: Codable {
     public let did: String
-    public let appId: String
     public let subgroveId: String?
     public let actions: [String]
     public let grantedBy: String
@@ -837,7 +768,6 @@ public struct Permission: Codable {
 
     enum CodingKeys: String, CodingKey {
         case did
-        case appId = "app_id"
         case subgroveId = "subgrove_id"
         case actions
         case grantedBy = "granted_by"

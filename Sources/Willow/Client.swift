@@ -306,17 +306,16 @@ public class WillowClient {
 
     // MARK: - Computed Fields
 
-    /// Registers computed fields for a specific app/dataset combination.
+    /// Registers computed fields for a specific dataset (subgrove).
     ///
     /// Computed fields are SDK-layer derived values calculated from proven data.
     /// For example, price ratios computed from proven reserve amounts.
     ///
     /// - Parameters:
-    ///   - appId: The application ID
-    ///   - datasetId: The dataset ID
+    ///   - datasetId: The dataset (subgrove) ID
     ///   - fields: The computed field definitions
-    public func registerComputedFields(appId: String, datasetId: String, fields: ComputedFieldSet) {
-        computedFieldRegistry.register(appId: appId, datasetId: datasetId, fields: fields)
+    public func registerComputedFields(datasetId: String, fields: ComputedFieldSet) {
+        computedFieldRegistry.register(datasetId: datasetId, fields: fields)
     }
 
     /// Closes the client and releases resources.

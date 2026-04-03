@@ -147,7 +147,6 @@ public struct EncryptedKeyGrant: Codable {
 
 /// Transaction for granting a subgrove encryption key.
 public struct GrantSubgroveKeyTx: Codable {
-    public var appId: String
     public var subgroveId: String
     public var encryptedKeyGrant: EncryptedKeyGrant
     public var senderDid: String
@@ -156,7 +155,6 @@ public struct GrantSubgroveKeyTx: Codable {
     public var nonce: Int
 
     enum CodingKeys: String, CodingKey {
-        case appId = "app_id"
         case subgroveId = "subgrove_id"
         case encryptedKeyGrant = "encrypted_key_grant"
         case senderDid = "sender_did"
@@ -166,7 +164,6 @@ public struct GrantSubgroveKeyTx: Codable {
     }
 
     public init(
-        appId: String,
         subgroveId: String,
         encryptedKeyGrant: EncryptedKeyGrant,
         senderDid: String,
@@ -174,7 +171,6 @@ public struct GrantSubgroveKeyTx: Codable {
         publicKeyId: String,
         nonce: Int
     ) {
-        self.appId = appId
         self.subgroveId = subgroveId
         self.encryptedKeyGrant = encryptedKeyGrant
         self.senderDid = senderDid
@@ -186,7 +182,6 @@ public struct GrantSubgroveKeyTx: Codable {
 
 /// Transaction for revoking a subgrove encryption key.
 public struct RevokeSubgroveKeyTx: Codable {
-    public var appId: String
     public var subgroveId: String
     public var revokeeDid: String
     public var senderDid: String
@@ -195,7 +190,6 @@ public struct RevokeSubgroveKeyTx: Codable {
     public var nonce: Int
 
     enum CodingKeys: String, CodingKey {
-        case appId = "app_id"
         case subgroveId = "subgrove_id"
         case revokeeDid = "revokee_did"
         case senderDid = "sender_did"
@@ -205,7 +199,6 @@ public struct RevokeSubgroveKeyTx: Codable {
     }
 
     public init(
-        appId: String,
         subgroveId: String,
         revokeeDid: String,
         senderDid: String,
@@ -213,7 +206,6 @@ public struct RevokeSubgroveKeyTx: Codable {
         publicKeyId: String,
         nonce: Int
     ) {
-        self.appId = appId
         self.subgroveId = subgroveId
         self.revokeeDid = revokeeDid
         self.senderDid = senderDid
@@ -225,7 +217,6 @@ public struct RevokeSubgroveKeyTx: Codable {
 
 /// Transaction for rotating a subgrove encryption key.
 public struct RotateSubgroveKeyTx: Codable {
-    public var appId: String
     public var subgroveId: String
     public var newEpoch: UInt32
     public var newGrants: [EncryptedKeyGrant]
@@ -235,7 +226,6 @@ public struct RotateSubgroveKeyTx: Codable {
     public var nonce: Int
 
     enum CodingKeys: String, CodingKey {
-        case appId = "app_id"
         case subgroveId = "subgrove_id"
         case newEpoch = "new_epoch"
         case newGrants = "new_grants"
@@ -246,7 +236,6 @@ public struct RotateSubgroveKeyTx: Codable {
     }
 
     public init(
-        appId: String,
         subgroveId: String,
         newEpoch: UInt32,
         newGrants: [EncryptedKeyGrant],
@@ -255,7 +244,6 @@ public struct RotateSubgroveKeyTx: Codable {
         publicKeyId: String,
         nonce: Int
     ) {
-        self.appId = appId
         self.subgroveId = subgroveId
         self.newEpoch = newEpoch
         self.newGrants = newGrants
@@ -313,11 +301,10 @@ public class PrivacyOperations {
     /// to decrypt a private subgrove's data.
     ///
     /// - Parameters:
-    ///   - appId: The application ID.
     ///   - subgroveId: The subgrove ID.
     /// - Returns: The encrypted key grant for this DID.
     /// - Throws: `AuthenticationError` if no identity is set. `NotFoundError` if no grant exists.
-    public func getMyKeyGrant(appId: String, subgroveId: String) async throws -> EncryptedKeyGrant {
+    public func getMyKeyGrant(subgroveId: String) async throws -> EncryptedKeyGrant {
         guard let client = client else { throw NetworkError("Client deallocated") }
         try client.requireAuth()
 
@@ -325,7 +312,7 @@ public class PrivacyOperations {
             throw AuthenticationError("Identity not set")
         }
 
-        let path = "/key-grants/\(appId)/\(subgroveId)/\(identity.did)"
+        let path = "/key-grants/\(subgroveId)/\(identity.did)"
         let response: ApiResponse<EncryptedKeyGrant> = try await client.get(path: path)
 
         guard let grant = response.data else {
@@ -340,15 +327,14 @@ public class PrivacyOperations {
     /// Only the subgrove owner or admin can call this.
     ///
     /// - Parameters:
-    ///   - appId: The application ID.
     ///   - subgroveId: The subgrove ID.
     /// - Returns: Array of DID strings that have been granted access.
     /// - Throws: `AuthenticationError` if no identity is set.
-    public func listKeyGrantees(appId: String, subgroveId: String) async throws -> [String] {
+    public func listKeyGrantees(subgroveId: String) async throws -> [String] {
         guard let client = client else { throw NetworkError("Client deallocated") }
         try client.requireAuth()
 
-        let path = "/key-grants/\(appId)/\(subgroveId)"
+        let path = "/key-grants/\(subgroveId)"
         let response: ApiResponse<[String]> = try await client.get(path: path)
 
         guard let grantees = response.data else {
@@ -363,14 +349,13 @@ public class PrivacyOperations {
     /// Public endpoint -- proofs are non-sensitive.
     ///
     /// - Parameters:
-    ///   - appId: The application ID.
     ///   - subgroveId: The subgrove ID.
     ///   - did: The DID to get the key grant proof for.
     /// - Returns: The proof response containing proof bytes and root hash.
-    public func getKeyGrantProof(appId: String, subgroveId: String, did: String) async throws -> KeyGrantProofResponse {
+    public func getKeyGrantProof(subgroveId: String, did: String) async throws -> KeyGrantProofResponse {
         guard let client = client else { throw NetworkError("Client deallocated") }
 
-        let path = "/proof/key-grant/\(appId)/\(subgroveId)/\(did)"
+        let path = "/proof/key-grant/\(subgroveId)/\(did)"
         let response: ApiResponse<KeyGrantProofResponse> = try await client.get(path: path)
 
         guard let proof = response.data else {
@@ -387,7 +372,6 @@ public class PrivacyOperations {
     /// Broadcasts a `GrantSubgroveKey` transaction via consensus.
     ///
     /// - Parameters:
-    ///   - appId: The application ID.
     ///   - subgroveId: The subgrove ID.
     ///   - grant: The encrypted key grant containing the encrypted key material.
     ///   - privateKey: The sender's private key for signing.
@@ -395,7 +379,6 @@ public class PrivacyOperations {
     /// - Returns: The broadcast result with transaction hash and status.
     /// - Throws: `AuthenticationError` if no identity is set.
     public func grantSubgroveKey(
-        appId: String,
         subgroveId: String,
         grant: EncryptedKeyGrant,
         privateKey: Data,
@@ -410,11 +393,10 @@ public class PrivacyOperations {
 
         let nonce = try await consensus.getNextNonce(did: identity.did)
 
-        let signMessage = "GrantSubgroveKey:\(appId):\(subgroveId):\(grant.granteeDid):\(identity.did):\(nonce)"
+        let signMessage = "GrantSubgroveKey:\(subgroveId):\(grant.granteeDid):\(identity.did):\(nonce)"
         let signatureData = try signFunction(Data(signMessage.utf8), privateKey)
 
         var tx = GrantSubgroveKeyTx(
-            appId: appId,
             subgroveId: subgroveId,
             encryptedKeyGrant: grant,
             senderDid: identity.did,
@@ -431,7 +413,6 @@ public class PrivacyOperations {
     /// Broadcasts a `RevokeSubgroveKey` transaction via consensus.
     ///
     /// - Parameters:
-    ///   - appId: The application ID.
     ///   - subgroveId: The subgrove ID.
     ///   - revokeeDid: The DID to revoke access from.
     ///   - privateKey: The sender's private key for signing.
@@ -439,7 +420,6 @@ public class PrivacyOperations {
     /// - Returns: The broadcast result with transaction hash and status.
     /// - Throws: `AuthenticationError` if no identity is set.
     public func revokeSubgroveKey(
-        appId: String,
         subgroveId: String,
         revokeeDid: String,
         privateKey: Data,
@@ -454,11 +434,10 @@ public class PrivacyOperations {
 
         let nonce = try await consensus.getNextNonce(did: identity.did)
 
-        let signMessage = "RevokeSubgroveKey:\(appId):\(subgroveId):\(revokeeDid):\(identity.did):\(nonce)"
+        let signMessage = "RevokeSubgroveKey:\(subgroveId):\(revokeeDid):\(identity.did):\(nonce)"
         let signatureData = try signFunction(Data(signMessage.utf8), privateKey)
 
         var tx = RevokeSubgroveKeyTx(
-            appId: appId,
             subgroveId: subgroveId,
             revokeeDid: revokeeDid,
             senderDid: identity.did,
@@ -477,7 +456,6 @@ public class PrivacyOperations {
     /// specified DIDs with the new key material.
     ///
     /// - Parameters:
-    ///   - appId: The application ID.
     ///   - subgroveId: The subgrove ID.
     ///   - newEpoch: The new key epoch number.
     ///   - newGrants: Array of encrypted key grants for the new epoch.
@@ -486,7 +464,6 @@ public class PrivacyOperations {
     /// - Returns: The broadcast result with transaction hash and status.
     /// - Throws: `AuthenticationError` if no identity is set.
     public func rotateSubgroveKey(
-        appId: String,
         subgroveId: String,
         newEpoch: UInt32,
         newGrants: [EncryptedKeyGrant],
@@ -502,11 +479,10 @@ public class PrivacyOperations {
 
         let nonce = try await consensus.getNextNonce(did: identity.did)
 
-        let signMessage = "RotateSubgroveKey:\(appId):\(subgroveId):\(newEpoch):\(identity.did):\(nonce)"
+        let signMessage = "RotateSubgroveKey:\(subgroveId):\(newEpoch):\(identity.did):\(nonce)"
         let signatureData = try signFunction(Data(signMessage.utf8), privateKey)
 
         var tx = RotateSubgroveKeyTx(
-            appId: appId,
             subgroveId: subgroveId,
             newEpoch: newEpoch,
             newGrants: newGrants,

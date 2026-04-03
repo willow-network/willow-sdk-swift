@@ -74,15 +74,13 @@ class AppState: ObservableObject {
     @Published var isAuthenticated = false
     @Published var currentDID: String?
     @Published var privateKey: String?
-    @Published var appRegistered = false
+    @Published var subgroveRegistered = false
     @Published var balance: Double = 0
-    @Published var appBalance: Double = 0
     @Published var error: String?
 
     private var client: WillowClient?
 
     let apiURL = "http://localhost:3031"
-    let appId = "willow-notes-app"
     let collectionId = "notes"
 
     func initialize() async {
@@ -159,22 +157,22 @@ class AppState: ObservableObject {
 
         do {
             try await login(with: key)
-            await checkAppRegistration()
+            await checkSubgroveRegistration()
         } catch {
             self.error = error.localizedDescription
             currentScreen = .login
         }
     }
 
-    func checkAppRegistration() async {
+    func checkSubgroveRegistration() async {
         do {
             let client = try getClient()
-            _ = try await client.registration.getApp(appId: appId)
-            appRegistered = true
+            _ = try await client.registration.getSubgrove(subgroveId: collectionId)
+            subgroveRegistered = true
             currentScreen = .main
             await refreshBalances()
         } catch {
-            appRegistered = false
+            subgroveRegistered = false
             currentScreen = .setup
         }
     }
@@ -182,17 +180,6 @@ class AppState: ObservableObject {
     func setupApp() async throws {
         guard let did = currentDID else { throw WillowError.notAuthenticated }
         let client = try getClient()
-
-        // Register app
-        let appRequest = RegisterAppRequest(
-            appId: appId,
-            name: "Willow Notes",
-            description: "A decentralized notes application powered by Willow",
-            appType: "mobile",
-            ownerDid: did,
-            admins: []
-        )
-        _ = try await client.registration.registerApp(appRequest)
 
         // Create notes collection with schema
         let schema = SchemaDefinition(
@@ -216,7 +203,6 @@ class AppState: ObservableObject {
 
         let datasetRequest = RegisterDatasetRequest(
             datasetId: collectionId,
-            appId: appId,
             name: "Notes",
             datasetPath: ["collections"],
             schema: schema,
@@ -226,7 +212,7 @@ class AppState: ObservableObject {
         )
         _ = try await client.registration.registerDataset(datasetRequest)
 
-        appRegistered = true
+        subgroveRegistered = true
         currentScreen = .main
         await refreshBalances()
     }
@@ -239,9 +225,6 @@ class AppState: ObservableObject {
             if let balanceInfo = try? await client.token.getBalance(did: did) {
                 balance = balanceInfo.available
             }
-            if let appBalanceInfo = try? await client.token.getAppBalance(appId: appId) {
-                appBalance = appBalanceInfo
-            }
         } catch {
             // Silently fail - balances are optional display
         }
@@ -253,7 +236,7 @@ class AppState: ObservableObject {
         privateKey = nil
         currentDID = nil
         isAuthenticated = false
-        appRegistered = false
+        subgroveRegistered = false
         client?.close()
         client = nil
         currentScreen = .login

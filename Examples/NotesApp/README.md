@@ -10,7 +10,7 @@ A complete SwiftUI notes application demonstrating the Willow Swift SDK.
   - Secure credential storage via UserDefaults
 
 - **First-Run Setup**
-  - Automatic app registration on Willow network
+  - Automatic subgrove registration on Willow network
   - Collection/schema creation for notes
 
 - **Notes Management**
@@ -22,7 +22,6 @@ A complete SwiftUI notes application demonstrating the Willow Swift SDK.
 
 - **Balance Display**
   - User WILL token balance
-  - App funding balance
 
 ## Project Structure
 
@@ -69,7 +68,7 @@ NotesApp/
 Central state management using `@Observable` pattern:
 - Handles authentication state
 - Manages Willow client connection
-- Tracks app registration status
+- Tracks subgrove registration status
 
 ### NotesViewModel
 MVVM pattern for notes operations:
@@ -91,7 +90,7 @@ SwiftUI views with:
 | DID Generation | `newIdentity(algorithm: .ed25519)` |
 | DID Registration | `client.registerDID(didDocument)` |
 | Authentication | `client.authenticate(identity)` |
-| App Registration | `client.registration.registerApp(request)` |
+| Subgrove Registration | `client.registration.registerSubgrove(request)` |
 | Schema Definition | `SchemaDefinition` with fields and indexes |
 | Data Storage | `client.data.store(...)` |
 | Data Queries | `client.data.query(...)` |

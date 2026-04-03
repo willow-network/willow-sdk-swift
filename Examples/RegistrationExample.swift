@@ -1,8 +1,7 @@
 // Registration example for the Willow Swift SDK
 //
 // This example demonstrates:
-// - Registering an application
-// - Creating subgroves with schemas
+// - Registering subgroves with schemas
 // - Managing permissions
 //
 // To run this example, include it in an iOS/macOS app or Swift package.
@@ -32,26 +31,8 @@ struct RegistrationExample {
             print("   Authenticated as: \(identity.did)")
             print()
 
-            // 3. Register an application
-            print("3. Registering application...")
-            let appRequest = AppBuilder(appId: "my-defi-app", name: "My DeFi App")
-                .description("A decentralized finance application")
-                .type(.standard)
-                .owner(identity.did)
-                .build()
-
-            do {
-                let app = try await client.registration.registerApp(appRequest)
-                print("   App registered: \(app.name)")
-                print("   App ID: \(app.appId)")
-                print("   Balance: \(app.balance) CAN")
-            } catch {
-                print("   Note: \(error.localizedDescription)")
-            }
-            print()
-
-            // 4. Create schema for user data
-            print("4. Creating schema for user data...")
+            // 3. Create schema for user data
+            print("3. Creating schema for user data...")
             let userSchema = SchemaBuilder(name: "users")
                 .description("User profiles and balances")
                 .stringField("name", required: true)
@@ -70,11 +51,10 @@ struct RegistrationExample {
             print("   Indexes: \(userSchema.indexes.count)")
             print()
 
-            // 5. Register a subgrove with the schema
-            print("5. Registering subgrove...")
+            // 4. Register a subgrove with the schema
+            print("4. Registering subgrove...")
             let subgroveRequest = SubgroveBuilder(
                 subgroveId: "users",
-                appId: "my-defi-app",
                 name: "User Data"
             )
                 .description("User profiles and account data")
@@ -93,8 +73,8 @@ struct RegistrationExample {
             }
             print()
 
-            // 6. Create another subgrove for transactions
-            print("6. Creating transactions subgrove...")
+            // 5. Create another subgrove for transactions
+            print("5. Creating transactions subgrove...")
             let txSchema = SchemaBuilder(name: "transactions")
                 .stringField("tx_hash", required: true)
                 .stringField("from", required: true)
@@ -110,7 +90,6 @@ struct RegistrationExample {
 
             let txSubgroveRequest = SubgroveBuilder(
                 subgroveId: "transactions",
-                appId: "my-defi-app",
                 name: "Transaction History"
             )
                 .schema(txSchema)
@@ -126,10 +105,10 @@ struct RegistrationExample {
             }
             print()
 
-            // 7. List subgroves
-            print("7. Listing subgroves...")
+            // 6. List subgroves
+            print("6. Listing subgroves...")
             do {
-                let subgroves = try await client.registration.listSubgroves(appId: "my-defi-app")
+                let subgroves = try await client.registration.listSubgroves()
                 print("   Found \(subgroves.count) subgroves:")
                 for subgrove in subgroves {
                     print("   - \(subgrove.name) (items: \(subgrove.itemCount), storage: \(subgrove.storageUsed) bytes)")
@@ -139,8 +118,8 @@ struct RegistrationExample {
             }
             print()
 
-            // 8. Grant permissions
-            print("8. Managing permissions...")
+            // 7. Grant permissions
+            print("7. Managing permissions...")
             // Create another identity for a collaborator
             let collaborator = try newIdentity(algorithm: .ed25519)
             _ = try? await client.registerDID(collaborator.didDocument)
@@ -153,24 +132,10 @@ struct RegistrationExample {
             print("   Permissions can be granted to allow:")
             print("   - Read access to subgroves")
             print("   - Write access to subgroves")
-            print("   - Admin access to apps")
             print()
 
-            // 9. Get app info
-            print("9. Getting app info...")
-            do {
-                let app = try await client.registration.getApp(appId: "my-defi-app")
-                print("   App: \(app.name)")
-                print("   Type: \(app.appType.rawValue)")
-                print("   Balance: \(app.balance) CAN")
-                print("   Created: \(Date(timeIntervalSince1970: TimeInterval(app.createdAt)))")
-            } catch {
-                print("   Note: \(error.localizedDescription)")
-            }
-            print()
-
-            // 10. Clean up
-            print("10. Cleanup...")
+            // 8. Clean up
+            print("8. Cleanup...")
             client.close()
 
             print("Registration example complete!")
