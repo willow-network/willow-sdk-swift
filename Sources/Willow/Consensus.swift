@@ -283,6 +283,38 @@ public struct DataStoreTx: Codable {
     }
 }
 
+/// Deregister (delete) a subgrove transaction.
+/// Remaining funding balance is refunded to the owner.
+public struct DeregisterSubgroveTx: Codable {
+    public var subgroveId: String
+    public var ownerDid: String
+    public var signature: String
+    public var publicKeyId: String
+    public var nonce: Int
+
+    enum CodingKeys: String, CodingKey {
+        case subgroveId = "subgrove_id"
+        case ownerDid = "owner_did"
+        case signature
+        case publicKeyId = "public_key_id"
+        case nonce
+    }
+
+    public init(
+        subgroveId: String,
+        ownerDid: String,
+        signature: String = "",
+        publicKeyId: String,
+        nonce: Int
+    ) {
+        self.subgroveId = subgroveId
+        self.ownerDid = ownerDid
+        self.signature = signature
+        self.publicKeyId = publicKeyId
+        self.nonce = nonce
+    }
+}
+
 // MARK: - Consensus Client
 
 /// CometBFT consensus client for direct transaction broadcasting.
@@ -416,6 +448,30 @@ public class ConsensusClient {
         tx.signature = signatureData.map { String(format: "%02x", $0) }.joined()
 
         return try await broadcastTransaction(txType: "DataStore", transaction: tx)
+    }
+
+    /// Deregister (delete) a subgrove. Remaining funding is refunded to the owner.
+    public func deregisterSubgrove(
+        subgroveId: String,
+        ownerDid: String,
+        privateKey: Data,
+        publicKeyId: String,
+        signFunction: (Data, Data) throws -> Data
+    ) async throws -> BroadcastResult {
+        let nonce = try await getNextNonce(did: ownerDid)
+
+        let signMessage = "DeregisterSubgrove:\(subgroveId):\(ownerDid):\(nonce)"
+        let signatureData = try signFunction(Data(signMessage.utf8), privateKey)
+
+        var tx = DeregisterSubgroveTx(
+            subgroveId: subgroveId,
+            ownerDid: ownerDid,
+            publicKeyId: publicKeyId,
+            nonce: nonce
+        )
+        tx.signature = signatureData.map { String(format: "%02x", $0) }.joined()
+
+        return try await broadcastTransaction(txType: "DeregisterSubgrove", transaction: tx)
     }
 
     // MARK: - Transaction Status
