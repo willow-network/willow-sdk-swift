@@ -13,6 +13,7 @@ public class IndexingOperations {
     // MARK: - GraphQL Queries
 
     /// Executes a GraphQL query against a subgrove.
+    /// When an indexer URL is configured, the query is routed there.
     public func query(subgroveId: String, request: GraphQLRequest) async throws -> GraphQLResponse {
         guard let client = client else { throw NetworkError("Client deallocated") }
 
@@ -22,8 +23,9 @@ public class IndexingOperations {
             requestWithProof.includeProof = true
         }
 
+        let base = client.indexerBaseURL()
         let path = "/graphql/\(subgroveId)"
-        let response: GraphQLResponse = try await client.post(path: path, body: requestWithProof)
+        let response: GraphQLResponse = try await client.postToBase(base: base, path: path, body: requestWithProof)
 
         // Verify proof if available
         if client.hasLightClient(), let proofData = response.proof {
@@ -54,6 +56,7 @@ public class IndexingOperations {
     }
 
     /// Execute a SQL query against a subgrove.
+    /// When an indexer URL is configured, the query is routed there.
     public func sqlQuery(
         subgroveId: String,
         query: String,
@@ -62,8 +65,9 @@ public class IndexingOperations {
         guard let client = client else { throw NetworkError("Client deallocated") }
 
         let request = SqlRequest(query: query, includeProof: includeProof)
+        let base = client.indexerBaseURL()
         let path = "/sql/\(subgroveId)"
-        let response: SqlResponse = try await client.post(path: path, body: request)
+        let response: SqlResponse = try await client.postToBase(base: base, path: path, body: request)
         return response
     }
 

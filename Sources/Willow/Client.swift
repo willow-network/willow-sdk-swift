@@ -5,17 +5,21 @@ import Foundation
 /// Configuration options for the Willow client.
 public struct ClientConfig {
     public let baseURL: URL
+    /// Optional indexer node URL. When set, GraphQL and SQL queries are routed here.
+    public let indexerURL: URL?
     public let timeout: TimeInterval
     public let retryConfig: RetryConfig
     public let autoVerify: Bool
 
     public init(
         baseURL: URL,
+        indexerURL: URL? = nil,
         timeout: TimeInterval = 30,
         retryConfig: RetryConfig = .default,
         autoVerify: Bool = true
     ) {
         self.baseURL = baseURL
+        self.indexerURL = indexerURL
         self.timeout = timeout
         self.retryConfig = retryConfig
         self.autoVerify = autoVerify
@@ -57,12 +61,27 @@ public class WillowClient {
     public let computedFieldRegistry = ComputedFieldRegistry()
 
     /// Creates a new Willow client.
-    public init(baseURL: String, timeout: TimeInterval = 30, autoVerify: Bool = true) throws {
+    /// - Parameters:
+    ///   - baseURL: Base URL of the Willow validator API.
+    ///   - indexerURL: Optional indexer node URL for routing GraphQL/SQL queries.
+    ///   - timeout: Request timeout in seconds.
+    ///   - autoVerify: Whether to automatically verify proofs.
+    public init(baseURL: String, indexerURL: String? = nil, timeout: TimeInterval = 30, autoVerify: Bool = true) throws {
         guard let url = URL(string: baseURL) else {
             throw ConfigError("Invalid base URL: \(baseURL)")
         }
 
-        self.config = ClientConfig(baseURL: url, timeout: timeout, autoVerify: autoVerify)
+        let parsedIndexerURL: URL?
+        if let indexerStr = indexerURL {
+            guard let iURL = URL(string: indexerStr) else {
+                throw ConfigError("Invalid indexer URL: \(indexerStr)")
+            }
+            parsedIndexerURL = iURL
+        } else {
+            parsedIndexerURL = nil
+        }
+
+        self.config = ClientConfig(baseURL: url, indexerURL: parsedIndexerURL, timeout: timeout, autoVerify: autoVerify)
 
         let sessionConfig = URLSessionConfiguration.default
         sessionConfig.timeoutIntervalForRequest = timeout
@@ -213,6 +232,11 @@ public class WillowClient {
         return try await get(path: "/health")
     }
 
+    /// Returns the indexer URL if configured, otherwise the base URL.
+    internal func indexerBaseURL() -> URL {
+        return config.indexerURL ?? config.baseURL
+    }
+
     // MARK: - HTTP Methods
 
     internal func get<T: Decodable>(path: String) async throws -> T {
@@ -225,6 +249,17 @@ public class WillowClient {
 
     internal func post<T: Decodable, B: Encodable>(path: String, body: B) async throws -> T {
         let url = config.baseURL.appendingPathComponent(path)
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try encoder.encode(body)
+        addAuthHeaders(&request, method: "POST", path: path)
+        return try await execute(request)
+    }
+
+    /// Posts to an explicit base URL (used for indexer routing).
+    internal func postToBase<T: Decodable, B: Encodable>(base: URL, path: String, body: B) async throws -> T {
+        let url = base.appendingPathComponent(path)
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
