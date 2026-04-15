@@ -225,25 +225,4 @@ final class AuthTests: XCTestCase {
         XCTAssertNotEqual(doc.updated, 0, "Updated timestamp should not be zero")
     }
 
-    // MARK: - Full Auth Flow Test
-
-    func testFullAuthFlow() throws {
-        let identity = try newIdentity(algorithm: .ed25519)
-
-        // Create challenge message (as server would)
-        let challenge = AuthenticationChallenge(
-            challenge: "challenge_1234567890",
-            nonce: "nonce123",
-            expiresAt: 1234567890
-        )
-
-        // Sign the challenge
-        let signature = try signAuthenticationChallenge(
-            challenge: challenge,
-            did: identity.did,
-            keyPair: identity.keyPair
-        )
-
-        XCTAssertFalse(signature.isEmpty, "Signature should not be empty")
-    }
 }

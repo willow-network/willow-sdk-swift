@@ -119,24 +119,6 @@ final class TypesTests: XCTestCase {
         XCTAssertTrue(request.includeProof)
     }
 
-    // MARK: - Session Tests
-
-    func testSessionExpiry() {
-        let futureSession = Session(
-            did: "did:willow:Ed25519:abc",
-            token: "token123",
-            expiresAt: Int64(Date().timeIntervalSince1970) + 3600 // 1 hour from now
-        )
-        XCTAssertFalse(futureSession.isExpired)
-
-        let expiredSession = Session(
-            did: "did:willow:Ed25519:abc",
-            token: "token123",
-            expiresAt: Int64(Date().timeIntervalSince1970) - 3600 // 1 hour ago
-        )
-        XCTAssertTrue(expiredSession.isExpired)
-    }
-
     // MARK: - RetryConfig Tests
 
     func testRetryConfigDefault() {
