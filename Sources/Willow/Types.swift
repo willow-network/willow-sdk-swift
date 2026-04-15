@@ -689,14 +689,58 @@ public struct SubgroveInfo: Codable {
     }
 }
 
-/// Information about an indexer node.
+/// Information about an indexer node. Matches the validator's
+/// `GET /indexers` response shape.
 public struct IndexerInfo: Codable {
-    public let id: String
-    public let address: String
-    public let stake: UInt64
+    public let indexerDid: String
     public let subgroves: [String]
+    public let stakeAmount: UInt64
+    /// Monitoring / health endpoint (historically also used for queries).
+    public let endpoint: String
+    /// Preferred endpoint for client query traffic (GraphQL/SQL).
+    /// When `nil`, callers should fall back to `endpoint`.
+    /// See ``effectiveQueryEndpoint()``.
+    public let queryEndpoint: String?
     public let status: String
-    public let performance: Double
+    public let performanceScore: Double
+    public let lastUpdate: UInt64
+
+    public init(
+        indexerDid: String,
+        subgroves: [String],
+        stakeAmount: UInt64,
+        endpoint: String,
+        queryEndpoint: String? = nil,
+        status: String,
+        performanceScore: Double,
+        lastUpdate: UInt64
+    ) {
+        self.indexerDid = indexerDid
+        self.subgroves = subgroves
+        self.stakeAmount = stakeAmount
+        self.endpoint = endpoint
+        self.queryEndpoint = queryEndpoint
+        self.status = status
+        self.performanceScore = performanceScore
+        self.lastUpdate = lastUpdate
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case indexerDid = "indexer_did"
+        case subgroves
+        case stakeAmount = "stake_amount"
+        case endpoint
+        case queryEndpoint = "query_endpoint"
+        case status
+        case performanceScore = "performance_score"
+        case lastUpdate = "last_update"
+    }
+
+    /// URL clients should POST GraphQL/SQL queries to. Prefers `queryEndpoint`
+    /// when non-nil; falls back to `endpoint` otherwise.
+    public func effectiveQueryEndpoint() -> String {
+        return queryEndpoint ?? endpoint
+    }
 }
 
 // MARK: - Health Types
