@@ -25,6 +25,13 @@ final class SubscriptionsTests: XCTestCase {
         XCTAssertNil(opts.variables)
         XCTAssertNil(opts.operationName)
         XCTAssertNil(opts.connectionPayload)
+        // Reconnect defaults should match the other SDKs: on by default,
+        // unbounded attempts, 500ms → 30s backoff.
+        XCTAssertTrue(opts.reconnect)
+        XCTAssertNil(opts.maxReconnectAttempts)
+        XCTAssertEqual(opts.reconnectBackoff, 0.5, accuracy: 0.001)
+        XCTAssertEqual(opts.maxReconnectBackoff, 30.0, accuracy: 0.001)
+        XCTAssertNil(opts.onReconnect)
     }
 
     func testSubscribeOptionsCustom() {
@@ -38,6 +45,19 @@ final class SubscriptionsTests: XCTestCase {
         XCTAssertEqual(opts.variables?["a"] as? String, "hello")
         XCTAssertEqual(opts.operationName, "Foo")
         XCTAssertEqual(opts.connectionPayload?["auth"] as? String, "token")
+    }
+
+    func testSubscribeOptionsReconnectCustom() {
+        let opts = SubscribeOptions(
+            reconnect: false,
+            maxReconnectAttempts: 3,
+            reconnectBackoff: 0.25,
+            maxReconnectBackoff: 10.0
+        )
+        XCTAssertFalse(opts.reconnect)
+        XCTAssertEqual(opts.maxReconnectAttempts, 3)
+        XCTAssertEqual(opts.reconnectBackoff, 0.25, accuracy: 0.001)
+        XCTAssertEqual(opts.maxReconnectBackoff, 10.0, accuracy: 0.001)
     }
 
     // MARK: - Discovery failure paths
