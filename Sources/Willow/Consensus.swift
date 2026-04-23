@@ -586,14 +586,45 @@ public class ConsensusClient {
     }
 
     private func broadcastTransaction<T: Encodable>(txType: String, transaction: T) async throws -> BroadcastResult {
-        let wrapper = [txType: transaction]
-        let txData = try JSONEncoder().encode(wrapper)
-        let txBase64 = txData.base64EncodedString()
+        // Submit through the API server's /tx/submit endpoint: it accepts
+        // JSON, bincode-encodes, and forwards to CometBFT. The chain's
+        // on-the-wire format is bincode (docs/todo/proposal-bincode-wire.md).
+        guard let apiUrl = config.apiUrl, !apiUrl.isEmpty else {
+            throw ConsensusClientError("apiUrl is required for transaction submission")
+        }
 
-        let result = try await rpcRequest(method: "broadcast_tx_sync", params: ["tx": txBase64])
+        let wrapper = [txType: transaction]
+        let body = try JSONEncoder().encode(wrapper)
+
+        let trimmed = apiUrl.hasSuffix("/") ? String(apiUrl.dropLast()) : apiUrl
+        guard let url = URL(string: "\(trimmed)/tx/submit") else {
+            throw ConsensusClientError("Invalid API URL for /tx/submit")
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = body
+
+        let (data, response) = try await session.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw ConsensusClientError("Invalid response")
+        }
+
+        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw ConsensusClientError("Invalid JSON in /tx/submit response")
+        }
+
+        let success = json["success"] as? Bool ?? false
+        guard success, let result = json["data"] as? [String: Any] else {
+            let errMsg = (json["error"] as? String) ?? "HTTP \(httpResponse.statusCode)"
+            return BroadcastResult(
+                success: false, txHash: nil, errorCode: nil, errorMessage: errMsg, rawLog: errMsg
+            )
+        }
 
         let code = result["code"] as? Int ?? 0
-        let hash = result["hash"] as? String
+        let hash = result["tx_hash"] as? String
         let log = result["log"] as? String
 
         return BroadcastResult(
