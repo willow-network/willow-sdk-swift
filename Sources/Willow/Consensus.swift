@@ -78,7 +78,7 @@ public struct BroadcastResult {
 /// DID registration transaction.
 public struct RegisterDidTx: Codable {
     public var didDocument: [String: AnyCodable]
-    public var signature: String
+    public var signature: [UInt8]
     public var publicKeyId: String
     public var nonce: Int
 
@@ -89,7 +89,7 @@ public struct RegisterDidTx: Codable {
         case nonce
     }
 
-    public init(didDocument: [String: AnyCodable], signature: String = "", publicKeyId: String, nonce: Int) {
+    public init(didDocument: [String: AnyCodable], signature: [UInt8] = [], publicKeyId: String, nonce: Int) {
         self.didDocument = didDocument
         self.signature = signature
         self.publicKeyId = publicKeyId
@@ -169,7 +169,7 @@ public struct RegisterSubgroveTx: Codable {
     public var ownerDid: String
     public var mode: SubgroveMode?
     public var retentionWindow: RetentionWindow?
-    public var signature: String
+    public var signature: [UInt8]
     public var publicKeyId: String
     public var nonce: Int
 
@@ -190,7 +190,7 @@ public struct RegisterSubgroveTx: Codable {
         ownerDid: String,
         mode: SubgroveMode? = nil,
         retentionWindow: RetentionWindow? = nil,
-        signature: String = "",
+        signature: [UInt8] = [],
         publicKeyId: String,
         nonce: Int
     ) {
@@ -211,7 +211,7 @@ public struct TransferTx: Codable {
     public var toDid: String
     public var amount: Int64
     public var memo: String?
-    public var signature: String
+    public var signature: [UInt8]
     public var publicKeyId: String
     public var nonce: Int
 
@@ -230,7 +230,7 @@ public struct TransferTx: Codable {
         toDid: String,
         amount: Int64,
         memo: String? = nil,
-        signature: String = "",
+        signature: [UInt8] = [],
         publicKeyId: String,
         nonce: Int
     ) {
@@ -250,7 +250,7 @@ public struct DataStoreTx: Codable {
     public var key: String
     public var data: String
     public var ownerDid: String
-    public var signature: String
+    public var signature: [UInt8]
     public var publicKeyId: String
     public var nonce: Int
 
@@ -269,7 +269,7 @@ public struct DataStoreTx: Codable {
         key: String,
         data: String,
         ownerDid: String,
-        signature: String = "",
+        signature: [UInt8] = [],
         publicKeyId: String,
         nonce: Int
     ) {
@@ -288,7 +288,7 @@ public struct DataStoreTx: Codable {
 public struct DeregisterSubgroveTx: Codable {
     public var subgroveId: String
     public var ownerDid: String
-    public var signature: String
+    public var signature: [UInt8]
     public var publicKeyId: String
     public var nonce: Int
 
@@ -303,7 +303,7 @@ public struct DeregisterSubgroveTx: Codable {
     public init(
         subgroveId: String,
         ownerDid: String,
-        signature: String = "",
+        signature: [UInt8] = [],
         publicKeyId: String,
         nonce: Int
     ) {
@@ -356,7 +356,7 @@ public class ConsensusClient {
         // Create sign message and sign
         let signMessage = createSignMessage(txType: "RegisterDid", didDocument: didDocument)
         let signatureData = try signFunction(Data(signMessage.utf8), privateKey)
-        tx.signature = signatureData.map { String(format: "%02x", $0) }.joined()
+        tx.signature = Array(signatureData)
 
         return try await broadcastTransaction(txType: "RegisterDid", transaction: tx)
     }
@@ -386,7 +386,7 @@ public class ConsensusClient {
 
         let signMessage = createSignMessageForSubgrove(tx: tx)
         let signatureData = try signFunction(Data(signMessage.utf8), privateKey)
-        tx.signature = signatureData.map { String(format: "%02x", $0) }.joined()
+        tx.signature = Array(signatureData)
 
         return try await broadcastTransaction(txType: "RegisterSubgrove", transaction: tx)
     }
@@ -414,7 +414,7 @@ public class ConsensusClient {
 
         let signMessage = createSignMessageForTransfer(tx: tx)
         let signatureData = try signFunction(Data(signMessage.utf8), privateKey)
-        tx.signature = signatureData.map { String(format: "%02x", $0) }.joined()
+        tx.signature = Array(signatureData)
 
         return try await broadcastTransaction(txType: "Transfer", transaction: tx)
     }
@@ -445,7 +445,7 @@ public class ConsensusClient {
 
         let signMessage = createSignMessageForDataStore(tx: tx)
         let signatureData = try signFunction(Data(signMessage.utf8), privateKey)
-        tx.signature = signatureData.map { String(format: "%02x", $0) }.joined()
+        tx.signature = Array(signatureData)
 
         return try await broadcastTransaction(txType: "DataStore", transaction: tx)
     }
@@ -469,7 +469,7 @@ public class ConsensusClient {
             publicKeyId: publicKeyId,
             nonce: nonce
         )
-        tx.signature = signatureData.map { String(format: "%02x", $0) }.joined()
+        tx.signature = Array(signatureData)
 
         return try await broadcastTransaction(txType: "DeregisterSubgrove", transaction: tx)
     }
