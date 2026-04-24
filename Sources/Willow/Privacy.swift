@@ -150,7 +150,7 @@ public struct GrantSubgroveKeyTx: Codable {
     public var subgroveId: String
     public var encryptedKeyGrant: EncryptedKeyGrant
     public var senderDid: String
-    public var signature: String
+    public var signature: [UInt8]
     public var publicKeyId: String
     public var nonce: Int
 
@@ -167,7 +167,7 @@ public struct GrantSubgroveKeyTx: Codable {
         subgroveId: String,
         encryptedKeyGrant: EncryptedKeyGrant,
         senderDid: String,
-        signature: String = "",
+        signature: [UInt8] = [],
         publicKeyId: String,
         nonce: Int
     ) {
@@ -185,7 +185,7 @@ public struct RevokeSubgroveKeyTx: Codable {
     public var subgroveId: String
     public var revokeeDid: String
     public var senderDid: String
-    public var signature: String
+    public var signature: [UInt8]
     public var publicKeyId: String
     public var nonce: Int
 
@@ -202,7 +202,7 @@ public struct RevokeSubgroveKeyTx: Codable {
         subgroveId: String,
         revokeeDid: String,
         senderDid: String,
-        signature: String = "",
+        signature: [UInt8] = [],
         publicKeyId: String,
         nonce: Int
     ) {
@@ -221,7 +221,7 @@ public struct RotateSubgroveKeyTx: Codable {
     public var newEpoch: UInt32
     public var newGrants: [EncryptedKeyGrant]
     public var senderDid: String
-    public var signature: String
+    public var signature: [UInt8]
     public var publicKeyId: String
     public var nonce: Int
 
@@ -240,7 +240,7 @@ public struct RotateSubgroveKeyTx: Codable {
         newEpoch: UInt32,
         newGrants: [EncryptedKeyGrant],
         senderDid: String,
-        signature: String = "",
+        signature: [UInt8] = [],
         publicKeyId: String,
         nonce: Int
     ) {
@@ -403,7 +403,7 @@ public class PrivacyOperations {
             publicKeyId: identity.publicKeyId,
             nonce: nonce
         )
-        tx.signature = signatureData.map { String(format: "%02x", $0) }.joined()
+        tx.signature = Array(signatureData)
 
         return try await consensus.broadcastPrivacyTransaction(txType: "GrantSubgroveKey", transaction: tx)
     }
@@ -444,7 +444,7 @@ public class PrivacyOperations {
             publicKeyId: identity.publicKeyId,
             nonce: nonce
         )
-        tx.signature = signatureData.map { String(format: "%02x", $0) }.joined()
+        tx.signature = Array(signatureData)
 
         return try await consensus.broadcastPrivacyTransaction(txType: "RevokeSubgroveKey", transaction: tx)
     }
@@ -490,7 +490,7 @@ public class PrivacyOperations {
             publicKeyId: identity.publicKeyId,
             nonce: nonce
         )
-        tx.signature = signatureData.map { String(format: "%02x", $0) }.joined()
+        tx.signature = Array(signatureData)
 
         return try await consensus.broadcastPrivacyTransaction(txType: "RotateSubgroveKey", transaction: tx)
     }
