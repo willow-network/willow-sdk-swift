@@ -42,14 +42,10 @@ struct BasicUsageExample {
             }
             print()
 
-            // 4. Authenticate
-            print("4. Authenticating...")
-            do {
-                let session = try await client.authenticate(identity)
-                print("   Authenticated successfully (expires: \(session.expiresAt))")
-            } catch {
-                print("   Note: \(error.localizedDescription)")
-            }
+            // 4. Set identity for per-request signing (synchronous; no server session).
+            print("4. Setting identity...")
+            client.setIdentity(identity)
+            print("   Identity set — every write is signed with this key")
             print()
 
             // 5. Store data (requires an existing app and subgrove)

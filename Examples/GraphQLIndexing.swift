@@ -151,20 +151,12 @@ struct GraphQLIndexingExample {
             }
             print()
 
-            // 6. Compare with The Graph
-            print("6. Comparison with The Graph:")
+            // 6. Summary
+            print("6. Summary:")
             print()
-            print("   Traditional (The Graph):")
-            print("   - Decentralized indexing network")
-            print("   - Trust in indexer reputation + staking")
-            print("   - No cryptographic verification of results")
-            print("   - Disputes resolved post-hoc")
-            print()
-            print("   Willow Protocol:")
-            print("   - Cryptographic proof for EVERY query")
-            print("   - Results verifiable against blockchain state")
-            print("   - 50-100x faster query performance")
-            print("   - Trustless by default, not by reputation")
+            print("   - Cryptographic proof attached to every query")
+            print("   - Results verifiable against consensus app_hash")
+            print("   - Trustless verification via the light client")
             print()
 
             // Clean up

@@ -108,39 +108,30 @@ class AppState: ObservableObject {
         let identity = try newIdentity(algorithm: .ed25519)
         let client = try getClient()
 
-        // Register DID
+        // Register DID + set identity for per-request signing (synchronous).
         _ = try await client.registerDID(identity.didDocument)
+        client.setIdentity(identity)
 
-        // Authenticate
-        _ = try await client.authenticate(identity)
-
-        // Save credentials
-        UserDefaults.standard.set(identity.privateKeyHex, forKey: "willow_private_key")
+        // Save credentials. In a real app, prefer Keychain over UserDefaults.
+        UserDefaults.standard.set(identity.keyPair.privateKeyHex, forKey: "willow_private_key")
         UserDefaults.standard.set(identity.did, forKey: "willow_did")
 
-        privateKey = identity.privateKeyHex
+        privateKey = identity.keyPair.privateKeyHex
         currentDID = identity.did
         isAuthenticated = true
 
-        return (identity.did, identity.privateKeyHex)
+        return (identity.did, identity.keyPair.privateKeyHex)
     }
 
     func login(with privateKeyHex: String) async throws {
-        let identity = try identityFromPrivateKey(privateKeyHex: privateKeyHex, algorithm: .ed25519)
+        let identity = try identityFromPrivateKey(algorithm: .ed25519, privateKeyHex: privateKeyHex)
         let client = try getClient()
 
-        // Try to get DID document (may already be registered)
-        do {
-            _ = try await client.getDID(identity.did)
-        } catch {
-            // Register if not found
-            _ = try await client.registerDID(identity.didDocument)
-        }
+        // registerDID is idempotent server-side, so we just try it and ignore
+        // a "DID already exists" error rather than probing first.
+        _ = try? await client.registerDID(identity.didDocument)
+        client.setIdentity(identity)
 
-        // Authenticate
-        _ = try await client.authenticate(identity)
-
-        // Save credentials
         UserDefaults.standard.set(privateKeyHex, forKey: "willow_private_key")
         UserDefaults.standard.set(identity.did, forKey: "willow_did")
 
@@ -178,39 +169,40 @@ class AppState: ObservableObject {
     }
 
     func setupApp() async throws {
-        guard let did = currentDID else { throw WillowError.notAuthenticated }
+        guard let did = currentDID else { throw AuthenticationError("Not authenticated") }
         let client = try getClient()
 
-        // Create notes collection with schema
+        // Notes schema: fields are an [SchemaField] array (each with its own name).
         let schema = SchemaDefinition(
-            version: 1,
+            name: "notes",
+            description: "User notes",
             fields: [
-                "id": FieldDefinition(type: .string, indexed: true, required: true),
-                "title": FieldDefinition(type: .string, indexed: true, required: true),
-                "content": FieldDefinition(type: .string, indexed: false, required: false),
-                "category": FieldDefinition(type: .string, indexed: true, required: false),
-                "tags": FieldDefinition(type: .array, indexed: true, required: false),
-                "created": FieldDefinition(type: .number, indexed: true, required: false),
-                "updated": FieldDefinition(type: .number, indexed: true, required: false),
-                "pinned": FieldDefinition(type: .boolean, indexed: true, required: false)
+                SchemaField(name: "id", type: "string", required: true, indexed: true),
+                SchemaField(name: "title", type: "string", required: true, indexed: true),
+                SchemaField(name: "content", type: "string", required: false, indexed: false),
+                SchemaField(name: "category", type: "string", required: false, indexed: true),
+                SchemaField(name: "tags", type: "array", required: false, indexed: true),
+                SchemaField(name: "created", type: "number", required: false, indexed: true),
+                SchemaField(name: "updated", type: "number", required: false, indexed: true),
+                SchemaField(name: "pinned", type: "boolean", required: false, indexed: true),
             ],
             indexes: [
                 IndexDefinition(name: "by_category", fields: ["category"], type: .hash),
-                IndexDefinition(name: "by_updated", fields: ["updated"], type: .range)
-            ],
-            requiredFields: ["id", "title"]
+                IndexDefinition(name: "by_updated", fields: ["updated"], type: .range),
+            ]
         )
 
-        let datasetRequest = RegisterDatasetRequest(
-            datasetId: collectionId,
+        let request = RegisterSubgroveRequest(
+            subgroveId: collectionId,
             name: "Notes",
-            datasetPath: ["collections"],
+            description: "Per-user notes",
             schema: schema,
             ownerDid: did,
             writers: [did],
-            readers: []
+            readers: [],
+            rewardRate: 0
         )
-        _ = try await client.registration.registerDataset(datasetRequest)
+        _ = try await client.registration.registerSubgrove(request)
 
         subgroveRegistered = true
         currentScreen = .main
@@ -223,7 +215,7 @@ class AppState: ObservableObject {
         do {
             let client = try getClient()
             if let balanceInfo = try? await client.token.getBalance(did: did) {
-                balance = balanceInfo.available
+                balance = Double(balanceInfo.available)
             }
         } catch {
             // Silently fail - balances are optional display

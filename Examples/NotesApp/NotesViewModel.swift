@@ -71,9 +71,9 @@ class NotesViewModel: ObservableObject {
             )
 
             var loadedNotes: [Note] = []
-            for doc in response.documents {
-                if let dict = doc as? [String: Any],
-                   let note = Note.fromDictionary(dict) {
+            for result in response.results {
+                let dict = result.data.mapValues { $0.value }
+                if let note = Note.fromDictionary(dict) {
                     loadedNotes.append(note)
                 }
             }

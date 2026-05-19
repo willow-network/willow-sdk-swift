@@ -27,7 +27,7 @@ struct RegistrationExample {
             print("2. Generating and registering identity...")
             let identity = try newIdentity(algorithm: .ed25519)
             _ = try? await client.registerDID(identity.didDocument)
-            _ = try await client.authenticate(identity)
+            client.setIdentity(identity)
             print("   Authenticated as: \(identity.did)")
             print()
 
@@ -60,14 +60,14 @@ struct RegistrationExample {
                 .description("User profiles and account data")
                 .schema(userSchema)
                 .owner(identity.did)
-                .rewardRate(1000) // 1000 CAN per epoch for indexers
+                .rewardRate(1000) // 1000 WILL per epoch for indexers
                 .build()
 
             do {
                 let subgrove = try await client.registration.registerSubgrove(subgroveRequest)
                 print("   Subgrove registered: \(subgrove.name)")
                 print("   Subgrove ID: \(subgrove.subgroveId)")
-                print("   Reward rate: \(subgrove.rewardRate ?? 0) CAN/epoch")
+                print("   Reward rate: \(subgrove.rewardRate ?? 0) WILL/epoch")
             } catch {
                 print("   Note: \(error.localizedDescription)")
             }
