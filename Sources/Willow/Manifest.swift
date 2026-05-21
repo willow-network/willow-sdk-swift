@@ -3,11 +3,10 @@
 // Mirrors willow_types::consensus::manifest::WillowManifest in the Rust
 // workspace. The consensus validator rejects any manifest_content that
 // doesn't decode into this exact shape, so SDK callers should build
-// their on-chain manifest bytes via `serializeManifest(_:)`.
-//
-// v1 scope is EVM-only. Solana data sources have a different shape
-// (program_id + start_slot + instructions) and follow when there's a
-// real Swift consumer.
+// their on-chain manifest bytes via `serializeManifest(_:)`. Each data
+// source is either EVM (address + abi + startBlock + events) or Solana
+// (programID + startSlot + instructions); the family is dispatched at
+// parse time from the `network` field.
 
 import Foundation
 
@@ -157,11 +156,107 @@ extension EvmDataSource: Codable {
     }
 }
 
+/// One indexed Solana program within a manifest.
+public struct SolanaDataSource: Sendable, Equatable {
+    public var name: String
+    public var network: SupportedChain
+    public var programID: String  // base58-encoded 32-byte pubkey
+    public var startSlot: UInt64
+    public var instructions: [String]  // each 0x + even hex chars (>= 2)
+
+    enum CodingKeys: String, CodingKey {
+        case name, network
+        case programID = "program_id"
+        case startSlot = "start_slot"
+        case instructions
+    }
+
+    static let allowedKeys: Set<String> = [
+        "name", "network", "program_id", "start_slot", "instructions",
+    ]
+
+    public init(
+        name: String,
+        network: SupportedChain,
+        programID: String,
+        startSlot: UInt64,
+        instructions: [String]
+    ) {
+        self.name = name
+        self.network = network
+        self.programID = programID
+        self.startSlot = startSlot
+        self.instructions = instructions
+    }
+}
+
+extension SolanaDataSource: Codable {
+    public init(from decoder: Decoder) throws {
+        try rejectUnknownKeys(decoder, allowed: Self.allowedKeys, path: "data_sources[?]")
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.name = try c.decode(String.self, forKey: .name)
+        self.network = try c.decode(SupportedChain.self, forKey: .network)
+        self.programID = try c.decode(String.self, forKey: .programID)
+        self.startSlot = try c.decode(UInt64.self, forKey: .startSlot)
+        self.instructions = try c.decode([String].self, forKey: .instructions)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(name, forKey: .name)
+        try c.encode(network, forKey: .network)
+        try c.encode(programID, forKey: .programID)
+        try c.encode(startSlot, forKey: .startSlot)
+        try c.encode(instructions, forKey: .instructions)
+    }
+}
+
+/// One data source in a manifest. Dispatched at parse time by `network`.
+public enum DataSource: Sendable, Equatable {
+    case evm(EvmDataSource)
+    case solana(SolanaDataSource)
+
+    var network: SupportedChain {
+        switch self {
+        case .evm(let d): return d.network
+        case .solana(let d): return d.network
+        }
+    }
+
+    var name: String {
+        switch self {
+        case .evm(let d): return d.name
+        case .solana(let d): return d.name
+        }
+    }
+}
+
+extension DataSource: Codable {
+    private struct NetworkHint: Decodable {
+        let network: SupportedChain
+    }
+
+    public init(from decoder: Decoder) throws {
+        let hint = try NetworkHint(from: decoder)
+        switch hint.network.family {
+        case .evm: self = .evm(try EvmDataSource(from: decoder))
+        case .solana: self = .solana(try SolanaDataSource(from: decoder))
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        switch self {
+        case .evm(let d): try d.encode(to: encoder)
+        case .solana(let d): try d.encode(to: encoder)
+        }
+    }
+}
+
 /// Canonical manifest for `BlockchainIndexing` subgroves.
 public struct WillowManifest: Sendable, Equatable {
     public var specVersion: String
     public var description: String?
-    public var dataSources: [EvmDataSource]
+    public var dataSources: [DataSource]
 
     enum CodingKeys: String, CodingKey {
         case specVersion = "spec_version"
@@ -176,7 +271,7 @@ public struct WillowManifest: Sendable, Equatable {
     public init(
         specVersion: String = manifestSpecVersion,
         description: String? = nil,
-        dataSources: [EvmDataSource] = []
+        dataSources: [DataSource] = []
     ) {
         self.specVersion = specVersion
         self.description = description
@@ -190,7 +285,7 @@ extension WillowManifest: Codable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         self.specVersion = try c.decode(String.self, forKey: .specVersion)
         self.description = try c.decodeIfPresent(String.self, forKey: .description)
-        self.dataSources = try c.decode([EvmDataSource].self, forKey: .dataSources)
+        self.dataSources = try c.decode([DataSource].self, forKey: .dataSources)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -223,10 +318,30 @@ private let addressRegex = try! NSRegularExpression(pattern: "^0x[0-9a-fA-F]{40}
 private let nameRegex = try! NSRegularExpression(pattern: "^[A-Za-z0-9_-]+$")
 private let eventNameRegex = try! NSRegularExpression(pattern: "^[A-Za-z_][A-Za-z0-9_]*$")
 private let eventParamRegex = try! NSRegularExpression(pattern: "^[A-Za-z0-9_\\[\\]]+$")
+private let discriminatorRegex = try! NSRegularExpression(pattern: "^0x([0-9a-fA-F]{2})+$")
+
+private let base58Alphabet: Set<Character> = Set(
+    "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz")
 
 private func matches(_ regex: NSRegularExpression, _ s: String) -> Bool {
     let range = NSRange(s.startIndex..., in: s)
     return regex.firstMatch(in: s, options: [], range: range) != nil
+}
+
+private func validateName(_ name: String, path: String) throws {
+    if name.isEmpty {
+        throw ManifestValidationError("\(path).name must not be empty", field: "\(path).name")
+    }
+    if name.count > maxNameLen {
+        throw ManifestValidationError(
+            "\(path).name length \(name.count) exceeds maximum \(maxNameLen)",
+            field: "\(path).name")
+    }
+    if !matches(nameRegex, name) {
+        throw ManifestValidationError(
+            "\(path).name \"\(name)\" must be alphanumeric, '-', or '_'",
+            field: "\(path).name")
+    }
 }
 
 private func validateEventSignature(_ sig: String, path: String) throws {
@@ -256,23 +371,11 @@ private func validateEventSignature(_ sig: String, path: String) throws {
     }
 }
 
-private func validateDataSource(_ ds: EvmDataSource, path: String) throws {
-    if ds.name.isEmpty {
-        throw ManifestValidationError("\(path).name must not be empty", field: "\(path).name")
-    }
-    if ds.name.count > maxNameLen {
-        throw ManifestValidationError(
-            "\(path).name length \(ds.name.count) exceeds maximum \(maxNameLen)",
-            field: "\(path).name")
-    }
-    if !matches(nameRegex, ds.name) {
-        throw ManifestValidationError(
-            "\(path).name \"\(ds.name)\" must be alphanumeric, '-', or '_'",
-            field: "\(path).name")
-    }
+private func validateEvmDataSource(_ ds: EvmDataSource, path: String) throws {
+    try validateName(ds.name, path: path)
     if ds.network.family != .evm {
         throw ManifestValidationError(
-            "\(path).network \"\(ds.network.rawValue)\" is non-EVM; Solana data sources have a different shape and are not yet supported by this builder",
+            "\(path).network \"\(ds.network.rawValue)\" is \(ds.network.family.rawValue)-family but data source is evm",
             field: "\(path).network")
     }
     if !matches(addressRegex, ds.address) {
@@ -303,6 +406,42 @@ private func validateDataSource(_ ds: EvmDataSource, path: String) throws {
     }
 }
 
+private func validateSolanaDataSource(_ ds: SolanaDataSource, path: String) throws {
+    try validateName(ds.name, path: path)
+    if ds.network.family != .solana {
+        throw ManifestValidationError(
+            "\(path).network \"\(ds.network.rawValue)\" is \(ds.network.family.rawValue)-family but data source is solana",
+            field: "\(path).network")
+    }
+    if ds.programID.isEmpty || ds.programID.count < 32 || ds.programID.count > 44 {
+        throw ManifestValidationError(
+            "\(path).program_id must be a base58-encoded 32-byte pubkey (got \"\(ds.programID)\")",
+            field: "\(path).program_id")
+    }
+    for c in ds.programID where !base58Alphabet.contains(c) {
+        throw ManifestValidationError(
+            "\(path).program_id contains invalid base58 character \"\(c)\"",
+            field: "\(path).program_id")
+    }
+    if ds.instructions.isEmpty {
+        throw ManifestValidationError(
+            "\(path).instructions must declare at least one discriminator",
+            field: "\(path).instructions")
+    }
+    if ds.instructions.count > maxEventsPerSource {
+        throw ManifestValidationError(
+            "\(path).instructions has \(ds.instructions.count) entries (maximum \(maxEventsPerSource))",
+            field: "\(path).instructions")
+    }
+    for (i, d) in ds.instructions.enumerated() {
+        if !matches(discriminatorRegex, d) {
+            throw ManifestValidationError(
+                "\(path).instructions[\(i)] must be 0x + an even, non-zero number of hex chars (got \"\(d)\")",
+                field: "\(path).instructions[\(i)]")
+        }
+    }
+}
+
 /// Apply every canonical-schema check. Same rules as
 /// `WillowManifest::from_bytes` + `validate()` in willow-types.
 public func validateManifest(_ m: WillowManifest) throws {
@@ -327,23 +466,27 @@ public func validateManifest(_ m: WillowManifest) throws {
             field: "data_sources")
     }
     for (i, ds) in m.dataSources.enumerated() {
-        try validateDataSource(ds, path: "data_sources[\(i)]")
+        switch ds {
+        case .evm(let d): try validateEvmDataSource(d, path: "data_sources[\(i)]")
+        case .solana(let d): try validateSolanaDataSource(d, path: "data_sources[\(i)]")
+        }
     }
 }
 
 /// Validate and serialize to the canonical JSON byte form that goes
 /// on-chain via `SubgroveMode.BlockchainIndexing.manifest_content`.
-///
-/// EVM addresses are normalised to lowercase so the emitted bytes
-/// round-trip bit-for-bit with what `WillowManifest::from_bytes`
-/// produces in Rust.
 public func serializeManifest(_ m: WillowManifest) throws -> Data {
     try validateManifest(m)
     var normalized = m
-    normalized.dataSources = m.dataSources.map {
-        var ds = $0
-        ds.address = ds.address.lowercased()
-        return ds
+    normalized.dataSources = m.dataSources.map { ds -> DataSource in
+        switch ds {
+        case .evm(var d):
+            d.address = d.address.lowercased()
+            return .evm(d)
+        case .solana(var d):
+            d.instructions = d.instructions.map { $0.lowercased() }
+            return .solana(d)
+        }
     }
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.sortedKeys]
