@@ -411,10 +411,9 @@ public actor WillowSubscriptions {
                 return
             }
 
-            // Reset the retry counter only when the just-ended connection
-            // actually delivered data. Without this rule, a server that
-            // accepts the subscription but immediately drops the socket
-            // would reset the counter on every cycle and loop forever.
+            // Reset the retry counter only on connections that delivered
+            // data — otherwise a server that accepts then immediately drops
+            // would loop forever.
             if exit.deliveredPayload {
                 attempts = 0
             }
