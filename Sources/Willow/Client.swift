@@ -10,19 +10,27 @@ public struct ClientConfig {
     public let timeout: TimeInterval
     public let retryConfig: RetryConfig
     public let autoVerify: Bool
+    /// Managed-tier API key (`wk_…`). When set, the SDK sends
+    /// `X-API-Key: <apiKey>` on every request via the URLSession's
+    /// `httpAdditionalHeaders`. Mint a key at
+    /// https://dashboard.willow.tech/account. Required for queries and
+    /// writes against managed `api.willow.tech` / `indexer.willow.tech`.
+    public let apiKey: String?
 
     public init(
         baseURL: URL,
         indexerURL: URL? = nil,
         timeout: TimeInterval = 30,
         retryConfig: RetryConfig = .default,
-        autoVerify: Bool = true
+        autoVerify: Bool = true,
+        apiKey: String? = nil
     ) {
         self.baseURL = baseURL
         self.indexerURL = indexerURL
         self.timeout = timeout
         self.retryConfig = retryConfig
         self.autoVerify = autoVerify
+        self.apiKey = apiKey
     }
 }
 
@@ -66,7 +74,7 @@ public class WillowClient {
     ///   - indexerURL: Optional indexer node URL for routing GraphQL/SQL queries.
     ///   - timeout: Request timeout in seconds.
     ///   - autoVerify: Whether to automatically verify proofs.
-    public init(baseURL: String, indexerURL: String? = nil, timeout: TimeInterval = 30, autoVerify: Bool = true) throws {
+    public init(baseURL: String, indexerURL: String? = nil, timeout: TimeInterval = 30, autoVerify: Bool = true, apiKey: String? = nil) throws {
         guard let url = URL(string: baseURL) else {
             throw ConfigError("Invalid base URL: \(baseURL)")
         }
@@ -81,11 +89,14 @@ public class WillowClient {
             parsedIndexerURL = nil
         }
 
-        self.config = ClientConfig(baseURL: url, indexerURL: parsedIndexerURL, timeout: timeout, autoVerify: autoVerify)
+        self.config = ClientConfig(baseURL: url, indexerURL: parsedIndexerURL, timeout: timeout, autoVerify: autoVerify, apiKey: apiKey)
 
         let sessionConfig = URLSessionConfiguration.default
         sessionConfig.timeoutIntervalForRequest = timeout
         sessionConfig.timeoutIntervalForResource = timeout * 2
+        if let apiKey = apiKey {
+            sessionConfig.httpAdditionalHeaders = ["X-API-Key": apiKey]
+        }
         self.session = URLSession(configuration: sessionConfig)
 
         self.encoder = JSONEncoder()
