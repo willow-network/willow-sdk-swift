@@ -178,12 +178,9 @@ public class DataOperations {
     // MARK: - Proof Verification
 
     private func verifyProof(_ proofData: Data, client: WillowClient) async throws {
-        // Always use light client for trustless verification.
-        // This auto-initializes the light client on first use (trust-on-first-use).
-        //
-        // TODO: When mainnet/testnet launches, the light client should be initialized
-        // with hardcoded checkpoint headers instead of trust-on-first-use for true
-        // trustless verification from the start.
+        // Always verify through the light client; auto-initialized via
+        // trust-on-first-use on first call. Pin a known-good checkpoint
+        // header in production deployments.
         let lc = try await client.getOrCreateLightClient()
         let expectedRootHash = try await lc.getVerifiedRootHash()
 

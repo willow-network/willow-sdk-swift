@@ -120,14 +120,9 @@ public class WillowClient {
 
     /// Gets or creates the light client for trustless verification.
     ///
-    /// This method auto-initializes a light client using trust-on-first-use:
-    /// the first block received from the node is trusted, and all subsequent
-    /// blocks are verified against it.
-    ///
-    /// - Important: TODO: When mainnet/testnet launches, replace trust-on-first-use
-    ///   with hardcoded checkpoint headers for true trustless initialization.
-    ///   Trust-on-first-use is secure for subsequent operations but trusts the
-    ///   initial block from the connected node.
+    /// Trust-on-first-use bootstrap: the first verified header is trusted,
+    /// and every subsequent header chains from it cryptographically. Pin a
+    /// known-good checkpoint header in production deployments.
     public func getOrCreateLightClient() async throws -> LightClient {
         // Return existing light client if available
         if let existing = lightClient {
@@ -141,9 +136,6 @@ public class WillowClient {
 
         // Start initialization
         let task = Task<LightClient, Error> {
-            // Auto-initialize light client
-            // TODO: When mainnet/testnet launches, use hardcoded checkpoint headers
-            // instead of trust-on-first-use for true trustless initialization from genesis.
             let lightClientConfig = LightClientConfig(
                 chainId: "willow-chain",
                 validatorEndpoints: [config.baseURL.absoluteString.replacingOccurrences(of: ":3031", with: ":26657")],

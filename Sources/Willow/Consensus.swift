@@ -588,7 +588,7 @@ public class ConsensusClient {
     private func broadcastTransaction<T: Encodable>(txType: String, transaction: T) async throws -> BroadcastResult {
         // Submit through the API server's /tx/submit endpoint: it accepts
         // JSON, bincode-encodes, and forwards to CometBFT. The chain's
-        // on-the-wire format is bincode (docs/todo/proposal-bincode-wire.md).
+        // on-the-wire format is bincode.
         guard let apiUrl = config.apiUrl, !apiUrl.isEmpty else {
             throw ConsensusClientError("apiUrl is required for transaction submission")
         }
