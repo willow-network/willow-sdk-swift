@@ -1,6 +1,6 @@
 # Willow Swift SDK
 
-A Swift SDK for interacting with the [Willow](https://github.com/willow-network/willow) decentralized data infrastructure protocol. Targets iOS 15+, macOS 12+, tvOS 15+, and watchOS 8+.
+A Swift SDK for interacting with the Willow decentralized data infrastructure protocol. Targets iOS 15+, macOS 12+, tvOS 15+, and watchOS 8+.
 
 ## Features
 
@@ -18,11 +18,11 @@ In `Package.swift`:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/willow-network/willow.git", from: "0.1.0"),
+    .package(url: "https://github.com/willow-network/willow-sdk-swift.git", from: "0.1.0"),
 ],
 targets: [
     .target(name: "MyApp", dependencies: [
-        .product(name: "Willow", package: "willow"),
+        .product(name: "Willow", package: "willow-sdk-swift"),
     ]),
 ],
 ```
@@ -72,7 +72,6 @@ let value = try await client.data.get(
 ## Development
 
 ```bash
-cd sdk/willow-swift
 swift build
 swift test
 ```
