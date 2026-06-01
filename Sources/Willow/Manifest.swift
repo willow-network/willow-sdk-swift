@@ -257,25 +257,29 @@ public struct WillowManifest: Sendable, Equatable {
     public var specVersion: String
     public var description: String?
     public var dataSources: [DataSource]
+    public var deferredCompleteness: Bool
 
     enum CodingKeys: String, CodingKey {
         case specVersion = "spec_version"
         case description
         case dataSources = "data_sources"
+        case deferredCompleteness = "deferred_completeness"
     }
 
     static let allowedKeys: Set<String> = [
-        "spec_version", "description", "data_sources",
+        "spec_version", "description", "data_sources", "deferred_completeness",
     ]
 
     public init(
         specVersion: String = manifestSpecVersion,
         description: String? = nil,
-        dataSources: [DataSource] = []
+        dataSources: [DataSource] = [],
+        deferredCompleteness: Bool = false
     ) {
         self.specVersion = specVersion
         self.description = description
         self.dataSources = dataSources
+        self.deferredCompleteness = deferredCompleteness
     }
 }
 
@@ -286,6 +290,8 @@ extension WillowManifest: Codable {
         self.specVersion = try c.decode(String.self, forKey: .specVersion)
         self.description = try c.decodeIfPresent(String.self, forKey: .description)
         self.dataSources = try c.decode([DataSource].self, forKey: .dataSources)
+        self.deferredCompleteness =
+            try c.decodeIfPresent(Bool.self, forKey: .deferredCompleteness) ?? false
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -293,6 +299,9 @@ extension WillowManifest: Codable {
         try c.encode(specVersion, forKey: .specVersion)
         try c.encodeIfPresent(description, forKey: .description)
         try c.encode(dataSources, forKey: .dataSources)
+        if deferredCompleteness {
+            try c.encode(deferredCompleteness, forKey: .deferredCompleteness)
+        }
     }
 }
 
