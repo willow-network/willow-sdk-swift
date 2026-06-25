@@ -75,20 +75,97 @@ public func verifyServedEvents(
     return canonicalEventSetHash(blockNumber: blockNumber, matchedLogs: matchedLogs) == commitment
 }
 
-// MARK: - Convenience: end-to-end block-completeness check (deferred)
+// MARK: - Endpoint preimage parsing
 //
-// A `verifyBlockCompleteness(subgroveId:blockNumber:)` wrapper would fetch both
-// halves and call `verifyServedEvents`:
-//   1. anchor — the validator ABCI store query path "events_commitment" with
-//      (subgrove_id, block_number) returns { events_commitment: <hex> };
-//   2. preimage — GET {indexerBaseURL}/completeness/{subgroveId}/{blockNumber}/matched-logs
-//      returns the matched log set, mapped to `CompletenessLog`.
-//
-// It is intentionally NOT shipped here: this SDK has no generic CometBFT ABCI
-// store-query client (only an RPC URL is configured), and the matched-logs
-// indexer route is part of the same unreleased PR (#676). Wire it up once both
-// endpoints are stable; the hashing primitives above are the load-bearing part
-// and are already cross-language-verified against the canonical vectors.
+// The pieces below decode the two wire payloads of the end-to-end check (willow
+// PR #676) into the typed inputs of `verifyServedEvents`. They are pure (no I/O)
+// so the JSON -> `CompletenessLog` mapping can be gated against the canonical
+// vector without a live node; `ConsensusClient.verifyBlockCompleteness` wires
+// the fetches on top.
+
+/// Decoded `/store/events_commitment/{subgrove}/{block}` ABCI value.
+///
+/// The on-chain anchor: a 32-byte keccak `events_commitment` for one block.
+struct EventsCommitmentAnchor: Decodable {
+    let subgroveId: String
+    let blockNumber: UInt64
+    let eventsCommitment: String
+
+    enum CodingKeys: String, CodingKey {
+        case subgroveId = "subgrove_id"
+        case blockNumber = "block_number"
+        case eventsCommitment = "events_commitment"
+    }
+}
+
+/// One log in the indexer's `/completeness/.../matched-logs` response.
+///
+/// Only `address`/`topics`/`data` feed the hash; the rest (block/tx coordinates,
+/// `removed`) are positional metadata the canonical preimage ignores.
+struct MatchedLogJSON: Decodable {
+    let address: String
+    let topics: [String]
+    let data: String
+}
+
+/// The indexer's `/completeness/{subgrove}/{block}/matched-logs` 200 body.
+struct MatchedLogsResponse: Decodable {
+    let subgroveId: String
+    let blockNumber: UInt64
+    let count: Int
+    let matchedLogs: [MatchedLogJSON]
+
+    enum CodingKeys: String, CodingKey {
+        case subgroveId = "subgrove_id"
+        case blockNumber = "block_number"
+        case count
+        case matchedLogs = "matched_logs"
+    }
+}
+
+/// Decodes the 32-byte commitment from an `events_commitment` ABCI value body.
+///
+/// `value` is the raw bytes the ABCI store query returns (already base64-decoded
+/// from the CometBFT JSON-RPC envelope); they are the JSON anchor object.
+func parseEventsCommitment(_ value: Data) throws -> Data {
+    let anchor = try JSONDecoder().decode(EventsCommitmentAnchor.self, from: value)
+    guard let commitment = Data(hexString: stripHexPrefix(anchor.eventsCommitment)),
+          commitment.count == 32
+    else {
+        throw ValidationError("events_commitment is not 32 hex bytes")
+    }
+    return commitment
+}
+
+/// Maps a matched-logs response body to the `CompletenessLog` set to be hashed.
+///
+/// Enforces the byte widths the canonical hash depends on: 20-byte addresses and
+/// 32-byte topics. `data` may be any length (including empty, "0x").
+func parseMatchedLogs(_ body: Data) throws -> [CompletenessLog] {
+    let response = try JSONDecoder().decode(MatchedLogsResponse.self, from: body)
+    return try response.matchedLogs.map { log in
+        guard let address = Data(hexString: stripHexPrefix(log.address)), address.count == 20 else {
+            throw ValidationError("matched log address is not 20 hex bytes")
+        }
+        let topics = try log.topics.map { topic -> Data in
+            guard let bytes = Data(hexString: stripHexPrefix(topic)), bytes.count == 32 else {
+                throw ValidationError("matched log topic is not 32 hex bytes")
+            }
+            return bytes
+        }
+        guard let data = Data(hexString: stripHexPrefix(log.data)) else {
+            throw ValidationError("matched log data is not valid hex")
+        }
+        return CompletenessLog(address: address, topics: topics, data: data)
+    }
+}
+
+private func stripHexPrefix(_ hex: String) -> String {
+    if hex.hasPrefix("0x") || hex.hasPrefix("0X") {
+        return String(hex.dropFirst(2))
+    }
+    return hex
+}
 
 // MARK: - Big-endian integer helpers
 
