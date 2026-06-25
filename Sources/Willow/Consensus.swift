@@ -18,6 +18,10 @@ public struct ConsensusConfig {
     /// Optional REST API URL for account queries.
     public let apiUrl: String?
 
+    /// Optional indexer node base URL (e.g., "http://localhost:3051"), used by
+    /// `verifyBlockCompleteness` to fetch the served matched-log preimage.
+    public let indexerUrl: String?
+
     /// Chain ID.
     public let chainId: String
 
@@ -33,6 +37,7 @@ public struct ConsensusConfig {
     public init(
         consensusRpcUrl: String,
         apiUrl: String? = nil,
+        indexerUrl: String? = nil,
         chainId: String = "willow-chain",
         requestTimeoutSecs: TimeInterval = 30,
         maxRetries: Int = 3,
@@ -40,6 +45,7 @@ public struct ConsensusConfig {
     ) {
         self.consensusRpcUrl = consensusRpcUrl
         self.apiUrl = apiUrl
+        self.indexerUrl = indexerUrl
         self.chainId = chainId
         self.requestTimeoutSecs = requestTimeoutSecs
         self.maxRetries = maxRetries
@@ -332,6 +338,13 @@ public class ConsensusClient {
         self.session = URLSession(configuration: sessionConfig)
     }
 
+    /// Testing seam: supply a `URLSession` (e.g. backed by a stub `URLProtocol`)
+    /// so the RPC + indexer fetches can be exercised without a live node.
+    internal init(_ config: ConsensusConfig, session: URLSession) {
+        self.config = config
+        self.session = session
+    }
+
     // MARK: - High-Level Transaction Methods
 
     /// Register a DID on the blockchain.
@@ -573,6 +586,89 @@ public class ConsensusClient {
             params["height"] = String(h)
         }
         return try await rpcRequest(method: "commit", params: params)
+    }
+
+    // MARK: - Crypto-Completeness Verification
+
+    /// Verifies, client-side, that the indexer served the complete, untampered
+    /// filter-matched event set for `(subgroveId, blockNumber)`.
+    ///
+    /// End-to-end check of willow PR #676: fetch the on-chain anchor (the
+    /// `events_commitment`) via the validator's ABCI store query, fetch the
+    /// indexer's matched-log preimage, re-hash it locally, and compare. Returns
+    /// `true` only on an exact match — no trust in the indexer required.
+    ///
+    /// Throws when either half is unavailable: a missing anchor (no commitment
+    /// for that block) or a non-200 from the indexer (block not finalized / logs
+    /// not retained) is surfaced as an error, not a silent `false`.
+    public func verifyBlockCompleteness(
+        subgroveId: String,
+        blockNumber: UInt64
+    ) async throws -> Bool {
+        let commitment = try await fetchEventsCommitment(subgroveId: subgroveId, blockNumber: blockNumber)
+        let logs = try await fetchMatchedLogs(subgroveId: subgroveId, blockNumber: blockNumber)
+        return verifyServedEvents(commitment: commitment, blockNumber: blockNumber, matchedLogs: logs)
+    }
+
+    /// Fetches the on-chain `events_commitment` anchor via the ABCI store query.
+    ///
+    /// Queries `/store/events_commitment/{subgroveId}/{blockNumber}`; a non-zero
+    /// ABCI code (no commitment for that block) throws.
+    internal func fetchEventsCommitment(subgroveId: String, blockNumber: UInt64) async throws -> Data {
+        let path = "/store/events_commitment/\(subgroveId)/\(blockNumber)"
+        let value = try await abciQuery(path: path)
+        return try parseEventsCommitment(value)
+    }
+
+    /// CometBFT `abci_query` over JSON-RPC, returning the decoded `value` bytes.
+    ///
+    /// The RPC envelope base64-encodes `response.value`; this decodes it. A
+    /// non-zero `response.code` (the query failed, e.g. key absent) throws.
+    internal func abciQuery(path: String) async throws -> Data {
+        let result = try await rpcRequest(method: "abci_query", params: ["path": path, "data": ""])
+
+        guard let response = result["response"] as? [String: Any] else {
+            throw ConsensusClientError("abci_query: missing response")
+        }
+
+        // CometBFT serializes `code` as an integer; absent means 0 (OK).
+        let code = (response["code"] as? Int) ?? 0
+        if code != 0 {
+            let info = (response["log"] as? String) ?? (response["info"] as? String) ?? "code \(code)"
+            throw ConsensusClientError("abci_query failed for \(path): \(info)")
+        }
+
+        // An OK response with no value means the key is absent.
+        guard let base64 = response["value"] as? String, !base64.isEmpty,
+              let value = Data(base64Encoded: base64)
+        else {
+            throw ConsensusClientError("abci_query: no value for \(path)")
+        }
+        return value
+    }
+
+    /// Fetches the indexer's served matched-log set for one block.
+    ///
+    /// GETs `{indexerUrl}/completeness/{subgroveId}/{blockNumber}/matched-logs`;
+    /// a non-200 (block not finalized / logs not retained) throws.
+    internal func fetchMatchedLogs(subgroveId: String, blockNumber: UInt64) async throws -> [CompletenessLog] {
+        guard let indexerUrl = config.indexerUrl, !indexerUrl.isEmpty else {
+            throw ConsensusClientError("indexerUrl is required for verifyBlockCompleteness")
+        }
+        let trimmed = indexerUrl.hasSuffix("/") ? String(indexerUrl.dropLast()) : indexerUrl
+        guard let url = URL(string: "\(trimmed)/completeness/\(subgroveId)/\(blockNumber)/matched-logs") else {
+            throw ConsensusClientError("Invalid indexer URL for matched-logs")
+        }
+
+        let (data, response) = try await session.data(from: url)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw ConsensusClientError("Invalid response")
+        }
+        guard httpResponse.statusCode == 200 else {
+            let message = String(data: data, encoding: .utf8) ?? "HTTP \(httpResponse.statusCode)"
+            throw ConsensusClientError("matched-logs unavailable: \(message)")
+        }
+        return try parseMatchedLogs(data)
     }
 
     // MARK: - Private Methods
