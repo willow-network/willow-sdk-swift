@@ -63,6 +63,7 @@ let value = try await client.data.get(
 - `Privacy` — XChaCha20-Poly1305 encrypted subgroves
 - `LightClient` — CometBFT light-client implementation (header verification, trust-on-first-use)
 - `GroveDB` — Merkle proof verifier (verify-only mode, no full DB)
+- `Completeness` — client-side crypto-completeness verify (`canonicalEventSetHash`, `verifyServedEvents`)
 - `Validators`, `Token`, `Consensus`, `Registration`, `Subscriptions`, `ERC8004`
 
 ## Example app
