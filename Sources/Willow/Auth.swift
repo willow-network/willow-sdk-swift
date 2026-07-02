@@ -1,5 +1,6 @@
 import Foundation
 import CryptoKit
+import CryptoSwift
 import P256K
 
 // MARK: - Key Pair
@@ -130,9 +131,41 @@ public func identityFromPrivateKey(algorithm: SignatureAlgorithm, privateKeyHex:
 
 // MARK: - DID Generation
 
-/// Generates a DID string from a key pair.
+/// Derives a self-certifying `did:willow` identifier from a raw public key.
+///
+/// The Willow chain requires every DID id to be exactly:
+///
+///     did = "did:willow:z" + base58btc( SHA3-256( multicodec_prefix || public_key ) )
+///
+/// where `SHA3-256` is FIPS-202 SHA3-256 (NOT Keccak-256), `multicodec_prefix`
+/// is `0xED 0x01` for Ed25519 and `0xE7 0x01` for secp256k1, the leading `z`
+/// is the multibase base58btc marker, and `base58btc` uses the Bitcoin
+/// alphabet with each leading `0x00` byte encoded as a leading `1`.
+///
+/// For secp256k1 the 33-byte compressed public key is hashed; an uncompressed
+/// (65-byte, `0x04`-prefixed) key is normalized to compressed form first.
+///
+/// The id is bound to the key material, so it cannot be chosen freely — see
+/// the two-step pre-fund → register bootstrap documented on
+/// `ConsensusClient.registerDid`.
+public func deriveWillowDID(algorithm: SignatureAlgorithm, publicKey: Data) -> String {
+    let keyBytes: [UInt8]
+    switch algorithm {
+    case .ed25519:
+        keyBytes = [UInt8](publicKey)
+    case .secp256k1:
+        keyBytes = compressedSecp256k1PublicKey([UInt8](publicKey))
+    }
+
+    let payload = algorithm.multicodecPrefix + keyBytes
+    // FIPS-202 SHA3-256 (32-byte digest) — deliberately not Keccak-256.
+    let digest = Digest.sha3(payload, variant: .sha256)
+    return "did:willow:z" + base58btcEncode(digest)
+}
+
+/// Generates a self-certifying DID string from a key pair.
 public func generateDID(keyPair: KeyPair) -> String {
-    return "did:willow:\(keyPair.algorithm.rawValue):\(keyPair.publicKeyHex)"
+    return deriveWillowDID(algorithm: keyPair.algorithm, publicKey: keyPair.publicKey)
 }
 
 /// Creates a DID document from a key pair.
@@ -141,7 +174,7 @@ public func createDidDocument(keyPair: KeyPair) -> DidDocument {
     let now = Int64(Date().timeIntervalSince1970)
 
     let publicKey = PublicKey(
-        id: "\(did)#keys-1",
+        id: "\(did)#key-1",
         type: keyPair.algorithm.keyType,
         publicKeyHex: keyPair.publicKeyHex
     )
@@ -152,6 +185,72 @@ public func createDidDocument(keyPair: KeyPair) -> DidDocument {
         created: now,
         updated: now
     )
+}
+
+// MARK: - DID Derivation Helpers
+
+/// Normalizes a secp256k1 public key to 33-byte compressed form.
+///
+/// Accepts a key that is already compressed (33 bytes, `0x02`/`0x03` prefix)
+/// or uncompressed (65 bytes, `0x04` prefix). Any other input is returned
+/// unchanged as a best effort; keys produced by this SDK are always compressed.
+private func compressedSecp256k1PublicKey(_ bytes: [UInt8]) -> [UInt8] {
+    if bytes.count == 33, bytes[0] == 0x02 || bytes[0] == 0x03 {
+        return bytes
+    }
+    if bytes.count == 65, bytes[0] == 0x04 {
+        let x = Array(bytes[1...32])
+        let yIsOdd = (bytes[64] & 1) == 1
+        return [yIsOdd ? 0x03 : 0x02] + x
+    }
+    return bytes
+}
+
+/// Bitcoin/base58btc alphabet.
+private let base58Alphabet = Array("123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz")
+
+/// Encodes bytes using the Bitcoin base58btc alphabet, emitting one leading
+/// `1` for each leading `0x00` byte (multibase base58btc convention).
+private func base58btcEncode(_ input: [UInt8]) -> String {
+    // Count leading zero bytes.
+    var zeros = 0
+    while zeros < input.count && input[zeros] == 0 {
+        zeros += 1
+    }
+
+    // Allocate enough space for the big-endian base58 digits.
+    // ceil(log(256) / log(58)) ~= 138/100.
+    let size = (input.count - zeros) * 138 / 100 + 1
+    var b58 = [UInt8](repeating: 0, count: size)
+
+    var length = 0
+    for i in zeros..<input.count {
+        var carry = Int(input[i])
+        var j = 0
+        var k = size - 1
+        // Apply b58 = b58 * 256 + input[i].
+        while (carry != 0 || j < length) && k >= 0 {
+            carry += 256 * Int(b58[k])
+            b58[k] = UInt8(carry % 58)
+            carry /= 58
+            j += 1
+            k -= 1
+        }
+        length = j
+    }
+
+    // Skip leading zeros produced in the base58 buffer.
+    var it = size - length
+    while it < size && b58[it] == 0 {
+        it += 1
+    }
+
+    var result = String(repeating: "1", count: zeros)
+    while it < size {
+        result.append(base58Alphabet[Int(b58[it])])
+        it += 1
+    }
+    return result
 }
 
 // MARK: - Signing
