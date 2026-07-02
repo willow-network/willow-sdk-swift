@@ -348,6 +348,19 @@ public class ConsensusClient {
     // MARK: - High-Level Transaction Methods
 
     /// Register a DID on the blockchain.
+    ///
+    /// Willow DIDs are self-certifying: the id is `did:willow:z...` derived from
+    /// the public key (see `deriveWillowDID`), so it cannot be chosen and does
+    /// not yet hold a balance. The registration fee is paid from the DID's own
+    /// balance, so a two-step bootstrap is required:
+    ///
+    ///   1. Pre-fund: some already-registered account calls `transfer(...)` to
+    ///      send at least the registration fee to the derived DID id.
+    ///   2. Register: the holder calls `registerDid(...)`, which spends the fee
+    ///      from that balance.
+    ///
+    /// Calling `registerDid` before the derived id is funded fails on-chain with
+    /// insufficient funds.
     public func registerDid(
         didDocument: [String: Any],
         privateKey: Data,

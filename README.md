@@ -34,16 +34,20 @@ Or in Xcode: **File → Add Package Dependencies…** and paste the repo URL.
 ```swift
 import Willow
 
-let client = WillowClient(apiURL: URL(string: "http://localhost:3031")!)
+let client = try WillowClient(baseURL: "http://localhost:3031")
 
-// Generate a DID + register
-let did = try Auth.generateDID(algorithm: .ed25519)
-try await client.registerDID(did.didDocument)
-try await client.authenticate(
-    did: did.id,
-    privateKeyHex: did.privateKeyHex,
-    publicKeyID: did.publicKeyID
-)
+// Generate a self-certifying identity. The DID is DERIVED from the public key
+// (did:willow:z…), not chosen:
+//   did = "did:willow:z" + base58btc(SHA3-256(multicodec_prefix || public_key))
+let identity = try newIdentity(algorithm: .ed25519)
+
+// Because the id is bound to the key, a fresh DID has no balance yet. Registration
+// is a two-step bootstrap:
+//   1. Pre-fund: an existing account transfers >= the registration fee to
+//      identity.did (see ConsensusClient.transfer).
+//   2. Register: the holder registers; the fee is paid from that balance.
+try await client.registerDID(identity.didDocument)
+client.setIdentity(identity)
 
 // Data operations automatically verify proofs
 let value = try await client.data.get(

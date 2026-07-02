@@ -16,6 +16,20 @@ public enum SignatureAlgorithm: String, Codable {
             return "EcdsaSecp256k1VerificationKey2019"
         }
     }
+
+    /// Multicodec prefix bytes prepended to the public key before hashing when
+    /// deriving a self-certifying `did:willow` identifier.
+    ///
+    /// - Ed25519:   `0xED 0x01`
+    /// - secp256k1: `0xE7 0x01`
+    public var multicodecPrefix: [UInt8] {
+        switch self {
+        case .ed25519:
+            return [0xED, 0x01]
+        case .secp256k1:
+            return [0xE7, 0x01]
+        }
+    }
 }
 
 // MARK: - DID Types

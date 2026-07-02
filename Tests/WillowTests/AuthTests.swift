@@ -8,10 +8,10 @@ final class AuthTests: XCTestCase {
     func testNewIdentityEd25519() throws {
         let identity = try newIdentity(algorithm: .ed25519)
 
-        // Check DID format
+        // Check DID format (self-certifying: did:willow:z<base58btc>)
         XCTAssertTrue(
-            identity.did.hasPrefix("did:willow:Ed25519:"),
-            "Expected DID to start with 'did:willow:Ed25519:', got \(identity.did)"
+            identity.did.hasPrefix("did:willow:z"),
+            "Expected DID to start with 'did:willow:z', got \(identity.did)"
         )
 
         // Check key lengths (CryptoKit Ed25519 uses 32-byte private keys)
@@ -40,10 +40,10 @@ final class AuthTests: XCTestCase {
     func testNewIdentitySecp256k1() throws {
         let identity = try newIdentity(algorithm: .secp256k1)
 
-        // Check DID format
+        // Check DID format (self-certifying: did:willow:z<base58btc>)
         XCTAssertTrue(
-            identity.did.hasPrefix("did:willow:secp256k1:"),
-            "Expected DID to start with 'did:willow:secp256k1:', got \(identity.did)"
+            identity.did.hasPrefix("did:willow:z"),
+            "Expected DID to start with 'did:willow:z', got \(identity.did)"
         )
 
         // secp256k1 uses 32-byte private keys and 33-byte compressed public keys
@@ -210,9 +210,61 @@ final class AuthTests: XCTestCase {
         let did = generateDID(keyPair: keyPair)
 
         XCTAssertTrue(
-            did.hasPrefix("did:willow:Ed25519:"),
-            "Expected DID to start with 'did:willow:Ed25519:', got \(did)"
+            did.hasPrefix("did:willow:z"),
+            "Expected DID to start with 'did:willow:z', got \(did)"
         )
+    }
+
+    // MARK: - Self-Certifying DID Derivation
+
+    /// MANDATORY acceptance vector: this exact Ed25519 public key MUST derive
+    /// this exact self-certifying DID, byte-for-byte, or on-chain RegisterDid
+    /// will reject it.
+    func testSelfCertifyingDIDAcceptanceVector() throws {
+        let publicKeyHex = "a003201e65e47d578ad9bb17cb1d3590e9f504f55eac6ee40002e3ab9517c49c"
+        let expectedDID = "did:willow:zDZ1Qqspppayjd9LF3Pkebq64Fa2PuK8zFQDDc11citB2"
+
+        guard let publicKey = Data(hexString: publicKeyHex) else {
+            XCTFail("Failed to decode acceptance-vector public key hex")
+            return
+        }
+
+        let derived = deriveWillowDID(algorithm: .ed25519, publicKey: publicKey)
+        XCTAssertEqual(
+            derived, expectedDID,
+            "Ed25519 self-certifying DID derivation does not match the acceptance vector"
+        )
+
+        // The same value must come out of the KeyPair-based public API.
+        let keyPair = KeyPair(algorithm: .ed25519, publicKey: publicKey, privateKey: Data())
+        XCTAssertEqual(generateDID(keyPair: keyPair), expectedDID)
+    }
+
+    /// The derived id must be deterministic and stable across calls.
+    func testSelfCertifyingDIDIsDeterministic() throws {
+        let keyPair = try generateKeyPair(algorithm: .ed25519)
+        XCTAssertEqual(generateDID(keyPair: keyPair), generateDID(keyPair: keyPair))
+    }
+
+    /// The public key id follows the "{did}#key-1" convention.
+    func testPublicKeyIdConvention() throws {
+        let identity = try newIdentity(algorithm: .ed25519)
+        XCTAssertEqual(identity.publicKeyId, "\(identity.did)#key-1")
+    }
+
+    /// secp256k1 keys derive a self-certifying DID (compressed key + 0xE7 0x01).
+    func testSelfCertifyingDIDSecp256k1() throws {
+        let identity = try newIdentity(algorithm: .secp256k1)
+        XCTAssertTrue(
+            identity.did.hasPrefix("did:willow:z"),
+            "Expected secp256k1 DID to start with 'did:willow:z', got \(identity.did)"
+        )
+        // Deterministic from the same key.
+        let restored = try identityFromPrivateKey(
+            algorithm: .secp256k1,
+            privateKeyHex: identity.keyPair.privateKeyHex
+        )
+        XCTAssertEqual(identity.did, restored.did)
     }
 
     func testCreateDidDocument() throws {
