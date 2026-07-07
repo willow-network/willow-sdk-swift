@@ -591,7 +591,7 @@ public struct SqlRequest: Codable {
         case includeProof = "include_proof"
     }
 
-    public init(query: String, includeProof: Bool? = nil) {
+    public init(query: String, includeProof: Bool? = false) {
         self.query = query
         self.includeProof = includeProof
     }

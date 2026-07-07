@@ -119,6 +119,28 @@ final class TypesTests: XCTestCase {
         XCTAssertTrue(request.includeProof)
     }
 
+    // MARK: - SqlRequest Proof-Default Tests
+
+    func testSqlRequestOmitsProofByDefault() throws {
+        // A bare SqlRequest must serialize include_proof=false so the server
+        // does not prove by default on the unverified SQL read path.
+        let request = SqlRequest(query: "SELECT 1")
+        let data = try JSONEncoder().encode(request)
+        let json = String(data: data, encoding: .utf8)!
+
+        XCTAssertTrue(json.contains("\"include_proof\":false"))
+        XCTAssertFalse(json.contains("\"include_proof\":true"))
+    }
+
+    func testSqlRequestHonorsExplicitProofOptIn() throws {
+        // Explicit opt-in must still serialize include_proof=true.
+        let request = SqlRequest(query: "SELECT 1", includeProof: true)
+        let data = try JSONEncoder().encode(request)
+        let json = String(data: data, encoding: .utf8)!
+
+        XCTAssertTrue(json.contains("\"include_proof\":true"))
+    }
+
     // MARK: - RetryConfig Tests
 
     func testRetryConfigDefault() {
