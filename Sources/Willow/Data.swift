@@ -31,7 +31,7 @@ public class DataOperations {
     public func getUnverified(subgroveId: String, key: String) async throws -> DataResponse {
         guard let client = client else { throw NetworkError("Client deallocated") }
 
-        let path = "/subgroves/\(subgroveId)/data/\(key)"
+        let path = "/subgroves/\(subgroveId)/data/\(key)?include_proof=false"
         return try await client.get(path: path)
     }
 

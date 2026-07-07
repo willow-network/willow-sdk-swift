@@ -60,7 +60,7 @@ public class IndexingOperations {
     public func sqlQuery(
         subgroveId: String,
         query: String,
-        includeProof: Bool = true
+        includeProof: Bool = false
     ) async throws -> SqlResponse {
         guard let client = client else { throw NetworkError("Client deallocated") }
 
