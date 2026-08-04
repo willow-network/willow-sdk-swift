@@ -12,13 +12,16 @@ A Swift SDK for interacting with the Willow decentralized data infrastructure pr
 - **GraphQL Indexing**: Query indexed blockchain data with cryptographic proofs
 - **Async/Await**: Built on Swift Concurrency
 
+> **Install from source.** Willow's SDKs are not yet published to package registries.
+> The commands below install directly from this repository and work today.
+
 ## Installation
 
 In `Package.swift`:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/willow-network/willow-sdk-swift.git", from: "0.1.0"),
+    .package(url: "https://github.com/willow-network/willow-sdk-swift.git", branch: "master"),
 ],
 targets: [
     .target(name: "MyApp", dependencies: [
@@ -34,20 +37,16 @@ Or in Xcode: **File → Add Package Dependencies…** and paste the repo URL.
 ```swift
 import Willow
 
-let client = try WillowClient(baseURL: "http://localhost:3031")
+let client = WillowClient(apiURL: URL(string: "http://localhost:3031")!)
 
-// Generate a self-certifying identity. The DID is DERIVED from the public key
-// (did:willow:z…), not chosen:
-//   did = "did:willow:z" + base58btc(SHA3-256(multicodec_prefix || public_key))
-let identity = try newIdentity(algorithm: .ed25519)
-
-// Because the id is bound to the key, a fresh DID has no balance yet. Registration
-// is a two-step bootstrap:
-//   1. Pre-fund: an existing account transfers >= the registration fee to
-//      identity.did (see ConsensusClient.transfer).
-//   2. Register: the holder registers; the fee is paid from that balance.
-try await client.registerDID(identity.didDocument)
-client.setIdentity(identity)
+// Generate a DID + register
+let did = try Auth.generateDID(algorithm: .ed25519)
+try await client.registerDID(did.didDocument)
+try await client.authenticate(
+    did: did.id,
+    privateKeyHex: did.privateKeyHex,
+    publicKeyID: did.publicKeyID
+)
 
 // Data operations automatically verify proofs
 let value = try await client.data.get(
