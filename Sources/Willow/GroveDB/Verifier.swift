@@ -505,8 +505,59 @@ public class GroveDBVerifier {
     }
 
     /// Verifies a GroveDB proof and returns the verification result.
+    /// The check grovedb's own verifier does not make. The verifier finds the
+    /// next layer by the envelope's `lowerLayers` map KEY, which is not
+    /// hash-bound: a prover who renames or drops the entry for a subtree on the
+    /// query path gets the same root hash with that subtree's results silently
+    /// gone, so a proof of "K = V" verifies as "K is absent". Requiring a layer
+    /// for every path segment closes it (once a layer is present its root is
+    /// hash-bound to the parent). `proveOptions` is prover-chosen bytes that
+    /// steer limit accounting, so it is pinned to the default the chain uses.
+    public static func checkEnvelope(_ proof: GroveDBProof, expectedPath: [[UInt8]]) throws {
+        guard proof.version == 0, let v0 = proof.proof, var layer = v0.rootLayer else {
+            throw VerificationError("envelope: missing root layer")
+        }
+        guard v0.proveOptions.decreaseLimitOnEmptySubQueryResult else {
+            throw VerificationError("envelope: non-default prove_options")
+        }
+        for (i, seg) in expectedPath.enumerated() {
+            let keyHex = seg.map { String(format: "%02x", $0) }.joined()
+            guard let next = layer.lowerLayers[keyHex] else {
+                throw VerificationError(
+                    "envelope: no lower layer for path segment \(i); the proof does not descend to the query path")
+            }
+            layer = next
+        }
+        if !layer.lowerLayers.isEmpty {
+            throw VerificationError("envelope: unexpected lower layers below the query path")
+        }
+    }
+
+    /// Verify a proof and require it descends to `expectedPath` (see
+    /// `checkEnvelope`). With the path known, an empty result set at that path
+    /// is a proven absence rather than a possible omission.
+    public static func verifyProof(proofBytes: Data, expectedPath: [[UInt8]]) throws -> GroveDBVerificationResult {
+        let proof = try decodeGroveDBProof(proofBytes)
+        try checkEnvelope(proof, expectedPath: expectedPath)
+        var results: [GroveDBQueryResult] = []
+        let rootHash = try verifyLayerProof(proof.proof?.rootLayer, currentPath: [], results: &results)
+        return GroveDBVerificationResult(rootHash: rootHash.hexString, results: results)
+    }
+
+    /// `verifyProofAgainstRoot` plus the path descent check.
+    public static func verifyProofAgainstRoot(proofBytes: Data, expectedRootHash: String, expectedPath: [[UInt8]]) throws -> GroveDBVerificationResult {
+        let result = try verifyProof(proofBytes: proofBytes, expectedPath: expectedPath)
+        if result.rootHash != expectedRootHash {
+            throw VerificationError("Root hash mismatch: expected \(expectedRootHash), got \(result.rootHash)")
+        }
+        return result
+    }
+
     public static func verifyProof(proofBytes: Data) throws -> GroveDBVerificationResult {
         let proof = try decodeGroveDBProof(proofBytes)
+        guard proof.proof?.proveOptions.decreaseLimitOnEmptySubQueryResult ?? false else {
+            throw VerificationError("envelope: non-default prove_options")
+        }
 
         var results: [GroveDBQueryResult] = []
         let rootHash = try verifyLayerProof(proof.proof?.rootLayer, currentPath: [], results: &results)
