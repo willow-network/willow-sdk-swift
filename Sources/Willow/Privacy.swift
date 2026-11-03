@@ -312,7 +312,7 @@ public class PrivacyOperations {
             throw AuthenticationError("Identity not set")
         }
 
-        let path = "/key-grants/\(subgroveId)/\(identity.did)"
+        let path = "/key-grants/\(pathSegment(subgroveId))/\(pathSegment(identity.did))"
         let response: ApiResponse<EncryptedKeyGrant> = try await client.get(path: path)
 
         guard let grant = response.data else {
@@ -334,7 +334,7 @@ public class PrivacyOperations {
         guard let client = client else { throw NetworkError("Client deallocated") }
         try client.requireAuth()
 
-        let path = "/key-grants/\(subgroveId)"
+        let path = "/key-grants/\(pathSegment(subgroveId))"
         let response: ApiResponse<[String]> = try await client.get(path: path)
 
         guard let grantees = response.data else {
@@ -355,7 +355,7 @@ public class PrivacyOperations {
     public func getKeyGrantProof(subgroveId: String, did: String) async throws -> KeyGrantProofResponse {
         guard let client = client else { throw NetworkError("Client deallocated") }
 
-        let path = "/proof/key-grant/\(subgroveId)/\(did)"
+        let path = "/proof/key-grant/\(pathSegment(subgroveId))/\(pathSegment(did))"
         let response: ApiResponse<KeyGrantProofResponse> = try await client.get(path: path)
 
         guard let proof = response.data else {

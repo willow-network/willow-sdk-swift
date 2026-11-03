@@ -21,7 +21,7 @@ public class ValidatorOperations {
     public func get(address: String) async throws -> ValidatorInfo {
         guard let client = client else { throw NetworkError("Client deallocated") }
 
-        return try await client.get(path: "/validators/\(address)")
+        return try await client.get(path: "/validators/\(pathSegment(address))")
     }
 
     /// Retrieves all active validators.

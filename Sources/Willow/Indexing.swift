@@ -24,7 +24,7 @@ public class IndexingOperations {
         }
 
         let base = client.indexerBaseURL()
-        let path = "/graphql/\(subgroveId)"
+        let path = "/graphql/\(pathSegment(subgroveId))"
         let response: GraphQLResponse = try await client.postToBase(base: base, path: path, body: requestWithProof)
 
         // Verify proof if available
@@ -42,7 +42,7 @@ public class IndexingOperations {
         var requestNoProof = request
         requestNoProof.includeProof = false
 
-        let path = "/graphql/\(subgroveId)"
+        let path = "/graphql/\(pathSegment(subgroveId))"
         return try await client.post(path: path, body: requestNoProof)
     }
 
@@ -66,7 +66,7 @@ public class IndexingOperations {
 
         let request = SqlRequest(query: query, includeProof: includeProof)
         let base = client.indexerBaseURL()
-        let path = "/sql/\(subgroveId)"
+        let path = "/sql/\(pathSegment(subgroveId))"
         let response: SqlResponse = try await client.postToBase(base: base, path: path, body: request)
         return response
     }
@@ -101,7 +101,7 @@ public class IndexingOperations {
     public func getSubgrove(subgroveId: String) async throws -> SubgroveInfo {
         guard let client = client else { throw NetworkError("Client deallocated") }
 
-        return try await client.get(path: "/subgroves/\(subgroveId)")
+        return try await client.get(path: "/subgroves/\(pathSegment(subgroveId))")
     }
 
     // MARK: - Indexer Operations
@@ -117,14 +117,14 @@ public class IndexingOperations {
     public func getIndexer(indexerId: String) async throws -> IndexerInfo {
         guard let client = client else { throw NetworkError("Client deallocated") }
 
-        return try await client.get(path: "/indexers/\(indexerId)")
+        return try await client.get(path: "/indexers/\(pathSegment(indexerId))")
     }
 
     /// Retrieves the status of an indexer for a subgrove.
     public func getIndexerStatus(indexerId: String, subgroveId: String) async throws -> IndexerInfo {
         guard let client = client else { throw NetworkError("Client deallocated") }
 
-        let path = "/indexers/\(indexerId)/status/\(subgroveId)"
+        let path = "/indexers/\(pathSegment(indexerId))/status/\(pathSegment(subgroveId))"
         return try await client.get(path: path)
     }
 

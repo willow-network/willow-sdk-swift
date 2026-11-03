@@ -24,7 +24,7 @@ public class RegistrationOperations {
     public func getSubgrove(subgroveId: String) async throws -> SubgroveRegistration {
         guard let client = client else { throw NetworkError("Client deallocated") }
 
-        let path = "/subgroves/\(subgroveId)"
+        let path = "/subgroves/\(pathSegment(subgroveId))"
         return try await client.get(path: path)
     }
 
@@ -40,7 +40,7 @@ public class RegistrationOperations {
         guard let client = client else { throw NetworkError("Client deallocated") }
         try client.requireAuth()
 
-        let path = "/subgroves/\(subgroveId)"
+        let path = "/subgroves/\(pathSegment(subgroveId))"
         let body = updates.mapValues { AnyCodable($0) }
         return try await client.put(path: path, body: body)
     }
@@ -50,17 +50,19 @@ public class RegistrationOperations {
         guard let client = client else { throw NetworkError("Client deallocated") }
         try client.requireAuth()
 
-        let path = "/subgroves/\(subgroveId)"
+        let path = "/subgroves/\(pathSegment(subgroveId))"
         try await client.delete(path: path)
     }
 
     // MARK: - Permission Operations
 
-    /// Retrieves permissions for a DID.
+    /// Retrieves the subgrove permissions granted to a DID
+    /// (`GET /did/{did}/permissions`).
     public func getPermissions(did: String) async throws -> [Permission] {
         guard let client = client else { throw NetworkError("Client deallocated") }
 
-        return try await client.get(path: "/permissions/\(did)")
+        let response: ApiResponse<[Permission]> = try await client.get(path: "/did/\(pathSegment(did))/permissions")
+        return try client.unwrap(response, "permissions")
     }
 
     /// Grants a permission to a DID.
@@ -76,7 +78,7 @@ public class RegistrationOperations {
         guard let client = client else { throw NetworkError("Client deallocated") }
         try client.requireAuth()
 
-        let path = "/permissions/\(did)/\(subgroveId)"
+        let path = "/permissions/\(pathSegment(did))/\(pathSegment(subgroveId))"
         try await client.delete(path: path)
     }
 }
