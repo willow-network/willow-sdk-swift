@@ -263,11 +263,16 @@ private func signEd25519(message: Data, privateKey: Data) throws -> Data {
 }
 
 /// Signs a message using secp256k1.
+///
+/// Willow verifies secp256k1 signatures over the Keccak-256 (Ethereum's hash,
+/// not FIPS-202 SHA3-256) of the message, so the digest is signed directly
+/// rather than through `signature(for: Data)`, which hashes with SHA-256. The
+/// result is the 64-byte compact `r || s`, lower-S (libsecp256k1 signs lower-S
+/// only), with an RFC 6979 nonce.
 private func signSecp256k1(message: Data, privateKey: Data) throws -> Data {
     let signingKey = try P256K.Signing.PrivateKey(dataRepresentation: [UInt8](privateKey))
-    // P256K.Signing already hashes the message internally
-    let signature = try signingKey.signature(for: message)
-    return signature.dataRepresentation
+    let signature = try signingKey.signature(for: HashDigest([UInt8](keccak256(message))))
+    return try signature.compactRepresentation
 }
 
 // MARK: - Verification
@@ -288,33 +293,169 @@ private func verifyEd25519(publicKey: Data, message: Data, signature: Data) thro
     return verifyingKey.isValidSignature(signature, for: message)
 }
 
-/// Verifies a secp256k1 signature.
+/// Verifies a secp256k1 signature the way the Willow server does: ECDSA over the
+/// Keccak-256 of the message, the signature as 64-byte compact `r || s` or DER,
+/// lower-S only. The public key is 33 bytes compressed or 65 bytes uncompressed;
+/// a 64-byte uncompressed key without its `0x04` tag is also accepted here.
 private func verifySecp256k1(publicKey: Data, message: Data, signature: Data) throws -> Bool {
-    let verifyingKey = try P256K.Signing.PublicKey(dataRepresentation: [UInt8](publicKey), format: .compressed)
-    let ecdsaSignature = try P256K.Signing.ECDSASignature(dataRepresentation: [UInt8](signature))
-    return verifyingKey.isValidSignature(ecdsaSignature, for: message)
+    let keyBytes = [UInt8](publicKey)
+    let verifyingKey: P256K.Signing.PublicKey
+    switch keyBytes.count {
+    case 33:
+        verifyingKey = try P256K.Signing.PublicKey(dataRepresentation: keyBytes, format: .compressed)
+    case 65:
+        verifyingKey = try P256K.Signing.PublicKey(dataRepresentation: keyBytes, format: .uncompressed)
+    case 64:
+        verifyingKey = try P256K.Signing.PublicKey(dataRepresentation: [0x04] + keyBytes, format: .uncompressed)
+    default:
+        throw CryptoError("Invalid secp256k1 public key length: \(keyBytes.count)")
+    }
+
+    let ecdsaSignature: P256K.Signing.ECDSASignature
+    do {
+        if signature.count == 64 {
+            ecdsaSignature = try P256K.Signing.ECDSASignature(compactRepresentation: [UInt8](signature))
+        } else {
+            ecdsaSignature = try P256K.Signing.ECDSASignature(derRepresentation: [UInt8](signature))
+        }
+    } catch {
+        return false
+    }
+    // libsecp256k1 refuses a higher-S signature, as the server does.
+    return verifyingKey.isValidSignature(ecdsaSignature, for: HashDigest([UInt8](keccak256(message))))
 }
 
 // MARK: - Per-Request Signing
 
-/// Signs a request and returns the authentication headers.
-/// Message format: {METHOD}:{PATH}:{TIMESTAMP}
-public func signRequest(method: String, path: String, identity: Identity) throws -> [String: String] {
-    let timestamp = String(Int(Date().timeIntervalSince1970))
-    let message = "\(method):\(path):\(timestamp)"
-    guard let messageData = message.data(using: .utf8) else {
-        throw CryptoError("Failed to encode request message")
-    }
+/// The message `signRequest` signs: `{METHOD}:{PATH}:{TIMESTAMP}`.
+///
+/// The server verifies this form against the request's path alone, so anything
+/// from the first `?` in `path` is left out.
+public func legacyRequestMessage(method: String, path: String, timestamp: String) -> String {
+    let pathOnly = path.firstIndex(of: "?").map { String(path[..<$0]) } ?? path
+    return "\(method):\(pathOnly):\(timestamp)"
+}
 
-    let signature = try identity.sign(messageData)
-    let signatureHex = signature.map { String(format: "%02x", $0) }.joined()
+/// The message a nonce-signed request signs: a version line, then one per line
+/// the DID, its key's id, the method, the path and query exactly as sent, the
+/// Unix timestamp, the nonce, and the lowercase hex SHA-256 of the body (of no
+/// bytes, for a request without one). Lines are joined by `\n`, with no
+/// trailing newline.
+public func signedRequestMessage(
+    did: String,
+    publicKeyId: String,
+    method: String,
+    pathAndQuery: String,
+    timestamp: String,
+    nonce: String,
+    body: Data
+) -> String {
+    let bodyHash = CryptoKit.SHA256.hash(data: body).map { String(format: "%02x", $0) }.joined()
+    return [
+        "willow-request-v2",
+        did,
+        publicKeyId,
+        method,
+        pathAndQuery,
+        timestamp,
+        nonce,
+        bodyHash,
+    ].joined(separator: "\n")
+}
 
+/// Returns a fresh nonce for a nonce-signed request: 32 lowercase hex
+/// characters from 16 random bytes. The server accepts 16 to 128 characters of
+/// `A-Z a-z 0-9 - _`, and each (DID, nonce) only once.
+public func newRequestNonce() throws -> String {
+    return Data(try generateSecureRandomBytes(count: 16)).hexString
+}
+
+/// Signs a request with a one-time nonce over the whole request and returns the
+/// authentication headers: `X-DID`, `X-Public-Key-ID`, `X-Signature`,
+/// `X-Timestamp`, and `X-Nonce`.
+///
+/// `pathAndQuery` is the request target exactly as the server receives it,
+/// percent-encoded, query string included. `body` is the exact bytes sent
+/// (empty for none). The timestamp is now; the server accepts it for 300
+/// seconds, and each nonce once, so sign every attempt of a retried request
+/// anew.
+///
+/// Only this form carries the DID's read rights: a Reader permission on a
+/// subgrove, or a place on a priced subgrove's free-reader list.
+public func signRequestWithNonce(
+    method: String,
+    pathAndQuery: String,
+    body: Data = Data(),
+    identity: Identity
+) throws -> [String: String] {
+    return try signRequestWithNonce(
+        method: method,
+        pathAndQuery: pathAndQuery,
+        body: body,
+        identity: identity,
+        timestamp: String(Int64(Date().timeIntervalSince1970)),
+        nonce: try newRequestNonce()
+    )
+}
+
+/// `signRequestWithNonce` with a fixed timestamp and nonce (for tests).
+internal func signRequestWithNonce(
+    method: String,
+    pathAndQuery: String,
+    body: Data,
+    identity: Identity,
+    timestamp: String,
+    nonce: String
+) throws -> [String: String] {
+    let message = signedRequestMessage(
+        did: identity.did,
+        publicKeyId: identity.publicKeyId,
+        method: method,
+        pathAndQuery: pathAndQuery,
+        timestamp: timestamp,
+        nonce: nonce,
+        body: body
+    )
     return [
         "X-DID": identity.did,
         "X-Public-Key-ID": identity.publicKeyId,
-        "X-Signature": signatureHex,
+        "X-Signature": try signRequestMessage(message, identity: identity),
+        "X-Timestamp": timestamp,
+        "X-Nonce": nonce,
+    ]
+}
+
+/// Signs a request in the server's older form and returns the authentication
+/// headers. The message is `{METHOD}:{PATH}:{TIMESTAMP}` over the path without
+/// its query string (see `legacyRequestMessage`).
+///
+/// This form proves the DID but carries none of its read rights, and anyone
+/// who sees it can replay it with any body until the timestamp expires. The
+/// client signs its reads of subgrove data with `signRequestWithNonce`, and
+/// its other signed requests with this form.
+public func signRequest(method: String, path: String, identity: Identity) throws -> [String: String] {
+    let timestamp = String(Int64(Date().timeIntervalSince1970))
+    let message = legacyRequestMessage(method: method, path: path, timestamp: timestamp)
+    return [
+        "X-DID": identity.did,
+        "X-Public-Key-ID": identity.publicKeyId,
+        "X-Signature": try signRequestMessage(message, identity: identity),
         "X-Timestamp": timestamp,
     ]
+}
+
+/// Signs a request message and encodes the signature as the server decodes
+/// `X-Signature`: Ed25519 as hex, secp256k1 as `0x`-prefixed hex. The server
+/// reads an unprefixed secp256k1 signature as base64 first, and a hex string is
+/// usually valid base64.
+private func signRequestMessage(_ message: String, identity: Identity) throws -> String {
+    let signature = try identity.sign(Data(message.utf8))
+    switch identity.keyPair.algorithm {
+    case .ed25519:
+        return signature.hexString
+    case .secp256k1:
+        return "0x" + signature.hexString
+    }
 }
 
 // MARK: - Helper Functions

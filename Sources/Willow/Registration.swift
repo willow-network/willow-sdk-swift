@@ -56,11 +56,13 @@ public class RegistrationOperations {
 
     // MARK: - Permission Operations
 
-    /// Retrieves permissions for a DID.
+    /// Retrieves the subgrove permissions granted to a DID
+    /// (`GET /did/{did}/permissions`).
     public func getPermissions(did: String) async throws -> [Permission] {
         guard let client = client else { throw NetworkError("Client deallocated") }
 
-        return try await client.get(path: "/permissions/\(did)")
+        let response: ApiResponse<[Permission]> = try await client.get(path: "/did/\(did)/permissions")
+        return try client.unwrap(response, "permissions")
     }
 
     /// Grants a permission to a DID.

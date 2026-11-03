@@ -36,16 +36,12 @@ public class TokenOperations {
         return try await getBalance(did: identity.did)
     }
 
-    /// Retrieves the current fee schedule.
+    /// Retrieves the current fee schedule (`GET /fees/schedule`).
     public func getFeeSchedule() async throws -> FeeSchedule {
         guard let client = client else { throw NetworkError("Client deallocated") }
 
-        do {
-            return try await client.get(path: "/token/fees")
-        } catch {
-            // Try alternate endpoint
-            return try await client.get(path: "/fees/schedule")
-        }
+        let response: ApiResponse<FeeSchedule> = try await client.get(path: "/fees/schedule")
+        return try client.unwrap(response, "fee schedule")
     }
 
     /// Estimates the storage fee for the given data size.

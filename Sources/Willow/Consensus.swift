@@ -702,8 +702,7 @@ public class ConsensusClient {
             throw ConsensusClientError("apiUrl is required for transaction submission")
         }
 
-        let wrapper = [txType: transaction]
-        let body = try JSONEncoder().encode(wrapper)
+        let body = try encodeTransaction(txType: txType, transaction: transaction)
 
         let trimmed = apiUrl.hasSuffix("/") ? String(apiUrl.dropLast()) : apiUrl
         guard let url = URL(string: "\(trimmed)/tx/submit") else {
@@ -720,29 +719,7 @@ public class ConsensusClient {
             throw ConsensusClientError("Invalid response")
         }
 
-        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            throw ConsensusClientError("Invalid JSON in /tx/submit response")
-        }
-
-        let success = json["success"] as? Bool ?? false
-        guard success, let result = json["data"] as? [String: Any] else {
-            let errMsg = (json["error"] as? String) ?? "HTTP \(httpResponse.statusCode)"
-            return BroadcastResult(
-                success: false, txHash: nil, errorCode: nil, errorMessage: errMsg, rawLog: errMsg
-            )
-        }
-
-        let code = result["code"] as? Int ?? 0
-        let hash = result["tx_hash"] as? String
-        let log = result["log"] as? String
-
-        return BroadcastResult(
-            success: code == 0,
-            txHash: hash,
-            errorCode: code != 0 ? code : nil,
-            errorMessage: code != 0 ? log : nil,
-            rawLog: log
-        )
+        return try parseTxSubmitResponse(data: data, statusCode: httpResponse.statusCode)
     }
 
     private func queryTransaction(txHash: String) async throws -> [String: Any]? {
@@ -941,36 +918,37 @@ public class ConsensusClient {
         publicKeyId: String,
         signFunction: (Data, Data) throws -> Data
     ) async throws -> BroadcastResult {
+        let contentHashBytes = try hashBytes(fromHex: contentHash, field: "contentHash")
+        let chunkMerkleRootBytes = try hashBytes(fromHex: chunkMerkleRoot, field: "chunkMerkleRoot")
         let nonce = try await getNextNonce(did: ownerDid)
 
+        // The server signs over the lowercase hex of the content hash bytes.
         let signMessage = createSignMessageForStoreFile(
             subgroveId: subgroveId,
             fileKey: fileKey,
-            contentHash: contentHash,
+            contentHash: contentHashBytes.map { String(format: "%02x", $0) }.joined(),
             totalSize: totalSize
         )
         let signatureData = try signFunction(Data(signMessage.utf8), privateKey)
         let signatureBytes = Array(signatureData).map { Int($0) }
 
-        let tx = StoreFileManifestConsensusTx(
-            StoreFileManifest: StoreFileManifestConsensusBody(
-                subgrove_id: subgroveId,
-                file_key: fileKey,
-                filename: filename,
-                content_type: contentType,
-                total_size: totalSize,
-                content_hash: contentHash,
-                chunk_count: chunkCount,
-                chunk_size: chunkSize,
-                chunk_merkle_root: chunkMerkleRoot,
-                owner_did: ownerDid,
-                signature: signatureBytes,
-                public_key_id: publicKeyId,
-                nonce: nonce
-            )
+        let tx = StoreFileManifestConsensusBody(
+            subgrove_id: subgroveId,
+            file_key: fileKey,
+            filename: filename,
+            content_type: contentType,
+            total_size: totalSize,
+            content_hash: contentHashBytes,
+            chunk_count: chunkCount,
+            chunk_size: chunkSize,
+            chunk_merkle_root: chunkMerkleRootBytes,
+            owner_did: ownerDid,
+            signature: signatureBytes,
+            public_key_id: publicKeyId,
+            nonce: nonce
         )
 
-        return try await broadcastTransaction(txType: "StoreFileManifest", transaction: tx.StoreFileManifest)
+        return try await broadcastTransaction(txType: "StoreFileManifest", transaction: tx)
     }
 
     /// Delete a file manifest from the blockchain.
@@ -991,44 +969,88 @@ public class ConsensusClient {
         let signatureData = try signFunction(Data(signMessage.utf8), privateKey)
         let signatureBytes = Array(signatureData).map { Int($0) }
 
-        let tx = DeleteFileManifestConsensusTx(
-            DeleteFileManifest: DeleteFileManifestConsensusBody(
-                subgrove_id: subgroveId,
-                file_key: fileKey,
-                owner_did: ownerDid,
-                signature: signatureBytes,
-                public_key_id: publicKeyId,
-                nonce: nonce
-            )
+        let tx = DeleteFileManifestConsensusBody(
+            subgrove_id: subgroveId,
+            file_key: fileKey,
+            owner_did: ownerDid,
+            signature: signatureBytes,
+            public_key_id: publicKeyId,
+            nonce: nonce
         )
 
-        return try await broadcastTransaction(txType: "DeleteFileManifest", transaction: tx.DeleteFileManifest)
+        return try await broadcastTransaction(txType: "DeleteFileManifest", transaction: tx)
     }
+}
+
+// MARK: - Transaction Submission Helpers
+
+/// The JSON body `POST /tx/submit` takes for a transaction:
+/// `{"<Variant>": {...}}`, the server's `Transaction` enum as serde writes it.
+/// Encoded with no key conversion, so the variant name keeps its case.
+internal func encodeTransaction<T: Encodable>(txType: String, transaction: T) throws -> Data {
+    return try JSONEncoder().encode([txType: transaction])
+}
+
+/// Reads a `POST /tx/submit` answer: `{ success, data: { tx_hash, code, log }, error }`.
+/// CheckTx refuses a transaction with HTTP 200 and a nonzero `code`, which is
+/// reported as `success: false`.
+internal func parseTxSubmitResponse(data: Data, statusCode: Int) throws -> BroadcastResult {
+    guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+        throw ConsensusClientError("Invalid JSON in /tx/submit response")
+    }
+
+    let success = json["success"] as? Bool ?? false
+    guard success, let result = json["data"] as? [String: Any] else {
+        let errMsg = (json["error"] as? String) ?? "HTTP \(statusCode)"
+        return BroadcastResult(
+            success: false, txHash: nil, errorCode: nil, errorMessage: errMsg, rawLog: errMsg
+        )
+    }
+
+    let code = result["code"] as? Int ?? 0
+    let hash = result["tx_hash"] as? String
+    let log = result["log"] as? String
+
+    return BroadcastResult(
+        success: code == 0,
+        txHash: hash,
+        errorCode: code != 0 ? code : nil,
+        errorMessage: code != 0 ? log : nil,
+        rawLog: log
+    )
+}
+
+/// A 32-byte hash given as hex, as the byte array the server's `[u8; 32]`
+/// fields take in JSON.
+internal func hashBytes(fromHex hex: String, field: String) throws -> [Int] {
+    let clean = hex.hasPrefix("0x") ? String(hex.dropFirst(2)) : hex
+    guard let bytes = Data(hexString: clean), bytes.count == 32 else {
+        throw ValidationError("\(field) must be 32 bytes of hex")
+    }
+    return bytes.map { Int($0) }
 }
 
 // MARK: - File Manifest Consensus Transaction Types
 
-private struct StoreFileManifestConsensusBody: Encodable {
+// Field for field the server's `StoreFileManifestTx`: `content_hash` and
+// `chunk_merkle_root` are `[u8; 32]`, which JSON carries as arrays of numbers.
+internal struct StoreFileManifestConsensusBody: Encodable {
     let subgrove_id: String
     let file_key: String
     let filename: String
     let content_type: String
     let total_size: Int
-    let content_hash: String
+    let content_hash: [Int]
     let chunk_count: Int
     let chunk_size: Int
-    let chunk_merkle_root: String
+    let chunk_merkle_root: [Int]
     let owner_did: String
     let signature: [Int]
     let public_key_id: String
     let nonce: Int
 }
 
-private struct StoreFileManifestConsensusTx: Encodable {
-    let StoreFileManifest: StoreFileManifestConsensusBody
-}
-
-private struct DeleteFileManifestConsensusBody: Encodable {
+internal struct DeleteFileManifestConsensusBody: Encodable {
     let subgrove_id: String
     let file_key: String
     let owner_did: String
@@ -1037,8 +1059,11 @@ private struct DeleteFileManifestConsensusBody: Encodable {
     let nonce: Int
 }
 
-private struct DeleteFileManifestConsensusTx: Encodable {
-    let DeleteFileManifest: DeleteFileManifestConsensusBody
+internal struct UnregisterStorageNodeConsensusBody: Encodable {
+    let node_did: String
+    let signature: [Int]
+    let public_key_id: String
+    let nonce: Int
 }
 
 // MARK: - Error

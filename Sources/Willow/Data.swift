@@ -12,46 +12,132 @@ public class DataOperations {
 
     // MARK: - Get Operations
 
-    /// Gets an item with automatic proof verification.
+    /// Gets an item and verifies it against a GroveDB proof.
+    ///
+    /// Reads the value from `GET /data/{subgroveId}/{key}` and its proof from
+    /// `GET /proof/{subgroveId}/{key}`, then requires that the proof descends to
+    /// the subgrove's data tree, hashes to the light client's verified root,
+    /// and proves `key` with the value served. Any failure throws; the value is
+    /// never returned unverified.
     public func get(subgroveId: String, key: String) async throws -> DataResponse {
         guard let client = client else { throw NetworkError("Client deallocated") }
 
-        let path = "/subgroves/\(subgroveId)/data/\(key)?include_proof=true"
-        let response: DataResponse = try await client.get(path: path)
+        let value = try await fetchValue(subgroveId: subgroveId, key: key, client: client)
 
-        // Verify proof if available
-        if let proofData = response.proof?.proof {
-            try await verifyProof(proofData, client: client)
+        let proofResponse: ApiResponse<ServedProof> = try await client.get(path: "/proof/\(subgroveId)/\(key)")
+        let served = try client.unwrap(proofResponse, "proof")
+        let cleanHex = served.proof.hasPrefix("0x") ? String(served.proof.dropFirst(2)) : served.proof
+        guard let proofBytes = Data(hexString: cleanHex), !proofBytes.isEmpty else {
+            throw ProofError("The API returned no proof for \(subgroveId)/\(key)")
         }
 
-        return response
+        let result = try GroveDBVerifier.verifyProof(proofBytes: proofBytes, expectedPath: DataOperations.dataPath(subgroveId))
+        try DataOperations.requireProven(key: key, value: value, in: result)
+
+        let lc = try await client.getOrCreateLightClient()
+        let expectedRootHash = try await lc.getVerifiedRootHash()
+        guard result.rootHash.lowercased() == expectedRootHash.lowercased() else {
+            throw ProofError("Root hash mismatch: expected \(expectedRootHash), got \(result.rootHash)")
+        }
+
+        return DataResponse(
+            key: key,
+            data: value,
+            proof: DataProof(proof: proofBytes, rootHash: result.rootHash, height: served.height ?? 0, verifiedAt: Int64(Date().timeIntervalSince1970))
+        )
     }
 
-    /// Gets an item without proof verification (faster but less secure).
+    /// Gets an item without proof verification (faster but less secure), from
+    /// `GET /data/{subgroveId}/{key}`.
     public func getUnverified(subgroveId: String, key: String) async throws -> DataResponse {
         guard let client = client else { throw NetworkError("Client deallocated") }
 
-        let path = "/subgroves/\(subgroveId)/data/\(key)?include_proof=false"
-        return try await client.get(path: path)
+        let value = try await fetchValue(subgroveId: subgroveId, key: key, client: client)
+        return DataResponse(key: key, data: value, proof: nil)
+    }
+
+    /// The value `GET /data/{subgroveId}/{key}` serves: the stored JSON object
+    /// (or `{"hex": ...}` for bytes that are not JSON).
+    private func fetchValue(subgroveId: String, key: String, client: WillowClient) async throws -> [String: AnyCodable] {
+        let response: ApiResponse<AnyCodable> = try await client.get(path: "/data/\(subgroveId)/\(key)")
+        let value = try client.unwrap(response, "Data")
+        guard let object = value.value as? [String: Any] else {
+            throw SerializationError("The value at \(subgroveId)/\(key) is not a JSON object")
+        }
+        return object.mapValues { AnyCodable($0) }
+    }
+
+    /// The GroveDB path of a subgrove's data tree: `subgroves / {id} / data`.
+    internal static func dataPath(_ subgroveId: String) -> [[UInt8]] {
+        return [Array("subgroves".utf8), Array(subgroveId.utf8), Array("data".utf8)]
+    }
+
+    /// Requires that `result` proves `key` with an item whose bytes are the
+    /// JSON of `value` (compared as JSON, since the API re-serializes it).
+    internal static func requireProven(key: String, value: [String: AnyCodable], in result: GroveDBVerificationResult) throws {
+        guard let proved = result.results.first(where: { $0.key == Data(key.utf8) }) else {
+            throw ProofError("The proof does not prove key \(key)")
+        }
+        guard let itemBytes = groveItemBytes(proved.value) else {
+            throw ProofError("The proven element for \(key) is not an item")
+        }
+        let served = NSDictionary(dictionary: value.mapValues { $0.value })
+        let proven: Any
+        if let json = try? JSONSerialization.jsonObject(with: itemBytes, options: [.fragmentsAllowed]) {
+            proven = json
+        } else {
+            proven = ["hex": itemBytes.hexString]
+        }
+        guard let provenObject = proven as? [String: Any], served.isEqual(to: provenObject) else {
+            throw ProofError("The value served for \(key) is not the value the proof proves")
+        }
+    }
+
+    /// The bytes of a serialized GroveDB `Element::Item(bytes, flags)`: variant
+    /// 0, then the bytes with a bincode varint length (big-endian beyond one
+    /// byte). `nil` for any other element.
+    internal static func groveItemBytes(_ element: Data) -> Data? {
+        let bytes = [UInt8](element)
+        guard bytes.count >= 2, bytes[0] == 0 else { return nil }
+        var index = 1
+        let length: UInt64
+        switch bytes[index] {
+        case 0..<251:
+            length = UInt64(bytes[index])
+            index += 1
+        case 251, 252, 253:
+            let width = bytes[index] == 251 ? 2 : (bytes[index] == 252 ? 4 : 8)
+            guard bytes.count >= index + 1 + width else { return nil }
+            length = bytes[(index + 1)..<(index + 1 + width)].reduce(UInt64(0)) { $0 << 8 | UInt64($1) }
+            index += 1 + width
+        default:
+            return nil
+        }
+        guard length <= UInt64(bytes.count - index) else { return nil }
+        return Data(bytes[index..<(index + Int(length))])
     }
 
     // MARK: - Query Operations
 
     /// Queries data with automatic proof verification.
     /// Applies computed fields if registered for the subgrove.
+    ///
+    /// Asks `POST /query/{subgroveId}` for a proof and requires it to hash to
+    /// the light client's verified root; a response without one throws. The
+    /// documents are not checked against the proof's contents.
     public func query(subgroveId: String, query: QueryRequest) async throws -> QueryResponse {
         guard let client = client else { throw NetworkError("Client deallocated") }
 
         var queryWithProof = query
         queryWithProof.includeProof = true
 
-        let path = "/subgroves/\(subgroveId)/query"
-        var response: QueryResponse = try await client.post(path: path, body: queryWithProof)
+        let envelope: ApiResponse<QueryResponse> = try await client.post(path: "/query/\(subgroveId)", body: queryWithProof)
+        var response = try client.unwrap(envelope, "query result")
 
-        // Verify proof if available
-        if let proofData = response.proof {
-            try await verifyProof(proofData, client: client)
+        guard let proofData = response.proof, !proofData.isEmpty else {
+            throw ProofError("The API returned no proof for the query on \(subgroveId)")
         }
+        try await verifyProof(proofData, client: client)
 
         // Apply computed fields if registered
         if let fields = client.computedFieldRegistry.get(datasetId: subgroveId) {
@@ -61,13 +147,13 @@ public class DataOperations {
         return response
     }
 
-    /// Queries data without proof verification.
+    /// Queries data without proof verification (`POST /query/{subgroveId}`).
     /// Applies computed fields if registered for the subgrove.
     public func queryUnverified(subgroveId: String, query: QueryRequest) async throws -> QueryResponse {
         guard let client = client else { throw NetworkError("Client deallocated") }
 
-        let path = "/subgroves/\(subgroveId)/query"
-        var response: QueryResponse = try await client.post(path: path, body: query)
+        let envelope: ApiResponse<QueryResponse> = try await client.post(path: "/query/\(subgroveId)", body: query)
+        var response = try client.unwrap(envelope, "query result")
 
         // Apply computed fields if registered
         if let fields = client.computedFieldRegistry.get(datasetId: subgroveId) {
@@ -195,6 +281,13 @@ public class DataOperations {
 // MARK: - Helper Types
 
 private struct EmptyStoreResponse: Codable {}
+
+/// What `GET /proof/{subgroveId}/{key}` serves: the hex GroveDB proof and the
+/// block height it was generated at.
+private struct ServedProof: Codable {
+    let proof: String
+    let height: Int64?
+}
 
 private struct BatchStoreRequest: Codable {
     let items: [StoreRequest]

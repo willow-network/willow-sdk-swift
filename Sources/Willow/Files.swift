@@ -116,26 +116,24 @@ public class FileOperations {
             nonce = 0
         }
 
-        // Submit StoreFileManifestTx to consensus
+        // Submit StoreFileManifestTx to consensus through the API's /tx/submit.
         guard let client = client else { throw NetworkError("Client deallocated") }
-        let manifestTx = StoreFileManifestTx(
-            StoreFileManifest: StoreFileManifestTxBody(
-                subgrove_id: subgroveId,
-                file_key: fileKey,
-                filename: filename,
-                content_type: guessContentType(filename),
-                total_size: data.count,
-                content_hash: contentHashHex,
-                chunk_count: chunkCount,
-                chunk_size: chunkSize,
-                chunk_merkle_root: merkleRootHex,
-                owner_did: ownerDid,
-                signature: signatureBytes,
-                public_key_id: publicKeyId,
-                nonce: nonce
-            )
+        let manifestTx = StoreFileManifestConsensusBody(
+            subgrove_id: subgroveId,
+            file_key: fileKey,
+            filename: filename,
+            content_type: guessContentType(filename),
+            total_size: data.count,
+            content_hash: Array(contentHash).map { Int($0) },
+            chunk_count: chunkCount,
+            chunk_size: chunkSize,
+            chunk_merkle_root: Array(merkleRoot).map { Int($0) },
+            owner_did: ownerDid,
+            signature: signatureBytes,
+            public_key_id: publicKeyId,
+            nonce: nonce
         )
-        let _: BroadcastResponse = try await client.post(path: "/broadcast_tx", body: manifestTx)
+        try await client.submitTransaction(encodeTransaction(txType: "StoreFileManifest", transaction: manifestTx))
 
         // Upload chunks to storage node
         for (i, chunk) in chunks.enumerated() {
@@ -246,17 +244,15 @@ public class FileOperations {
             nonce = 0
         }
 
-        let deleteTx = DeleteFileManifestTx(
-            DeleteFileManifest: DeleteFileManifestTxBody(
-                subgrove_id: subgroveId,
-                file_key: fileKey,
-                owner_did: ownerDid,
-                signature: signatureBytes,
-                public_key_id: publicKeyId,
-                nonce: nonce
-            )
+        let deleteTx = DeleteFileManifestConsensusBody(
+            subgrove_id: subgroveId,
+            file_key: fileKey,
+            owner_did: ownerDid,
+            signature: signatureBytes,
+            public_key_id: publicKeyId,
+            nonce: nonce
         )
-        let _: BroadcastResponse = try await client.post(path: "/broadcast_tx", body: deleteTx)
+        try await client.submitTransaction(encodeTransaction(txType: "DeleteFileManifest", transaction: deleteTx))
     }
 
     /// Unregister a storage node (submits UnregisterStorageNode to consensus).
@@ -267,65 +263,15 @@ public class FileOperations {
         let signatureData = try signing.signFunction(Data(signMessage.utf8), signing.privateKey)
         let signatureBytes = Array(signatureData).map { Int($0) }
 
-        let tx = UnregisterStorageNodeTx(
-            UnregisterStorageNode: UnregisterStorageNodeTxBody(
-                node_did: nodeDid,
-                signature: signatureBytes,
-                public_key_id: signing.publicKeyId,
-                nonce: signing.nonce
-            )
+        let tx = UnregisterStorageNodeConsensusBody(
+            node_did: nodeDid,
+            signature: signatureBytes,
+            public_key_id: signing.publicKeyId,
+            nonce: signing.nonce
         )
-        let _: BroadcastResponse = try await client.post(path: "/broadcast_tx", body: tx)
+        try await client.submitTransaction(encodeTransaction(txType: "UnregisterStorageNode", transaction: tx))
     }
 }
-
-// MARK: - Transaction Types
-
-private struct StoreFileManifestTxBody: Encodable {
-    let subgrove_id: String
-    let file_key: String
-    let filename: String
-    let content_type: String
-    let total_size: Int
-    let content_hash: String
-    let chunk_count: Int
-    let chunk_size: Int
-    let chunk_merkle_root: String
-    let owner_did: String
-    let signature: [Int]
-    let public_key_id: String
-    let nonce: Int
-}
-
-private struct StoreFileManifestTx: Encodable {
-    let StoreFileManifest: StoreFileManifestTxBody
-}
-
-private struct DeleteFileManifestTxBody: Encodable {
-    let subgrove_id: String
-    let file_key: String
-    let owner_did: String
-    let signature: [Int]
-    let public_key_id: String
-    let nonce: Int
-}
-
-private struct DeleteFileManifestTx: Encodable {
-    let DeleteFileManifest: DeleteFileManifestTxBody
-}
-
-private struct UnregisterStorageNodeTxBody: Encodable {
-    let node_did: String
-    let signature: [Int]
-    let public_key_id: String
-    let nonce: Int
-}
-
-private struct UnregisterStorageNodeTx: Encodable {
-    let UnregisterStorageNode: UnregisterStorageNodeTxBody
-}
-
-private struct BroadcastResponse: Decodable {}
 
 // MARK: - Helpers
 

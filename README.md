@@ -55,6 +55,36 @@ let value = try await client.data.get(
 )
 ```
 
+## Request signing
+
+With an identity set (`setIdentity`), the client signs each read of subgrove data it sends to the API (`GET /data/{subgrove}/{key}`, `GET /proof/{subgrove}/{key}`, and `POST /query`, `/sql`, and `/graphql`) with a one-time nonce over the whole request. Only this form carries the DID's read rights: a Reader permission on a subgrove, or a place on a priced subgrove's free-reader list. Other requests it signs use the older form below, which the server also accepts in the first 30 s after it restarts, when it refuses nonce-signed requests.
+
+The headers are `X-DID`, `X-Public-Key-ID`, `X-Signature`, `X-Timestamp`, and `X-Nonce`. The signature is over eight lines:
+
+```
+willow-request-v2
+<DID>
+<public key id>
+<METHOD>
+<path and query, exactly as sent>
+<Unix timestamp>
+<nonce>
+<hex SHA-256 of the body>
+```
+
+- The server accepts a timestamp up to 300 s old and 30 s ahead of its clock, and each (DID, nonce) once. The client signs each retry with a new nonce.
+- A nonce is 16 to 128 characters of `A-Z a-z 0-9 - _`. `newRequestNonce()` makes one of 32 hex characters.
+- Ed25519 signatures are sent as hex. secp256k1 signatures are over the Keccak-256 of the message and are sent as `0x`-prefixed hex.
+- Requests sent to an indexer (`indexerURL`) are not signed this way.
+
+To sign a request you send yourself:
+
+```swift
+let headers = try signRequestWithNonce(method: "POST", pathAndQuery: "/query/my-subgrove", body: body, identity: identity)
+```
+
+`signRequest(method:path:identity:)` makes the older `{METHOD}:{PATH}:{TIMESTAMP}` form, over the path without its query string. It proves the DID but carries none of its read rights, and it can be replayed with any body until the timestamp expires.
+
 ## What's in the box
 
 - `Auth` — DID generation, signing

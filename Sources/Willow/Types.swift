@@ -271,6 +271,42 @@ public struct FeeSchedule: Codable {
         case maxTxSizeBytes = "max_tx_size_bytes"
         case maxDataPayloadBytes = "max_data_payload_bytes"
     }
+
+    /// The API serves the amounts as JSON integers (u128, beyond `UInt64` for
+    /// some), so each is read as a string or an integer and kept as its digits.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        func amount(_ key: CodingKeys) throws -> String {
+            if let string = try? container.decode(String.self, forKey: key) {
+                return string
+            }
+            if let integer = try? container.decode(UInt64.self, forKey: key) {
+                return String(integer)
+            }
+            let decimal = try container.decode(Decimal.self, forKey: key)
+            guard decimal.isFinite, decimal >= 0, decimal == decimal.wholePart() else {
+                throw DecodingError.dataCorruptedError(forKey: key, in: container, debugDescription: "Not a whole amount")
+            }
+            return NSDecimalNumber(decimal: decimal).stringValue
+        }
+        didRegistration = try amount(.didRegistration)
+        subgroveRegistration = try amount(.subgroveRegistration)
+        baseTxCost = try amount(.baseTxCost)
+        costPerByte = try amount(.costPerByte)
+        queryFee = try amount(.queryFee)
+        transferFeePercentage = try container.decode(UInt32.self, forKey: .transferFeePercentage)
+        maxTxSizeBytes = try container.decode(UInt64.self, forKey: .maxTxSizeBytes)
+        maxDataPayloadBytes = try container.decode(UInt64.self, forKey: .maxDataPayloadBytes)
+    }
+}
+
+private extension Decimal {
+    func wholePart() -> Decimal {
+        var value = self
+        var result = Decimal()
+        NSDecimalRound(&result, &value, 0, .plain)
+        return result
+    }
 }
 
 // MARK: - Validator Types
@@ -372,22 +408,59 @@ public struct QueryRequest: Codable {
 
 /// A single result from a query.
 public struct QueryResult: Codable {
+    /// The document's key. `POST /query` returns documents without their keys,
+    /// so this is empty for its results.
     public let key: String
     public let data: [String: AnyCodable]
 }
 
-/// Response to a query.
-public struct QueryResponse: Codable {
+/// Response to a query: the `data` of `POST /query/{subgroveId}`, which is
+/// `{ documents, total, offset, limit, proof?, height? }`.
+public struct QueryResponse {
     public let results: [QueryResult]
     public let totalCount: Int
     public let hasMore: Bool
+    /// The GroveDB proof, when one was asked for (served as hex).
     public let proof: Data?
+}
 
+extension QueryResponse: Codable {
     enum CodingKeys: String, CodingKey {
-        case results
-        case totalCount = "total_count"
-        case hasMore = "has_more"
+        case documents
+        case total
+        case offset
         case proof
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let documents = try container.decodeIfPresent([AnyCodable].self, forKey: .documents) ?? []
+        results = try documents.map { document in
+            guard let object = document.value as? [String: Any] else {
+                throw DecodingError.dataCorruptedError(
+                    forKey: .documents, in: container, debugDescription: "A query document is not a JSON object")
+            }
+            return QueryResult(key: "", data: object.mapValues { AnyCodable($0) })
+        }
+        totalCount = try container.decodeIfPresent(Int.self, forKey: .total) ?? results.count
+        let offset = try container.decodeIfPresent(Int.self, forKey: .offset) ?? 0
+        hasMore = offset + results.count < totalCount
+        if let hex = try container.decodeIfPresent(String.self, forKey: .proof) {
+            let clean = hex.hasPrefix("0x") ? String(hex.dropFirst(2)) : hex
+            guard let bytes = Data(hexString: clean) else {
+                throw DecodingError.dataCorruptedError(forKey: .proof, in: container, debugDescription: "The proof is not hex")
+            }
+            proof = bytes
+        } else {
+            proof = nil
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(results.map { AnyCodable($0.data.mapValues { $0.value }) }, forKey: .documents)
+        try container.encode(totalCount, forKey: .total)
+        try container.encodeIfPresent(proof?.hexString, forKey: .proof)
     }
 }
 
@@ -815,10 +888,12 @@ public struct StoreRequest: Codable {
 
 // MARK: - Permission Types
 
-/// A permission entry.
+/// A permission entry, as `GET /did/{did}/permissions` lists them.
 public struct Permission: Codable {
     public let did: String
     public let subgroveId: String?
+    /// The subgrove role granted (for example "reader" or "writer").
+    public let role: String?
     public let actions: [String]
     public let grantedBy: String
     public let grantedAt: Int64
@@ -827,10 +902,22 @@ public struct Permission: Codable {
     enum CodingKeys: String, CodingKey {
         case did
         case subgroveId = "subgrove_id"
+        case role
         case actions
         case grantedBy = "granted_by"
         case grantedAt = "granted_at"
         case expiresAt = "expires_at"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        did = try container.decode(String.self, forKey: .did)
+        subgroveId = try container.decodeIfPresent(String.self, forKey: .subgroveId)
+        role = try container.decodeIfPresent(String.self, forKey: .role)
+        actions = try container.decodeIfPresent([String].self, forKey: .actions) ?? []
+        grantedBy = try container.decode(String.self, forKey: .grantedBy)
+        grantedAt = try container.decode(Int64.self, forKey: .grantedAt)
+        expiresAt = try container.decodeIfPresent(Int64.self, forKey: .expiresAt)
     }
 }
 

@@ -74,7 +74,7 @@ public class WillowClient {
     ///   - indexerURL: Optional indexer node URL for routing GraphQL/SQL queries.
     ///   - timeout: Request timeout in seconds.
     ///   - autoVerify: Whether to automatically verify proofs.
-    public init(baseURL: String, indexerURL: String? = nil, timeout: TimeInterval = 30, autoVerify: Bool = true, apiKey: String? = nil) throws {
+    public convenience init(baseURL: String, indexerURL: String? = nil, timeout: TimeInterval = 30, autoVerify: Bool = true, apiKey: String? = nil) throws {
         guard let url = URL(string: baseURL) else {
             throw ConfigError("Invalid base URL: \(baseURL)")
         }
@@ -89,7 +89,7 @@ public class WillowClient {
             parsedIndexerURL = nil
         }
 
-        self.config = ClientConfig(baseURL: url, indexerURL: parsedIndexerURL, timeout: timeout, autoVerify: autoVerify, apiKey: apiKey)
+        let config = ClientConfig(baseURL: url, indexerURL: parsedIndexerURL, timeout: timeout, autoVerify: autoVerify, apiKey: apiKey)
 
         let sessionConfig = URLSessionConfiguration.default
         sessionConfig.timeoutIntervalForRequest = timeout
@@ -97,13 +97,22 @@ public class WillowClient {
         if let apiKey = apiKey {
             sessionConfig.httpAdditionalHeaders = ["X-API-Key": apiKey]
         }
-        self.session = URLSession(configuration: sessionConfig)
+        self.init(config: config, session: URLSession(configuration: sessionConfig))
+    }
+
+    /// Testing seam: supply the configuration and a `URLSession` (e.g. backed
+    /// by a stub `URLProtocol`).
+    internal init(config: ClientConfig, session: URLSession) {
+        self.config = config
+        self.session = session
 
         self.encoder = JSONEncoder()
         self.encoder.keyEncodingStrategy = .convertToSnakeCase
 
+        // No key conversion: every type this client decodes spells its
+        // snake_case keys in its CodingKeys, and `.convertFromSnakeCase` would
+        // rewrite "root_hash" to "rootHash" before matching, so none would.
         self.decoder = JSONDecoder()
-        self.decoder.keyDecodingStrategy = .convertFromSnakeCase
     }
 
     /// Creates a client with a light client for trustless verification.
@@ -207,17 +216,20 @@ public class WillowClient {
 
     // MARK: - Root Hash
 
-    /// Gets the current root hash from the node.
+    /// Gets the node's current GroveDB root hash (`GET /state/root-hash`).
+    ///
+    /// This is the serving node's own state root, unverified; for a root checked
+    /// against validator signatures use `getVerifiedRootHash()`.
     public func getRootHash() async throws -> String {
-        struct RootHashResponse: Codable {
+        struct RootHash: Codable {
             let rootHash: String
 
             enum CodingKeys: String, CodingKey {
                 case rootHash = "root_hash"
             }
         }
-        let response: RootHashResponse = try await get(path: "/state/root")
-        return response.rootHash
+        let response: ApiResponse<RootHash> = try await get(path: "/state/root-hash")
+        return try unwrap(response, "root hash").rootHash
     }
 
     /// Gets the verified root hash from the light client.
@@ -243,68 +255,197 @@ public class WillowClient {
     // MARK: - HTTP Methods
 
     internal func get<T: Decodable>(path: String) async throws -> T {
-        let url = config.baseURL.appendingPathComponent(path)
-        var request = URLRequest(url: url)
-        request.httpMethod = "GET"
-        addAuthHeaders(&request, method: "GET", path: path)
-        return try await execute(request)
+        return try await send(method: "GET", base: config.baseURL, path: path, body: nil)
     }
 
     internal func post<T: Decodable, B: Encodable>(path: String, body: B) async throws -> T {
-        let url = config.baseURL.appendingPathComponent(path)
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try encoder.encode(body)
-        addAuthHeaders(&request, method: "POST", path: path)
-        return try await execute(request)
+        return try await send(method: "POST", base: config.baseURL, path: path, body: try encoder.encode(body))
     }
 
     /// Posts to an explicit base URL (used for indexer routing).
     internal func postToBase<T: Decodable, B: Encodable>(base: URL, path: String, body: B) async throws -> T {
-        let url = base.appendingPathComponent(path)
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try encoder.encode(body)
-        addAuthHeaders(&request, method: "POST", path: path)
-        return try await execute(request)
+        return try await send(method: "POST", base: base, path: path, body: try encoder.encode(body))
     }
 
     internal func put<T: Decodable, B: Encodable>(path: String, body: B) async throws -> T {
-        let url = config.baseURL.appendingPathComponent(path)
-        var request = URLRequest(url: url)
-        request.httpMethod = "PUT"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try encoder.encode(body)
-        addAuthHeaders(&request, method: "PUT", path: path)
-        return try await execute(request)
+        return try await send(method: "PUT", base: config.baseURL, path: path, body: try encoder.encode(body))
     }
 
     internal func delete(path: String) async throws {
-        let url = config.baseURL.appendingPathComponent(path)
-        var request = URLRequest(url: url)
-        request.httpMethod = "DELETE"
-        addAuthHeaders(&request, method: "DELETE", path: path)
-        let _: EmptyResponse = try await execute(request)
+        let _: EmptyResponse = try await send(method: "DELETE", base: config.baseURL, path: path, body: nil)
     }
 
-    private func addAuthHeaders(_ request: inout URLRequest, method: String, path: String) {
-        if let identity = currentIdentity {
-            if let headers = try? signRequest(method: method, path: path, identity: identity) {
-                for (key, value) in headers {
-                    request.setValue(value, forHTTPHeaderField: key)
-                }
+    /// Submits a transaction already encoded as JSON (`{"<Variant>": {...}}`)
+    /// to the API's `POST /tx/submit`, which hands it to CheckTx.
+    ///
+    /// The API answers HTTP 200 with a nonzero `code` when CheckTx refuses the
+    /// transaction; that is thrown as a `TransactionError`. It is sent once: a
+    /// 5xx can follow a transaction that reached the mempool, and resending it
+    /// would be refused as a replay.
+    @discardableResult
+    internal func submitTransaction(_ body: Data) async throws -> BroadcastResult {
+        let (data, status) = try await sendRaw(method: "POST", base: config.baseURL, path: "/tx/submit", body: body, retry: false)
+        let result = try parseTxSubmitResponse(data: data, statusCode: status)
+        guard result.success else {
+            throw TransactionError(
+                message: result.errorMessage ?? result.rawLog ?? "transaction refused",
+                txHash: result.txHash,
+                errorCode: result.errorCode ?? 0
+            )
+        }
+        return result
+    }
+
+    /// Unwraps the API's `{ success, data, error }` envelope.
+    internal func unwrap<T: Codable>(_ response: ApiResponse<T>, _ what: String) throws -> T {
+        if response.success, let data = response.data {
+            return data
+        }
+        if let error = response.error, error.lowercased().contains("not found") {
+            throw NotFoundError(what)
+        }
+        throw NetworkError(response.error ?? "The API returned no \(what)")
+    }
+
+    private func send<T: Decodable>(method: String, base: URL, path: String, body: Data?) async throws -> T {
+        let (data, _) = try await sendRaw(method: method, base: base, path: path, body: body)
+        // Handle empty response
+        if T.self == EmptyResponse.self {
+            return EmptyResponse() as! T
+        }
+        return try decoder.decode(T.self, from: data)
+    }
+
+    /// Sends a request, retrying network errors, 5xx, and 429 with backoff
+    /// unless `retry` is false, and returns the body and status of a 2xx answer.
+    /// Each attempt is built and signed anew, so a nonce-signed attempt carries
+    /// its own nonce.
+    private func sendRaw(method: String, base: URL, path: String, body: Data?, retry: Bool = true) async throws -> (Data, Int) {
+        let url = try WillowClient.requestURL(base: base, path: path)
+        let toAPI = isAPI(base)
+        return try await execute(maxRetries: retry ? config.retryConfig.maxRetries : 0) {
+            var request = URLRequest(url: url)
+            request.httpMethod = method
+            if let body = body {
+                request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                request.httpBody = body
             }
+            try self.addAuthHeaders(&request, toAPI: toAPI, path: path, body: body ?? Data())
+            return request
         }
     }
 
-    private func execute<T: Decodable>(_ request: URLRequest) async throws -> T {
+    /// The URL for `path` (which may carry a `?query`) under `base`. The path is
+    /// appended to the base URL's path, and both parts are percent-encoded
+    /// where needed; `appendingPathComponent` would encode the `?` itself.
+    internal static func requestURL(base: URL, path: String) throws -> URL {
+        let parts = path.split(separator: "?", maxSplits: 1, omittingEmptySubsequences: false)
+        guard var components = URLComponents(url: base, resolvingAgainstBaseURL: false),
+              let encodedPath = String(parts[0]).addingPercentEncoding(withAllowedCharacters: .urlPathAllowed)
+        else {
+            throw ConfigError("Invalid request URL: \(base.absoluteString) \(path)")
+        }
+        var basePath = components.percentEncodedPath
+        while basePath.hasSuffix("/") {
+            basePath.removeLast()
+        }
+        components.percentEncodedPath = basePath + (encodedPath.hasPrefix("/") ? encodedPath : "/" + encodedPath)
+        if parts.count > 1 {
+            guard let encodedQuery = String(parts[1]).addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) else {
+                throw ConfigError("Invalid query string: \(path)")
+            }
+            components.percentEncodedQuery = encodedQuery
+        } else {
+            components.percentEncodedQuery = nil
+        }
+        components.fragment = nil
+        guard let url = components.url else {
+            throw ConfigError("Invalid request URL: \(base.absoluteString) \(path)")
+        }
+        return url
+    }
+
+    /// The path and query the API receives for `url`: the request line's
+    /// target, less any path the API base URL carries (a proxy mounted under a
+    /// path strips it before the API sees the request).
+    internal func apiTarget(_ url: URL) -> String {
+        let components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+        var target = components?.percentEncodedPath ?? ""
+        if target.isEmpty {
+            target = "/"
+        }
+        if let query = components?.percentEncodedQuery {
+            target += "?" + query
+        }
+        var basePath = URLComponents(url: config.baseURL, resolvingAgainstBaseURL: false)?.percentEncodedPath ?? ""
+        while basePath.hasSuffix("/") {
+            basePath.removeLast()
+        }
+        if !basePath.isEmpty, target.hasPrefix(basePath + "/") {
+            target = String(target.dropFirst(basePath.count))
+        }
+        return target
+    }
+
+    /// Whether `base` is the API (rather than an indexer).
+    private func isAPI(_ base: URL) -> Bool {
+        return base == config.baseURL
+    }
+
+    /// Whether `method` and `target` (a path and query as the API receives
+    /// them) name one of the API's reads of subgrove data:
+    /// `GET /data/:sg/:key`, `GET /proof/:sg/:key`, `POST /query/:sg`,
+    /// `POST /sql/:sg`, and `POST /graphql/:sg`.
+    internal static func isSubgroveReadRoute(method: String, target: String) -> Bool {
+        let path = target.split(separator: "?", maxSplits: 1, omittingEmptySubsequences: false)[0]
+        guard path.hasPrefix("/") else { return false }
+        let segments = path.dropFirst().split(separator: "/", omittingEmptySubsequences: false)
+        guard !segments.contains(where: { $0.isEmpty }) else { return false }
+        switch (method, segments.count) {
+        case ("GET", 3):
+            return segments[0] == "data" || segments[0] == "proof"
+        case ("POST", 2):
+            return ["query", "sql", "graphql"].contains(String(segments[0]))
+        default:
+            return false
+        }
+    }
+
+    /// Signs the request when an identity is set.
+    ///
+    /// A read of subgrove data sent to the API (see `isSubgroveReadRoute`) is
+    /// signed with a one-time nonce over its method, its path and query as
+    /// sent, and its body (`body` must be the exact bytes it sends); only that
+    /// form carries the DID's read rights. Every other request is
+    /// signed in the older `{METHOD}:{PATH}:{TIMESTAMP}` form, which the API
+    /// accepts with 300 s of clock skew either way and from its first second
+    /// up. Requests to an indexer keep the older form too: indexers verify
+    /// neither.
+    private func addAuthHeaders(_ request: inout URLRequest, toAPI: Bool, path: String, body: Data) throws {
+        guard let identity = currentIdentity, let method = request.httpMethod, let url = request.url else {
+            return
+        }
+        let headers: [String: String]
+        let target = apiTarget(url)
+        if toAPI && WillowClient.isSubgroveReadRoute(method: method, target: target) {
+            headers = try signRequestWithNonce(method: method, pathAndQuery: target, body: body, identity: identity)
+        } else if toAPI {
+            headers = try signRequest(method: method, path: target, identity: identity)
+        } else {
+            headers = try signRequest(method: method, path: path, identity: identity)
+        }
+        for (key, value) in headers {
+            request.setValue(value, forHTTPHeaderField: key)
+        }
+    }
+
+    private func execute(maxRetries: Int, _ makeRequest: () throws -> URLRequest) async throws -> (Data, Int) {
         var lastError: Error?
         var backoff = config.retryConfig.initialBackoff
 
-        for attempt in 0...config.retryConfig.maxRetries {
+        for attempt in 0...maxRetries {
             do {
+                let request = try makeRequest()
                 let (data, response) = try await session.data(for: request)
 
                 guard let httpResponse = response as? HTTPURLResponse else {
@@ -316,17 +457,12 @@ public class WillowClient {
                     throw HTTPError(statusCode: httpResponse.statusCode, message: message)
                 }
 
-                // Handle empty response
-                if T.self == EmptyResponse.self {
-                    return EmptyResponse() as! T
-                }
-
-                return try decoder.decode(T.self, from: data)
-            } catch let error as HTTPError where shouldRetry(statusCode: error.statusCode) && attempt < config.retryConfig.maxRetries {
+                return (data, httpResponse.statusCode)
+            } catch let error as HTTPError where shouldRetry(statusCode: error.statusCode) && attempt < maxRetries {
                 lastError = error
                 try await Task.sleep(nanoseconds: UInt64(backoff * 1_000_000_000))
                 backoff = min(backoff * config.retryConfig.backoffFactor, config.retryConfig.maxBackoff)
-            } catch let error as URLError where attempt < config.retryConfig.maxRetries {
+            } catch let error as URLError where attempt < maxRetries {
                 lastError = error
                 try await Task.sleep(nanoseconds: UInt64(backoff * 1_000_000_000))
                 backoff = min(backoff * config.retryConfig.backoffFactor, config.retryConfig.maxBackoff)
