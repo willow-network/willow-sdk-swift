@@ -19,6 +19,37 @@ final class RoutesTests: XCTestCase {
         XCTAssertNil(response.proof)
     }
 
+    func testKeysAreEncodedAsOnePathSegment() async throws {
+        let identity = try RequestSigningTests.vectorIdentity(.ed25519)
+        let stub = StubServer { _ in (200, #"{"success":true,"data":{"a":1}}"#) }
+        let client = try stub.client(baseURL: "http://api.test")
+        client.setIdentity(identity)
+
+        _ = try await client.data.getUnverified(subgroveId: "sg", key: "a?b")
+        _ = try await client.data.getUnverified(subgroveId: "sg", key: "a/b")
+        _ = try await client.data.getUnverified(subgroveId: "sg", key: "50% #1")
+        _ = try await client.data.getUnverified(subgroveId: "sg", key: "..")
+
+        XCTAssertEqual(stub.requests.map { $0.target }, [
+            "/data/sg/a%3Fb",
+            "/data/sg/a%2Fb",
+            "/data/sg/50%25%20%231",
+            "/data/sg/%2E%2E",
+        ])
+        for request in stub.requests {
+            XCTAssertNil(request.url.query)
+            try request.assertNonceSigned(by: identity)
+        }
+    }
+
+    func testRequestPathMustBePercentEncoded() {
+        let base = URL(string: "http://api.test")!
+        XCTAssertThrowsError(try WillowClient.requestURL(base: base, path: "/data/sg/a b"))
+        XCTAssertThrowsError(try WillowClient.requestURL(base: base, path: "/data/sg/a?b"))
+        XCTAssertThrowsError(try WillowClient.requestURL(base: base, path: "/data/sg/%zz"))
+        XCTAssertEqual(try WillowClient.requestURL(base: base, path: "/data/sg/a%20b").absoluteString, "http://api.test/data/sg/a%20b")
+    }
+
     func testMissingDataIsNotFound() async throws {
         // The API answers a missing key with HTTP 200 and success: false.
         let stub = StubServer { _ in (200, #"{"success":false,"data":null,"error":"Data not found"}"#) }
@@ -81,14 +112,22 @@ final class RoutesTests: XCTestCase {
         ])
         let served: [String: AnyCodable] = ["b": AnyCodable("x"), "a": AnyCodable(1)]
 
-        XCTAssertNoThrow(try DataOperations.requireProven(key: "k", value: served, in: result))
-        XCTAssertThrowsError(try DataOperations.requireProven(key: "k", value: ["a": AnyCodable(2)], in: result))
-        XCTAssertThrowsError(try DataOperations.requireProven(key: "other", value: served, in: result))
+        let proven = try DataOperations.requireProven(subgroveId: "sg", key: "k", value: served, in: result)
+        XCTAssertEqual(proven["a"]?.value as? Int, 1)
+        XCTAssertEqual(proven["b"]?.value as? String, "x")
+        XCTAssertThrowsError(try DataOperations.requireProven(subgroveId: "sg", key: "k", value: ["a": AnyCodable(2)], in: result))
+        XCTAssertThrowsError(try DataOperations.requireProven(subgroveId: "sg", key: "other", value: served, in: result))
+        // The same key and value proven under another subgrove's tree.
+        XCTAssertThrowsError(try DataOperations.requireProven(subgroveId: "other", key: "k", value: served, in: result))
+        let elsewhere = GroveDBVerificationResult(rootHash: "00", results: [
+            GroveDBQueryResult(path: [Array("subgroves".utf8), Array("sg".utf8)], key: Data("k".utf8), value: item),
+        ])
+        XCTAssertThrowsError(try DataOperations.requireProven(subgroveId: "sg", key: "k", value: served, in: elsewhere))
 
         let notItem = GroveDBVerificationResult(rootHash: "00", results: [
             GroveDBQueryResult(path: DataOperations.dataPath("sg"), key: Data("k".utf8), value: Data([0x02]) + item.dropFirst()),
         ])
-        XCTAssertThrowsError(try DataOperations.requireProven(key: "k", value: served, in: notItem))
+        XCTAssertThrowsError(try DataOperations.requireProven(subgroveId: "sg", key: "k", value: served, in: notItem))
     }
 
     func testGroveItemBytesReadsLongLengths() {

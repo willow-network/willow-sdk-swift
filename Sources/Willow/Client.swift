@@ -254,8 +254,12 @@ public class WillowClient {
 
     // MARK: - HTTP Methods
 
-    internal func get<T: Decodable>(path: String) async throws -> T {
-        return try await send(method: "GET", base: config.baseURL, path: path, body: nil)
+    // `path` is percent-encoded: build it from literal segments and
+    // `pathSegment(_:)` for each value, so a `/`, `?`, `#`, or `%` in a value
+    // stays inside its segment. A query goes in `query`, not in `path`.
+
+    internal func get<T: Decodable>(path: String, query: [(String, String)] = []) async throws -> T {
+        return try await send(method: "GET", base: config.baseURL, path: path, query: query, body: nil)
     }
 
     internal func post<T: Decodable, B: Encodable>(path: String, body: B) async throws -> T {
@@ -307,8 +311,8 @@ public class WillowClient {
         throw NetworkError(response.error ?? "The API returned no \(what)")
     }
 
-    private func send<T: Decodable>(method: String, base: URL, path: String, body: Data?) async throws -> T {
-        let (data, _) = try await sendRaw(method: method, base: base, path: path, body: body)
+    private func send<T: Decodable>(method: String, base: URL, path: String, query: [(String, String)] = [], body: Data?) async throws -> T {
+        let (data, _) = try await sendRaw(method: method, base: base, path: path, query: query, body: body)
         // Handle empty response
         if T.self == EmptyResponse.self {
             return EmptyResponse() as! T
@@ -320,8 +324,8 @@ public class WillowClient {
     /// unless `retry` is false, and returns the body and status of a 2xx answer.
     /// Each attempt is built and signed anew, so a nonce-signed attempt carries
     /// its own nonce.
-    private func sendRaw(method: String, base: URL, path: String, body: Data?, retry: Bool = true) async throws -> (Data, Int) {
-        let url = try WillowClient.requestURL(base: base, path: path)
+    private func sendRaw(method: String, base: URL, path: String, query: [(String, String)] = [], body: Data?, retry: Bool = true) async throws -> (Data, Int) {
+        let url = try WillowClient.requestURL(base: base, path: path, query: query)
         let toAPI = isAPI(base)
         return try await execute(maxRetries: retry ? config.retryConfig.maxRetries : 0) {
             var request = URLRequest(url: url)
@@ -335,34 +339,66 @@ public class WillowClient {
         }
     }
 
-    /// The URL for `path` (which may carry a `?query`) under `base`. The path is
-    /// appended to the base URL's path, and both parts are percent-encoded
-    /// where needed; `appendingPathComponent` would encode the `?` itself.
-    internal static func requestURL(base: URL, path: String) throws -> URL {
-        let parts = path.split(separator: "?", maxSplits: 1, omittingEmptySubsequences: false)
-        guard var components = URLComponents(url: base, resolvingAgainstBaseURL: false),
-              let encodedPath = String(parts[0]).addingPercentEncoding(withAllowedCharacters: .urlPathAllowed)
+    /// The URL for the percent-encoded `path` under `base`, with `query`
+    /// percent-encoded as its query string. The path is appended to the base
+    /// URL's path as given, so the target the client signs is the one sent.
+    internal static func requestURL(base: URL, path: String, query: [(String, String)] = []) throws -> URL {
+        guard isPercentEncodedPath(path), path.hasPrefix("/"),
+              var components = URLComponents(url: base, resolvingAgainstBaseURL: false)
         else {
-            throw ConfigError("Invalid request URL: \(base.absoluteString) \(path)")
+            throw ConfigError("Invalid request path: \(path)")
         }
         var basePath = components.percentEncodedPath
         while basePath.hasSuffix("/") {
             basePath.removeLast()
         }
-        components.percentEncodedPath = basePath + (encodedPath.hasPrefix("/") ? encodedPath : "/" + encodedPath)
-        if parts.count > 1 {
-            guard let encodedQuery = String(parts[1]).addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) else {
-                throw ConfigError("Invalid query string: \(path)")
+        components.percentEncodedPath = basePath + path
+        components.percentEncodedQuery = query.isEmpty ? nil : try query.map { name, value in
+            guard let name = name.addingPercentEncoding(withAllowedCharacters: queryComponentAllowed),
+                  let value = value.addingPercentEncoding(withAllowedCharacters: queryComponentAllowed)
+            else {
+                throw ConfigError("Invalid query item: \(name)")
             }
-            components.percentEncodedQuery = encodedQuery
-        } else {
-            components.percentEncodedQuery = nil
-        }
+            return "\(name)=\(value)"
+        }.joined(separator: "&")
         components.fragment = nil
         guard let url = components.url else {
             throw ConfigError("Invalid request URL: \(base.absoluteString) \(path)")
         }
         return url
+    }
+
+    /// Characters a query name or value keeps unencoded: those allowed in a
+    /// query, less the `&`, `=`, `+`, and `?` that would change its meaning.
+    private static let queryComponentAllowed: CharacterSet = {
+        var allowed = CharacterSet.urlQueryAllowed
+        allowed.remove(charactersIn: "&=+?")
+        return allowed
+    }()
+
+    /// Whether `path` uses only characters allowed in a URL path, with each
+    /// `%` starting a two-digit escape.
+    private static func isPercentEncodedPath(_ path: String) -> Bool {
+        let scalars = Array(path.unicodeScalars)
+        var index = 0
+        while index < scalars.count {
+            let scalar = scalars[index]
+            if scalar == "%" {
+                guard index + 2 < scalars.count,
+                      scalars[index + 1].properties.isASCIIHexDigit,
+                      scalars[index + 2].properties.isASCIIHexDigit
+                else {
+                    return false
+                }
+                index += 3
+                continue
+            }
+            guard CharacterSet.urlPathAllowed.contains(scalar) else {
+                return false
+            }
+            index += 1
+        }
+        return true
     }
 
     /// The path and query the API receives for `url`: the request line's
@@ -497,6 +533,21 @@ public class WillowClient {
         session.invalidateAndCancel()
         lightClient?.stop()
     }
+}
+
+// MARK: - Path Segments
+
+/// `raw` percent-encoded as one URL path segment: everything outside the
+/// characters a path allows is encoded, and so are `/` and a segment of only
+/// dots, so the value cannot split or climb the path.
+internal func pathSegment(_ raw: String) -> String {
+    var allowed = CharacterSet.urlPathAllowed
+    allowed.remove(charactersIn: "/")
+    let encoded = raw.addingPercentEncoding(withAllowedCharacters: allowed) ?? ""
+    if encoded == "." || encoded == ".." {
+        return String(repeating: "%2E", count: encoded.count)
+    }
+    return encoded
 }
 
 // MARK: - Empty Response

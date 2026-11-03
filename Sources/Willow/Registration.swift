@@ -24,7 +24,7 @@ public class RegistrationOperations {
     public func getSubgrove(subgroveId: String) async throws -> SubgroveRegistration {
         guard let client = client else { throw NetworkError("Client deallocated") }
 
-        let path = "/subgroves/\(subgroveId)"
+        let path = "/subgroves/\(pathSegment(subgroveId))"
         return try await client.get(path: path)
     }
 
@@ -40,7 +40,7 @@ public class RegistrationOperations {
         guard let client = client else { throw NetworkError("Client deallocated") }
         try client.requireAuth()
 
-        let path = "/subgroves/\(subgroveId)"
+        let path = "/subgroves/\(pathSegment(subgroveId))"
         let body = updates.mapValues { AnyCodable($0) }
         return try await client.put(path: path, body: body)
     }
@@ -50,7 +50,7 @@ public class RegistrationOperations {
         guard let client = client else { throw NetworkError("Client deallocated") }
         try client.requireAuth()
 
-        let path = "/subgroves/\(subgroveId)"
+        let path = "/subgroves/\(pathSegment(subgroveId))"
         try await client.delete(path: path)
     }
 
@@ -61,7 +61,7 @@ public class RegistrationOperations {
     public func getPermissions(did: String) async throws -> [Permission] {
         guard let client = client else { throw NetworkError("Client deallocated") }
 
-        let response: ApiResponse<[Permission]> = try await client.get(path: "/did/\(did)/permissions")
+        let response: ApiResponse<[Permission]> = try await client.get(path: "/did/\(pathSegment(did))/permissions")
         return try client.unwrap(response, "permissions")
     }
 
@@ -78,7 +78,7 @@ public class RegistrationOperations {
         guard let client = client else { throw NetworkError("Client deallocated") }
         try client.requireAuth()
 
-        let path = "/permissions/\(did)/\(subgroveId)"
+        let path = "/permissions/\(pathSegment(did))/\(pathSegment(subgroveId))"
         try await client.delete(path: path)
     }
 }

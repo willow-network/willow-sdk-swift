@@ -208,14 +208,14 @@ public class FileOperations {
     /// Get file manifest metadata.
     public func metadata(subgroveId: String, fileKey: String) async throws -> FileManifest {
         guard let client = client else { throw NetworkError("Client deallocated") }
-        let path = "/files/\(subgroveId)/\(fileKey)"
+        let path = "/files/\(pathSegment(subgroveId))/\(pathSegment(fileKey))"
         return try await client.get(path: path)
     }
 
     /// List all files in a subgrove.
     public func list(subgroveId: String) async throws -> [FileManifest] {
         guard let client = client else { throw NetworkError("Client deallocated") }
-        let path = "/files/\(subgroveId)"
+        let path = "/files/\(pathSegment(subgroveId))"
         let response: FileListResponse = try await client.get(path: path)
         return response.files
     }

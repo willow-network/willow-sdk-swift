@@ -221,7 +221,8 @@ final class RequestSigningTests: XCTestCase {
         _ = try await client.indexing.sqlQuery(subgroveId: "sg", query: "SELECT a FROM items")
         _ = try await client.indexing.queryUnverified(subgroveId: "sg", request: GraphQLRequest(query: "{ x }"))
         // A path that needs encoding, and a query string.
-        let _: ApiResponse<AnyCodable> = try await client.get(path: "/data/sg/a b?x=1&y=two words")
+        let _: ApiResponse<AnyCodable> = try await client.get(
+            path: "/data/sg/\(pathSegment("a b"))", query: [("x", "1"), ("y", "two words & more")])
 
         let requests = stub.requests
         // The GET, the refused POST, its retry, SQL, GraphQL, and the encoded GET.
@@ -231,7 +232,7 @@ final class RequestSigningTests: XCTestCase {
             "POST /query/sg",
             "POST /sql/sg",
             "POST /graphql/sg",
-            "GET /data/sg/a%20b?x=1&y=two%20words",
+            "GET /data/sg/a%20b?x=1&y=two%20words%20%26%20more",
         ])
         for request in requests {
             try request.assertNonceSigned(by: identity)
@@ -300,7 +301,7 @@ final class RequestSigningTests: XCTestCase {
     func testRequestURLKeepsTheQueryString() throws {
         let base = URL(string: "https://api.example/base/")!
         XCTAssertEqual(
-            try WillowClient.requestURL(base: base, path: "/data/sg/k?include_proof=false").absoluteString,
+            try WillowClient.requestURL(base: base, path: "/data/sg/k", query: [("include_proof", "false")]).absoluteString,
             "https://api.example/base/data/sg/k?include_proof=false"
         )
         XCTAssertEqual(

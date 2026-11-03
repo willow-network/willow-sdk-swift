@@ -21,7 +21,7 @@ public class TokenOperations {
     public func getBalance(did: String) async throws -> BalanceInfo {
         guard let client = client else { throw NetworkError("Client deallocated") }
 
-        return try await client.get(path: "/token/balance/\(did)")
+        return try await client.get(path: "/token/balance/\(pathSegment(did))")
     }
 
     /// Retrieves the balance for the authenticated user.
