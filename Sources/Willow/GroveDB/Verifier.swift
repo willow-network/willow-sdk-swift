@@ -454,10 +454,11 @@ public class GroveDBVerifier {
     /// next layer by the envelope's `lowerLayers` map KEY, which is not
     /// hash-bound: a prover who renames or drops the entry for a subtree on the
     /// query path gets the same root hash with that subtree's results silently
-    /// gone, so a proof of "K = V" verifies as "K is absent". Requiring a layer
-    /// for every path segment closes it (once a layer is present its root is
-    /// hash-bound to the parent). `proveOptions` is prover-chosen bytes that
-    /// steer limit accounting, so it is pinned to the default the chain uses.
+    /// gone. Requiring a layer for every path segment, and none below the
+    /// last, keeps the results to the layers on the query path (once a layer
+    /// is present its root is hash-bound to the parent). `proveOptions` is
+    /// prover-chosen bytes that steer limit accounting, so it is pinned to the
+    /// default the chain uses.
     public static func checkEnvelope(_ proof: GroveDBProof, expectedPath: [[UInt8]]) throws {
         guard proof.version == 0, let v0 = proof.proof, var layer = v0.rootLayer else {
             throw VerificationError("envelope: missing root layer")
@@ -478,8 +479,9 @@ public class GroveDBVerifier {
     }
 
     /// Verify a proof and require it descends to `expectedPath` (see
-    /// `checkEnvelope`). With the path known, an empty result set at that path
-    /// is a proven absence rather than a possible omission.
+    /// `checkEnvelope`). Every result it returns is bound to the root. The
+    /// query isn't checked, so the proof isn't shown to cover it: a result
+    /// missing from the set, or an empty set, does not prove a key absent.
     public static func verifyProof(proofBytes: Data, expectedPath: [[UInt8]]) throws -> GroveDBVerificationResult {
         let proof = try decodeGroveDBProof(proofBytes)
         try checkEnvelope(proof, expectedPath: expectedPath)
@@ -512,8 +514,15 @@ public class GroveDBVerifier {
 
     /// Replays one layer, recursing into each lower layer the proof carries
     /// for a proven tree element: the element's value hash must be
-    /// `combineHash(valueHash(element), lower layer's root)`. A leaf whose node
-    /// carries a value hash must carry the value that hashes to it.
+    /// `combineHash(valueHash(element), lower layer's root)`. A leaf item whose
+    /// node carries a value hash must carry the value that hashes to it.
+    ///
+    /// A tree element with no lower layer is a result too: grovedb proves one
+    /// that way when the query doesn't descend into it, the tree is empty, or
+    /// the limit ran out. Its value hash combines its bytes with the root of a
+    /// subtree the proof doesn't carry, so only its key is bound to the root,
+    /// not its bytes (a root key, sum, count, or flags, or even its being a
+    /// tree rather than an item).
     private static func verifyLayerProof(_ layer: LayerProof?, currentPath: [[UInt8]], results: inout [GroveDBQueryResult]) throws -> CryptoHash {
         guard let layer = layer else {
             throw VerificationError("Missing layer proof")
@@ -535,7 +544,8 @@ public class GroveDBVerifier {
                     throw VerificationError("Lower layer hash mismatch at key \(keyHex): expected \(proved.proofHash.hexString), got \(combinedHash.hexString)")
                 }
             } else if let value = proved.value {
-                if proved.nodeType == .kvValueHash || proved.nodeType == .kvValueHashFeatureType {
+                if proved.nodeType == .kvValueHash || proved.nodeType == .kvValueHashFeatureType,
+                   !groveTreeRootKey(value).isTree {
                     let computed = valueHash(value)
                     if computed != proved.proofHash {
                         throw VerificationError("The value at key \(keyHex) does not hash to its committed value hash: expected \(proved.proofHash.hexString), got \(computed.hexString)")

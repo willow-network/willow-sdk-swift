@@ -296,6 +296,10 @@ public class GroveDBProof {
 public struct GroveDBQueryResult {
     public let path: [[UInt8]]
     public let key: Data
+    /// The serialized grovedb element (for a reference, the element it points
+    /// to), bound to the root. A tree element proven without its lower layer
+    /// is the exception: only its key is bound, not its bytes (a root key,
+    /// sum, count, or flags, or even its being a tree rather than an item).
     public let value: Data
 
     public init(path: [[UInt8]], key: Data, value: Data) {

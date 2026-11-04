@@ -207,15 +207,48 @@ final class GroveDBProofTests: XCTestCase {
                 XCTAssertTrue("\(error)".contains("prove_options"), "\(name): \(error)")
             }
         }
-        // Without the path, the renamed layer's tree element is read as a
-        // leaf, and its bytes don't hash to the value hash its node commits.
+        // Without the path, the renamed layer hashes to the real root, its
+        // tree element read as one with no lower layer, and none of the
+        // results below it come back: what the descent check is for.
         let single = try XCTUnwrap(fixtures["single-key"])
-        XCTAssertThrowsError(try GroveDBVerifier.verifyProof(proofBytes: Self.hex(XCTUnwrap(single.proof_renamed_layer)))) { error in
-            XCTAssertTrue("\(error)".contains("does not hash to its committed value hash"), "\(error)")
-        }
+        let renamed = try GroveDBVerifier.verifyProofAgainstRoot(
+            proofBytes: Self.hex(XCTUnwrap(single.proof_renamed_layer)), expectedRootHash: single.root
+        )
+        XCTAssertFalse(renamed.results.contains { $0.path == Self.path(single.path) })
         // A shorter or longer path is refused.
         XCTAssertThrowsError(try GroveDBVerifier.verifyProof(proofBytes: Self.hex(single.proof), expectedPath: Array(Self.path(single.path).prefix(3))))
         XCTAssertThrowsError(try GroveDBVerifier.verifyProof(proofBytes: Self.hex(single.proof), expectedPath: Self.path(single.path + ["x"])))
+    }
+
+    /// grovedb proves a tree element the query doesn't descend into as a
+    /// node with no lower layer: its value hash combines its bytes with the
+    /// subtree's root, so its bytes alone don't hash to it. The dropped-layer
+    /// proof is byte for byte grovedb's proof of the key `Supply` itself at
+    /// `subgroves/aave-v3-lending/indexed`, and verifies at that path.
+    func testATreeElementWithNoLowerLayerVerifies() throws {
+        let fixtures = try Self.fixture("envelope-real-proofs", as: [String: Envelope].self)
+        for name in ["single-key", "range-all", "absent-key"] {
+            let f = try XCTUnwrap(fixtures[name], name)
+            let dropped = try Self.hex(XCTUnwrap(f.proof_dropped_layer))
+            let parent = Array(Self.path(f.path).dropLast())
+            let result = try GroveDBVerifier.verifyProofAgainstRoot(proofBytes: dropped, expectedRootHash: f.root, expectedPath: parent)
+            XCTAssertEqual(result.results.count, 1, name)
+            let tree = try XCTUnwrap(result.results.first, name)
+            XCTAssertEqual(tree.path, parent, name)
+            XCTAssertEqual(tree.key, Data("Supply".utf8), name)
+            XCTAssertTrue(groveTreeRootKey(tree.value).isTree, name)
+            XCTAssertEqual(try GroveDBVerifier.verifyProof(proofBytes: dropped).rootHash, f.root, name)
+        }
+        // An item's bytes must still hash to its value hash: the same proof
+        // with the tree element's variant byte changed to an item's is refused.
+        let single = try XCTUnwrap(fixtures["single-key"])
+        let element = "0201" + "44"
+        let asItem = "0001" + "44"
+        let tampered = try XCTUnwrap(single.proof_dropped_layer).replacingOccurrences(of: element, with: asItem)
+        XCTAssertNotEqual(tampered, single.proof_dropped_layer)
+        XCTAssertThrowsError(try GroveDBVerifier.verifyProof(proofBytes: Self.hex(tampered))) { error in
+            XCTAssertTrue("\(error)".contains("does not hash to its committed value hash"), "\(error)")
+        }
     }
 
     func testAChangedValueDoesNotVerify() throws {
