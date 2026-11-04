@@ -4,12 +4,11 @@ A Swift SDK for interacting with the Willow decentralized data infrastructure pr
 
 ## Features
 
-- **Trustless by Default**: Embedded CometBFT light client verifies state roots against validator signatures
-- **GroveDB Proof Verification**: Merkle proofs verified locally for every `get` / `query`
+- **Proof-checked reads**: `data.get` and `data.query` verify a GroveDB proof locally, bound to the subgrove's data tree, and compare its root with the app hash of a CometBFT header (see [Verification](#verification))
 - **DID Authentication**: Ed25519 + secp256k1 signature support
 - **File Storage**: Upload / download / list with chunk-level Merkle verification
 - **Privacy**: XChaCha20-Poly1305 encryption for private subgroves
-- **GraphQL Indexing**: Query indexed blockchain data with cryptographic proofs
+- **GraphQL Indexing**: Query indexed blockchain data (answers are not verified)
 - **Async/Await**: Built on Swift Concurrency
 
 > **Install from source.** Willow's SDKs are not yet published to package registries.
@@ -47,9 +46,19 @@ client.setIdentity(identity)
 // A write is a StoreData transaction, signed by the identity.
 try await client.data.store(subgroveId: "knowledge-base", key: "article-42", data: ["title": "Hello"])
 
-// A read is checked against a GroveDB proof.
+// A read is checked against a GroveDB proof (see Verification).
 let item = try await client.data.get(subgroveId: "knowledge-base", key: "article-42")
 ```
+
+## Verification
+
+What the SDK checks, and what it doesn't:
+
+- **`data.get`** verifies the GroveDB proof the API serves for the key (`GET /proof/{subgrove}/{key}`). The proof must prove the key in the subgrove's data tree, `subgroves/{subgrove}/data`, through a tree element at every segment of that path, with the value the API served (compared as JSON). Its root must equal the app hash of the header after the block the proof's state is from: the API serves that block's height H with the proof, and a header at H+1 carries the state after block H. Hex is compared in any case. It returns the proven value or throws. A key the API reports missing throws `NotFoundError`; that answer comes without a proof, so it doesn't prove the key absent.
+- **`data.query`** verifies the proof the node serves with a query, which covers the subgrove's whole data tree. The proof must show every element of that tree (no pruned or hidden node) or prove it empty, every element must be an item, and its root is compared as for `get`. The SDK then answers the query itself from the proven items, as the node does (the items that parse as JSON in key order, then the filter, sort, offset, and limit), and returns those results with their keys. The documents the API serves are not used. A query the node can't run (more than one filter, an operator other than `eq`, a search) is refused before anything is sent.
+- **The header** comes from `LightClient`, which starts from a header you pin or, without one, the first header the node's RPC endpoint serves (trust on first use). It accepts a later header after checking the chain ID, that height and time move forward, the trusting period, and clock drift, and counting commit signatures by validator address. It does not verify the signatures, nor that the validator set it is served matches the header, so an app hash is as trustworthy as the endpoints it reads. Its header fetch also doesn't parse CometBFT's RPC responses, so `get` and `query` succeed only with a light client pinned at the header after the proof's block, and otherwise throw.
+- **Not verified:** `getUnverified`, `queryUnverified`, `queryHistorical`, GraphQL (`indexing.query`, `indexing.queryUnverified`, `indexing.execute`), and SQL. A GraphQL proof object is returned as JSON bytes, unchecked: it lists value hashes and a state root, which don't bind the answer. `queryHistoricalVerified` throws: a checkpoint's state root isn't a GroveDB root, and the answer isn't bound to its proof.
+- **`GroveDBVerifier.verifyProof(proofBytes:expectedPath:)`** returns only the elements of the tree at the path asked for, each bound to the root. `coversWholeTree` is true when the proof shows that whole tree, so a key missing from the results is absent; otherwise a missing key proves nothing. The path-less `verifyProof(proofBytes:)`, `verifyProofAgainstRoot(proofBytes:expectedRootHash:)`, and `quickVerify` prove only the root and are deprecated.
 
 ## Request signing
 
@@ -209,19 +218,19 @@ The node accepts a nonce in the 24 above the account's base that it hasn't used,
 
 - `Auth` — DID generation, signing
 - `Client` — top-level entry point
-- `Data` — proof-verified `get` and `query`; `store` as a StoreData transaction
+- `Data` — `get` and `query` checked against GroveDB proofs (see [Verification](#verification)); `store` as a StoreData transaction
 - `Files` — upload / download with chunk Merkle verification
 - `Indexing`, `Indexers` — GraphQL / SQL queries against indexed blockchain data
 - `Manifest` — canonical `WillowManifest` types for subgrove registration
 - `Privacy` — XChaCha20-Poly1305 encrypted subgroves
-- `LightClient` — CometBFT light-client implementation (header verification, trust-on-first-use)
-- `GroveDB` — GroveDB proof verifier (verify-only, no full DB): Merk's BLAKE3 hash rules, grovedb's proof encoding, and a descent check on the query path
+- `LightClient` — follows CometBFT headers from a pinned or first-served header; it doesn't verify commit signatures (see [Verification](#verification))
+- `GroveDB` — GroveDB proof verifier (verify-only, no full DB): Merk's BLAKE3 hash rules, grovedb's proof encoding, and results confined to the path asked for
 - `Completeness` — client-side crypto-completeness verify (`canonicalEventSetHash`, `verifyServedEvents`)
 - `Validators`, `Token`, `Consensus`, `Registration`, `Subscriptions`, `ERC8004`
 
 ## Example app
 
-`Examples/NotesApp` is a SwiftUI iOS app that uses the SDK end-to-end: subgrove registration, request signing, and storing and reading data with proofs.
+`Examples/NotesApp` is a SwiftUI iOS app that uses the SDK end-to-end: subgrove registration, request signing, storing notes, and listing them with a proof-checked query (or, when that can't be checked, an unverified one it labels as such).
 
 ## Development
 
@@ -232,7 +241,7 @@ swift test
 
 ## Design
 
-- **Proof-first**: data reads return verified values, not raw bytes — `get` raises on proof mismatch
+- **Proof-first**: `get` and `query` return only what the proof proves, and throw when it can't be checked
 - **No external HTTP layer**: `URLSession` only, no Alamofire/Moya runtime dep
 - **Apple-platforms only for now**: Linux Swift toolchain is plausible but not tested
 

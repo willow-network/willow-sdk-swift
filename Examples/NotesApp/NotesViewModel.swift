@@ -12,6 +12,9 @@ class NotesViewModel: ObservableObject {
     @Published var error: String?
     @Published var filter = NoteFilter()
     @Published var sortOption: NoteSortOption = .updated
+    /// Whether the listed notes were checked against a proof, and if not, why.
+    @Published var listVerified = false
+    @Published var verificationNote: String?
 
     var appState: AppState
 
@@ -57,7 +60,7 @@ class NotesViewModel: ObservableObject {
         notes.filter { $0.pinned }.count
     }
 
-    // MARK: - CRUD Operations
+    // MARK: - Create and List
 
     func loadNotes() async {
         isLoading = true
@@ -65,10 +68,20 @@ class NotesViewModel: ObservableObject {
 
         do {
             let client = try appState.getClient()
-            let response = try await client.data.query(
-                subgroveId: appState.collectionId,
-                query: QueryRequest(limit: 100)
-            )
+            let request = QueryRequest(limit: 100)
+            let response: QueryResponse
+            do {
+                // Checked against a GroveDB proof of the whole notes tree and
+                // the light client's header; throws when it can't be checked.
+                response = try await client.data.query(subgroveId: appState.collectionId, query: request)
+                listVerified = true
+                verificationNote = nil
+            } catch {
+                // Listed without a proof, and labeled as such.
+                response = try await client.data.queryUnverified(subgroveId: appState.collectionId, query: request)
+                listVerified = false
+                verificationNote = "Not verified: \(error.localizedDescription)"
+            }
 
             var loadedNotes: [Note] = []
             for result in response.results {
@@ -108,59 +121,9 @@ class NotesViewModel: ObservableObject {
         }
     }
 
-    func updateNote(_ note: Note) async -> Bool {
-        isLoading = true
-        error = nil
-
-        do {
-            let client = try appState.getClient()
-            try await client.data.update(
-                subgroveId: appState.collectionId,
-                key: note.id,
-                data: note.toDictionary()
-            )
-
-            if let index = notes.firstIndex(where: { $0.id == note.id }) {
-                notes[index] = note
-            }
-
-            isLoading = false
-            return true
-        } catch {
-            self.error = "Failed to update note: \(error.localizedDescription)"
-            isLoading = false
-            return false
-        }
-    }
-
-    func deleteNote(_ note: Note) async -> Bool {
-        isLoading = true
-        error = nil
-
-        do {
-            let client = try appState.getClient()
-            try await client.data.delete(
-                subgroveId: appState.collectionId,
-                key: note.id
-            )
-
-            notes.removeAll { $0.id == note.id }
-            isLoading = false
-            return true
-        } catch {
-            self.error = "Failed to delete note: \(error.localizedDescription)"
-            isLoading = false
-            return false
-        }
-    }
-
-    func togglePin(_ note: Note) async {
-        var updatedNote = note
-        updatedNote.pinned.toggle()
-        updatedNote.updated = Date()
-
-        _ = await updateNote(updatedNote)
-    }
+    // A note is written once. Editing, pinning, or deleting one would be an
+    // UpdateData or DeleteData transaction, which the SDK doesn't build, so
+    // the app offers none of them.
 
     // MARK: - Filtering
 

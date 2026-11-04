@@ -2,8 +2,7 @@
 //
 // This example demonstrates:
 // - Querying indexed blockchain data via GraphQL
-// - Automatic proof verification for query results
-// - Using the light client for trustless verification
+// - Reading a GraphQL answer, which the SDK does not verify
 //
 // To run this example, include it in an iOS/macOS app or Swift package.
 
@@ -18,26 +17,11 @@ struct GraphQLIndexingExample {
         print()
 
         do {
-            // 1. Create client with light client for trustless verification
-            print("1. Creating client with light client...")
-            let lcConfig = LightClientConfig(
-                chainId: "willow-testnet",
-                validatorEndpoints: [
-                    "http://localhost:26657",
-                    "http://localhost:26757"
-                ],
-                trustThreshold: TrustThreshold(numerator: 2, denominator: 3),
-                minValidatorsForConsensus: 2
-            )
-
-            let lc = try LightClient(lcConfig)
-            lc.start()
-
-            let client = try WillowClient(
-                baseURL: "http://localhost:3031",
-                lightClient: lc
-            )
-            print("   Client created with trustless verification enabled")
+            // 1. Create a client. GraphQL answers are not verified, so it
+            // needs no light client.
+            print("1. Creating client...")
+            let client = try WillowClient(baseURL: "http://localhost:3031")
+            print("   Client created")
             print()
 
             // 2. List available subgroves
@@ -81,10 +65,8 @@ struct GraphQLIndexingExample {
                     variables: ["limit": 5]
                 )
 
-                if response.proof != nil {
-                    print("   Query results CRYPTOGRAPHICALLY VERIFIED!")
-                }
-
+                // The answer is not verified: a proof object, if the node
+                // attached one, doesn't bind `data`.
                 if let data = response.data {
                     print("   Response data received (\(data.count) bytes)")
                 }
@@ -154,13 +136,11 @@ struct GraphQLIndexingExample {
             // 6. Summary
             print("6. Summary:")
             print()
-            print("   - Cryptographic proof attached to every query")
-            print("   - Results verifiable against consensus app_hash")
-            print("   - Trustless verification via the light client")
+            print("   - GraphQL answers come back unverified")
+            print("   - For proof-checked reads of a DataStorage subgrove, use client.data.get and client.data.query")
             print()
 
             // Clean up
-            lc.stop()
             client.close()
 
             print("GraphQL indexing example complete!")

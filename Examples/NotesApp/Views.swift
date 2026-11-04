@@ -43,7 +43,7 @@ struct LoginView: View {
                         Text("Willow Notes")
                             .font(.largeTitle)
                             .fontWeight(.bold)
-                        Text("Decentralized, verified notes")
+                        Text("Notes stored on Willow")
                             .font(.subheadline)
                             .foregroundColor(.secondary)
                     }
@@ -255,7 +255,7 @@ struct SetupView: View {
                         .font(.headline)
 
                     SetupStepRow(number: 1, text: "Create a secure, indexed subgrove for your notes on the Willow network")
-                    SetupStepRow(number: 2, text: "Set up cryptographic proofs for data verification")
+                    SetupStepRow(number: 2, text: "List your notes with a query checked against a GroveDB proof")
                 }
                 .padding()
                 .background(Color(.systemGray6))
@@ -362,14 +362,18 @@ struct MainView: View {
                     onSelect: { note in
                         selectedNote = note
                         showingNoteDetail = true
-                    },
-                    onTogglePin: { note in
-                        Task { await viewModel.togglePin(note) }
-                    },
-                    onDelete: { note in
-                        Task { _ = await viewModel.deleteNote(note) }
                     }
                 )
+            }
+
+            if !viewModel.notes.isEmpty {
+                Label(
+                    viewModel.listVerified ? "Checked against a GroveDB proof" : (viewModel.verificationNote ?? "Not verified"),
+                    systemImage: viewModel.listVerified ? "checkmark.seal" : "exclamationmark.triangle"
+                )
+                .font(.caption)
+                .foregroundColor(viewModel.listVerified ? .green : .orange)
+                .padding(.horizontal)
             }
 
             if let error = viewModel.error {
@@ -393,7 +397,7 @@ struct MainView: View {
             }
         }
         .sheet(isPresented: $showingNewNote) {
-            NoteEditorView(viewModel: viewModel, note: nil)
+            NoteEditorView(viewModel: viewModel)
         }
         .sheet(isPresented: $showingNoteDetail) {
             if let note = selectedNote {
@@ -537,8 +541,6 @@ struct EmptyStateView: View {
 struct NotesList: View {
     let notes: [Note]
     let onSelect: (Note) -> Void
-    let onTogglePin: (Note) -> Void
-    let onDelete: (Note) -> Void
 
     var body: some View {
         List {
@@ -546,17 +548,6 @@ struct NotesList: View {
                 NoteRow(note: note)
                     .contentShape(Rectangle())
                     .onTapGesture { onSelect(note) }
-                    .swipeActions(edge: .leading) {
-                        Button(action: { onTogglePin(note) }) {
-                            Label(note.pinned ? "Unpin" : "Pin", systemImage: "pin")
-                        }
-                        .tint(.orange)
-                    }
-                    .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                        Button(role: .destructive, action: { onDelete(note) }) {
-                            Label("Delete", systemImage: "trash")
-                        }
-                    }
             }
         }
         .listStyle(.plain)
@@ -621,8 +612,6 @@ struct NoteDetailView: View {
     @Environment(\.dismiss) var dismiss
     @ObservedObject var viewModel: NotesViewModel
     let note: Note
-    @State private var showingEditor = false
-    @State private var showingDeleteAlert = false
 
     var body: some View {
         NavigationView {
@@ -691,39 +680,6 @@ struct NoteDetailView: View {
                 ToolbarItem(placement: .navigationBarLeading) {
                     Button("Close") { dismiss() }
                 }
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Menu {
-                        Button(action: { showingEditor = true }) {
-                            Label("Edit", systemImage: "pencil")
-                        }
-                        Button(action: {
-                            Task { await viewModel.togglePin(note) }
-                            dismiss()
-                        }) {
-                            Label(note.pinned ? "Unpin" : "Pin", systemImage: "pin")
-                        }
-                        Divider()
-                        Button(role: .destructive, action: { showingDeleteAlert = true }) {
-                            Label("Delete", systemImage: "trash")
-                        }
-                    } label: {
-                        Image(systemName: "ellipsis.circle")
-                    }
-                }
-            }
-            .sheet(isPresented: $showingEditor) {
-                NoteEditorView(viewModel: viewModel, note: note)
-            }
-            .alert("Delete Note?", isPresented: $showingDeleteAlert) {
-                Button("Cancel", role: .cancel) { }
-                Button("Delete", role: .destructive) {
-                    Task {
-                        _ = await viewModel.deleteNote(note)
-                        dismiss()
-                    }
-                }
-            } message: {
-                Text("This action cannot be undone.")
             }
         }
     }
@@ -731,18 +687,16 @@ struct NoteDetailView: View {
 
 // MARK: - Note Editor View
 
+/// Writes a new note. A note is written once: see `NotesViewModel`.
 struct NoteEditorView: View {
     @Environment(\.dismiss) var dismiss
     @ObservedObject var viewModel: NotesViewModel
-    let note: Note?
 
-    @State private var editorState: NoteEditorState
+    @State private var editorState = NoteEditorState()
     @State private var isSaving = false
 
-    init(viewModel: NotesViewModel, note: Note?) {
+    init(viewModel: NotesViewModel) {
         self.viewModel = viewModel
-        self.note = note
-        _editorState = State(initialValue: NoteEditorState(note: note))
     }
 
     var body: some View {
@@ -772,7 +726,7 @@ struct NoteEditorView: View {
                         .autocapitalization(.none)
                 }
             }
-            .navigationTitle(editorState.isNew ? "New Note" : "Edit Note")
+            .navigationTitle("New Note")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .navigationBarLeading) {
@@ -797,12 +751,7 @@ struct NoteEditorView: View {
         let noteToSave = editorState.toNote()
 
         Task {
-            let success: Bool
-            if editorState.isNew {
-                success = await viewModel.createNote(noteToSave)
-            } else {
-                success = await viewModel.updateNote(noteToSave)
-            }
+            let success = await viewModel.createNote(noteToSave)
 
             if success {
                 dismiss()
