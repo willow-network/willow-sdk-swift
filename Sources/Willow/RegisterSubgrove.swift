@@ -262,6 +262,35 @@ extension RegisterSubgroveTx {
         ])
     }
 
+    /// The node's rules for a DataStorage or FileStorage registration: a
+    /// subgrove ID of 1 to 64 ASCII letters, digits, `-`, or `_`, starting
+    /// with a letter or digit, and a schema that declares no indexes. The node
+    /// refuses a registration that breaks one (in its block, spending the
+    /// nonce), so the SDK refuses it before signing.
+    internal func checkStorageRules() throws {
+        switch mode {
+        case .dataStorage, .fileStorage:
+            break
+        case .blockchainIndexing:
+            return
+        }
+        let id = Array(subgroveId.utf8)
+        func letterOrDigit(_ byte: UInt8) -> Bool {
+            return (0x30...0x39).contains(byte) || (0x41...0x5A).contains(byte) || (0x61...0x7A).contains(byte)
+        }
+        guard (1...64).contains(id.count), letterOrDigit(id[0]),
+              id.allSatisfy({ letterOrDigit($0) || $0 == UInt8(ascii: "-") || $0 == UInt8(ascii: "_") })
+        else {
+            throw ValidationError(
+                "A subgrove ID must be 1 to 64 ASCII letters, digits, '-', or '_', starting with a letter or digit: \(subgroveId)"
+            )
+        }
+        if let object = try? JSONSerialization.jsonObject(with: Data(schema.utf8)) as? [String: Any],
+           let indexes = object["indexes"] as? [Any], !indexes.isEmpty {
+            throw ValidationError("The node refuses a data or file subgrove whose schema declares indexes")
+        }
+    }
+
     /// The `/tx/submit` body: `{"RegisterSubgrove": ...}`.
     internal func submitBody() throws -> Data {
         return WireJSON.variant("RegisterSubgrove", try wireJSON()).serialized

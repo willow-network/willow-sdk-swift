@@ -19,11 +19,14 @@ public class RegistrationOperations {
     /// The subgrove's name, description, writers, and readers (as free
     /// readers) come from `request`, and its schema is `request.schema` in the
     /// node's form (`SubgroveSchema(_:)`). The transaction goes out under the
-    /// identity's next nonce, signed over `registerSubgroveMessage`. Refused
-    /// with a validation error before anything is signed: an owner DID other
-    /// than the identity's, a reward rate or retention window (they belong to
-    /// BlockchainIndexing, which this SDK can't register), a schema type the
-    /// node has no match for, or a subgrove ID or owner holding a line break.
+    /// identity's next free nonce, signed over `registerSubgroveMessage`.
+    /// Refused with a validation error before anything is signed: an owner DID
+    /// other than the identity's, a reward rate or retention window (they
+    /// belong to BlockchainIndexing, which this SDK can't register), a schema
+    /// type the node has no match for, a schema with indexes or a subgrove ID
+    /// that isn't 1 to 64 ASCII letters, digits, `-`, or `_` starting with a
+    /// letter or digit (the node refuses both), or an owner holding a line
+    /// break.
     @discardableResult
     public func registerSubgrove(_ request: RegisterSubgroveRequest) async throws -> BroadcastResult {
         guard let client = client else { throw NetworkError("Client deallocated") }

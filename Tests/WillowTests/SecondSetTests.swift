@@ -419,6 +419,12 @@ final class SecondSetTests: XCTestCase {
                 mode: .blockchainIndexing(SubgroveBlockchainIndexing()), publicKeyId: "did:willow:a#key-1", nonce: 0
             ),
             RegisterSubgroveTx(subgroveId: "a\nb", schema: "{}", ownerDid: "did:willow:a", publicKeyId: "did:willow:a#key-1", nonce: 0),
+            // Registrations the node refuses: a subgrove ID that breaks its rule, a schema with indexes.
+            RegisterSubgroveTx(subgroveId: "_sg", schema: "{}", ownerDid: "did:willow:a", publicKeyId: "did:willow:a#key-1", nonce: 0),
+            RegisterSubgroveTx(
+                subgroveId: "notes-1", schema: Self.indexedSchema, ownerDid: "did:willow:a",
+                mode: .fileStorage(SubgroveFileStorage(name: "f", maxFileSize: 1024, replicationFactor: 1)), publicKeyId: "did:willow:a#key-1", nonce: 0
+            ),
         ]
         for registration in refused {
             do {
@@ -432,6 +438,37 @@ final class SecondSetTests: XCTestCase {
         }
         XCTAssertFalse(signed)
         XCTAssertTrue(stub.requests.isEmpty)
+    }
+
+    static let indexedSchema = #"{"version":1,"fields":{"t":"string"},"indexes":[{"name":"by_t","fields":["t"],"unique":false}],"required_fields":[]}"#
+
+    /// The node refuses a DataStorage or FileStorage registration whose
+    /// subgrove ID isn't 1 to 64 ASCII letters, digits, `-`, or `_` starting
+    /// with a letter or digit, or whose schema declares indexes; the builder
+    /// refuses both before anything is signed.
+    func testDataAndFileRegistrationsFollowTheNodesRules() throws {
+        func registration(_ id: String, schema: String = "{}", mode: SubgroveMode = .dataStorage(SubgroveDataStorage())) -> RegisterSubgroveTx {
+            return RegisterSubgroveTx(subgroveId: id, schema: schema, ownerDid: "did:willow:a", mode: mode, publicKeyId: "did:willow:a#key-1", nonce: 1)
+        }
+        let accepted = ["a", "0", "notes-1", "a_b-C9", String(repeating: "z", count: 64)]
+        for id in accepted {
+            XCTAssertNoThrow(try registerSubgroveMessage(registration(id)), id)
+            XCTAssertNoThrow(try registerSubgroveMessage(registration(id, mode: .fileStorage(SubgroveFileStorage(name: "f", maxFileSize: 1024, replicationFactor: 1)))), id)
+        }
+        XCTAssertNoThrow(try registerSubgroveMessage(registration("a", schema: #"{"version":1,"fields":{},"indexes":[],"required_fields":[]}"#)))
+        let refused = ["", "-a", "_a", "a.b", "a b", "a/b", "a:b", "caf\u{E9}", String(repeating: "z", count: 65)]
+        for id in refused {
+            for mode in [SubgroveMode.dataStorage(SubgroveDataStorage()), .fileStorage(SubgroveFileStorage(name: "f", maxFileSize: 1024, replicationFactor: 1))] {
+                XCTAssertThrowsError(try registerSubgroveMessage(registration(id, mode: mode)), id) { error in
+                    XCTAssertEqual((error as? WillowError)?.type, .validation, id)
+                }
+            }
+        }
+        for mode in [SubgroveMode.dataStorage(SubgroveDataStorage()), .fileStorage(SubgroveFileStorage(name: "f", maxFileSize: 1024, replicationFactor: 1))] {
+            XCTAssertThrowsError(try registerSubgroveMessage(registration("a", schema: Self.indexedSchema, mode: mode))) { error in
+                XCTAssertTrue("\(error)".contains("indexes"), "\(error)")
+            }
+        }
     }
 
     /// A client whose identity is the fixture's `did:willow:a#key-1` and a

@@ -149,6 +149,8 @@ Nonce: <nonce>
 
 `Config` hashes the bincode (bincode 1.x's default encoding: fixed-width little-endian integers, u64 lengths) of the `RegisterSubgroveTx` the node decodes from the JSON sent, so it binds every field but the signature. The SDK sends every field explicitly and hashes exactly what it sends; `registerSubgroveUnsignedBincode` returns those bytes. u128 amounts (`U128`) are written as exact JSON numbers. A BlockchainIndexing registration needs fields `SubgroveBlockchainIndexing` doesn't carry, so the SDK refuses to sign one.
 
+The node refuses a DataStorage or FileStorage registration whose subgrove ID isn't 1 to 64 ASCII letters, digits, `-`, or `_` starting with a letter or digit, or whose schema declares indexes. The SDK refuses both before signing.
+
 GrantSubgroveKey (`PrivacyOperations.grantSubgroveKey`):
 
 ```

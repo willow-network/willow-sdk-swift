@@ -32,7 +32,8 @@ struct RegistrationExample {
             print("   Authenticated as: \(identity.did)")
             print()
 
-            // 3. Create schema for user data
+            // 3. Create schema for user data (no indexes: the node refuses a
+            // data subgrove whose schema declares them)
             print("3. Creating schema for user data...")
             let userSchema = SchemaBuilder(name: "users")
                 .description("User profiles and balances")
@@ -42,14 +43,10 @@ struct RegistrationExample {
                 .stringField("wallet_address", required: true)
                 .boolField("verified", required: false)
                 .arrayField("transactions", itemType: "string", required: false)
-                .hashIndex("email_idx", fields: ["email"])
-                .rangeIndex("balance_idx", fields: ["balance"])
-                .uniqueIndex("wallet_idx", fields: ["wallet_address"])
                 .build()
 
             print("   Schema: \(userSchema.name)")
             print("   Fields: \(userSchema.fields.count)")
-            print("   Indexes: \(userSchema.indexes.count)")
             print()
 
             // 4. Register a subgrove with the schema
@@ -81,10 +78,6 @@ struct RegistrationExample {
                 .intField("amount", required: true)
                 .intField("timestamp", required: true)
                 .stringField("status", required: true)
-                .hashIndex("hash_idx", fields: ["tx_hash"])
-                .rangeIndex("time_idx", fields: ["timestamp"])
-                .hashIndex("from_idx", fields: ["from"])
-                .hashIndex("to_idx", fields: ["to"])
                 .build()
 
             let txSubgroveRequest = SubgroveBuilder(

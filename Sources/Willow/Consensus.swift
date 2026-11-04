@@ -544,9 +544,11 @@ public class ConsensusClient {
     /// `signFunction` signs `registerSubgroveMessage` over the subgrove ID,
     /// the owner DID, the SHA-256 of the transaction's bincode with an empty
     /// signature, and the nonce; the SDK sends exactly the fields it hashed.
-    /// A BlockchainIndexing mode, or a subgrove ID or owner DID holding a
-    /// line break, is refused with a validation error before anything is
-    /// signed.
+    /// Refused with a validation error before anything is signed: a
+    /// BlockchainIndexing mode, a subgrove ID or owner DID holding a line
+    /// break, and a DataStorage or FileStorage registration the node refuses
+    /// (a subgrove ID that isn't 1 to 64 ASCII letters, digits, `-`, or `_`
+    /// starting with a letter or digit, or a schema that declares indexes).
     public func registerSubgrove(
         _ registration: RegisterSubgroveTx,
         privateKey: Data,
@@ -1209,8 +1211,10 @@ internal func signedStoreData(
 
 /// The `/tx/submit` body of `tx` signed with `sign`: the signature is over
 /// `registerSubgroveMessage(tx)`, which hashes the very JSON sent (signature
-/// aside), so the node decodes the fields that were signed.
+/// aside), so the node decodes the fields that were signed. A data or file
+/// registration the node refuses is refused before signing.
 internal func signedRegisterSubgroveBody(_ tx: RegisterSubgroveTx, sign: (Data) throws -> Data) throws -> Data {
+    try tx.checkStorageRules()
     var unsigned = tx
     unsigned.signature = []
     let message = try registerSubgroveMessage(json: unsigned.wireJSON())

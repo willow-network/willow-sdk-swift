@@ -164,7 +164,7 @@ final class ApiRoutesTests: XCTestCase {
         let client = try stub.client(baseURL: "http://api.test")
         client.setIdentity(identity)
 
-        let schema = SchemaBuilder(name: "notes").stringField("title", required: true).intField("n").hashIndex("by_title", fields: ["title"]).build()
+        let schema = SchemaBuilder(name: "notes").stringField("title", required: true).intField("n").build()
         let request = SubgroveBuilder(subgroveId: "notes-1", name: "Notes").description("Team notes").schema(schema)
             .writers(["did:willow:a"]).readers(["did:willow:c"]).build()
         try await client.registration.registerSubgrove(request)
@@ -177,7 +177,7 @@ final class ApiRoutesTests: XCTestCase {
         XCTAssertEqual(tx.description, "Team notes")
         XCTAssertEqual(tx.ownerDid, "did:willow:a")
         // The schema in the node's form.
-        XCTAssertEqual(tx.schema, #"{"fields":{"n":"number","title":"string"},"indexes":[{"fields":["title"],"name":"by_title","unique":false}],"required_fields":["title"],"version":1}"#)
+        XCTAssertEqual(tx.schema, #"{"fields":{"n":"number","title":"string"},"indexes":[],"required_fields":["title"],"version":1}"#)
         guard case .dataStorage(let mode) = tx.mode else { return XCTFail("DataStorage") }
         XCTAssertEqual(mode.writers, ["did:willow:a"])
         XCTAssertEqual(mode.freeReaders, ["did:willow:c"])
@@ -195,6 +195,12 @@ final class ApiRoutesTests: XCTestCase {
             RegisterSubgroveRequest(subgroveId: "sg", name: "n", retentionWindow: .indefinite),
             RegisterSubgroveRequest(subgroveId: "sg", name: "n", schema: SchemaDefinition(name: "s", fields: [SchemaField(name: "f", type: "uuid")])),
             RegisterSubgroveRequest(subgroveId: "s\ng", name: "n"),
+            // The node refuses a data subgrove whose ID breaks its rule or whose schema declares indexes.
+            RegisterSubgroveRequest(subgroveId: "", name: "n"),
+            RegisterSubgroveRequest(subgroveId: "-sg", name: "n"),
+            RegisterSubgroveRequest(subgroveId: "sg.1", name: "n"),
+            RegisterSubgroveRequest(subgroveId: String(repeating: "a", count: 65), name: "n"),
+            RegisterSubgroveRequest(subgroveId: "notes-1", name: "n", schema: SchemaBuilder(name: "notes").stringField("title").hashIndex("by_title", fields: ["title"]).build()),
         ]
         for request in refused {
             do {

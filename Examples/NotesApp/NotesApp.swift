@@ -170,6 +170,7 @@ class AppState: ObservableObject {
         let client = try getClient()
 
         // Notes schema: fields are an [SchemaField] array (each with its own name).
+        // No indexes: the node refuses a data subgrove whose schema declares them.
         let schema = SchemaDefinition(
             name: "notes",
             description: "User notes",
@@ -182,10 +183,6 @@ class AppState: ObservableObject {
                 SchemaField(name: "created", type: "number", required: false, indexed: true),
                 SchemaField(name: "updated", type: "number", required: false, indexed: true),
                 SchemaField(name: "pinned", type: "boolean", required: false, indexed: true),
-            ],
-            indexes: [
-                IndexDefinition(name: "by_category", fields: ["category"], type: .hash),
-                IndexDefinition(name: "by_updated", fields: ["updated"], type: .range),
             ]
         )
 

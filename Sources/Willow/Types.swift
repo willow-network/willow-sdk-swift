@@ -188,7 +188,8 @@ public struct RegisterSubgroveRequest: Codable {
 
 /// The document schema a subgrove registers, as the node reads it: field
 /// names mapped to types ("string", "number", "boolean", "array", "object",
-/// or "bytes"), indexes, and required fields.
+/// or "bytes"), indexes, and required fields. The node refuses a DataStorage
+/// or FileStorage registration whose schema declares indexes.
 public struct SubgroveSchema: Codable, Equatable {
     public struct Index: Codable, Equatable {
         public let name: String

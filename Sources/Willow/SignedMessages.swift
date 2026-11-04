@@ -190,8 +190,12 @@ public func registerSubgroveUnsignedBincode(_ tx: RegisterSubgroveTx) throws -> 
 ///
 /// `Config` binds every field of the transaction but its signature. Throws a
 /// validation error when the subgrove ID or owner DID holds a line break, for
-/// a mode the SDK can't build (BlockchainIndexing), or a negative nonce.
+/// a mode the SDK can't build (BlockchainIndexing), a negative nonce, or a
+/// DataStorage or FileStorage registration the node refuses: a subgrove ID
+/// that isn't 1 to 64 ASCII letters, digits, `-`, or `_` starting with a
+/// letter or digit, or a schema that declares indexes.
 public func registerSubgroveMessage(_ tx: RegisterSubgroveTx) throws -> String {
+    try tx.checkStorageRules()
     var unsigned = tx
     unsigned.signature = []
     return try registerSubgroveMessage(json: unsigned.wireJSON())
