@@ -70,10 +70,17 @@ internal enum BLAKE3 {
         return s
     }
 
+    /// The 16 little-endian words of a 64-byte block.
     private static func words(_ block: [UInt8]) -> [UInt32] {
-        return (0..<16).map { i in
-            UInt32(block[4 * i]) | UInt32(block[4 * i + 1]) << 8 | UInt32(block[4 * i + 2]) << 16 | UInt32(block[4 * i + 3]) << 24
+        var words = [UInt32](repeating: 0, count: 16)
+        for i in 0..<16 {
+            var word: UInt32 = 0
+            for j in 0..<4 {
+                word |= UInt32(block[4 * i + j]) << UInt32(8 * j)
+            }
+            words[i] = word
         }
+        return words
     }
 
     // MARK: Tree

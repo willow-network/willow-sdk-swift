@@ -276,7 +276,12 @@ extension RegisterSubgroveTx {
         }
         let id = Array(subgroveId.utf8)
         func letterOrDigit(_ byte: UInt8) -> Bool {
-            return (0x30...0x39).contains(byte) || (0x41...0x5A).contains(byte) || (0x61...0x7A).contains(byte)
+            switch byte {
+            case UInt8(ascii: "0")...UInt8(ascii: "9"), UInt8(ascii: "A")...UInt8(ascii: "Z"), UInt8(ascii: "a")...UInt8(ascii: "z"):
+                return true
+            default:
+                return false
+            }
         }
         guard (1...64).contains(id.count), letterOrDigit(id[0]),
               id.allSatisfy({ letterOrDigit($0) || $0 == UInt8(ascii: "-") || $0 == UInt8(ascii: "_") })

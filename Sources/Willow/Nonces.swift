@@ -29,8 +29,11 @@ internal struct ChainNonces: Equatable {
         try Self.checkRange(base)
         var used: Set<UInt64> = []
         if bytes.count == 11 {
-            for i in 0..<Int(NonceAllocator.window) where bytes[8 + i / 8] & (1 << (i % 8)) != 0 {
-                used.insert(base + 1 + UInt64(i))
+            for i in 0..<Int(NonceAllocator.window) {
+                let bit = UInt8(1) << UInt8(i % 8)
+                if bytes[8 + i / 8] & bit != 0 {
+                    used.insert(base + 1 + UInt64(i))
+                }
             }
         }
         try self.init(base: base, used: used)

@@ -41,7 +41,7 @@ final class NonceTests: XCTestCase {
         var bitmap: [UInt8] = [0, 0, 0]
         for nonce in used where nonce > base && nonce <= base + 24 {
             let i = Int(nonce - base - 1)
-            bitmap[i / 8] |= 1 << (i % 8)
+            bitmap[i / 8] |= UInt8(1) << UInt8(i % 8)
         }
         bytes += bitmap
         return #"{"jsonrpc":"2.0","id":1,"result":{"response":{"code":0,"log":"","value":"\#(Data(bytes).base64EncodedString())"}}}"#
