@@ -17,15 +17,19 @@ public class DataOperations {
     /// Reads the value from `GET /data/{subgroveId}/{key}` and its proof
     /// from `GET /proof/{subgroveId}/{key}`. The proof must prove, in the
     /// subgrove's data tree (`subgroves/{subgroveId}/data`), the key with the
-    /// value served, and its root must equal (as hex, case-insensitively) the
-    /// app hash of the header after the block the proof's state is from: the
-    /// proof is served with that block's height H, and a header at H+1
-    /// carries the state after block H. The light client supplies that
-    /// header (`LightClient.verifiedAppHash(atHeight:)`), waiting for it if
-    /// the chain hasn't produced it yet. The proof is checked with Merk's
-    /// hash rules (BLAKE3) and grovedb's proof encoding. It returns the value
-    /// the proof proves; any failure throws, and the value is never returned
-    /// unverified.
+    /// value served, and its root must be the chain's app hash after the
+    /// block the proof's state is from. The proof is served with that
+    /// block's height H; a header at H+1 carries the state after block H,
+    /// and so does every later header up to and including the header of the
+    /// next block with transactions, since a block without them leaves the
+    /// state unchanged.
+    /// The light client supplies the header
+    /// (`LightClient.verifyAppHash(_:forStateAfter:)`): one it has accepted
+    /// at H+1 or later that carries the root, or else the header at H+1,
+    /// waiting for it if the chain hasn't produced it yet. The proof is
+    /// checked with Merk's hash rules (BLAKE3) and grovedb's proof encoding.
+    /// It returns the value the proof proves; any failure throws, and the
+    /// value is never returned unverified.
     ///
     /// The app hash is only as trustworthy as the light client's header: see
     /// `LightClient`, whose header check does not verify commit signatures.
@@ -36,8 +40,9 @@ public class DataOperations {
     public func get(subgroveId: String, key: String) async throws -> DataResponse {
         guard let client = client else { throw NetworkError("Client deallocated") }
 
-        // The light client starts from a header before the proof is read, so
-        // the header after the proof's block is at or after it.
+        // The light client takes its first header before the proof is read:
+        // either the header after the proof's block is above it, or no block
+        // with transactions came between and it carries the proof's state.
         let lc = try await client.getOrCreateLightClient()
 
         let value = try await fetchValue(subgroveId: subgroveId, key: key, client: client)
@@ -63,17 +68,14 @@ public class DataOperations {
         )
     }
 
-    /// Requires that `rootHash` is the app hash of the header at `height + 1`,
-    /// which carries the state after block `height`; hex is compared
+    /// Requires that `rootHash` is the chain's app hash after block `height`
+    /// (see `LightClient.verifyAppHash(_:forStateAfter:)`); hex is compared
     /// case-insensitively.
     internal static func requireRoot(_ rootHash: String, stateAfter height: Int64, lightClient: LightClient) async throws {
         guard height < Int64.max else {
             throw ProofError("The proof's height \(height) has no next header")
         }
-        let appHash = try await lightClient.verifiedAppHash(atHeight: height + 1)
-        guard rootHash.lowercased() == appHash.lowercased() else {
-            throw ProofError("The proof's root \(rootHash) is not the app hash \(appHash) of the header at height \(height + 1)")
-        }
+        _ = try await lightClient.verifyAppHash(rootHash, forStateAfter: height)
     }
 
     /// Gets an item without proof verification (faster but less secure), from
@@ -109,7 +111,7 @@ public class DataOperations {
         guard let proved = result.results.first(where: { $0.path == path && $0.key == Data(key.utf8) }) else {
             throw ProofError("The proof does not prove key \(key) in \(subgroveId)'s data")
         }
-        guard let itemBytes = groveItemBytes(proved.value) else {
+        guard proved.isValueBound, let itemBytes = groveItemBytes(proved.value) else {
             throw ProofError("The proven element for \(key) is not an item")
         }
         let served = NSDictionary(dictionary: value.mapValues { $0.value })
@@ -158,16 +160,36 @@ public class DataOperations {
     /// Asks `POST /query/{subgroveId}` for a proof. The node proves every
     /// element of `subgroves/{subgroveId}/data`; the proof must prove that
     /// tree at that path and hide no node of it (or prove it empty), every
-    /// element must be an item, and its root must equal the app hash of the
-    /// header after the block the proof's state is from, as in `get`. The
-    /// SDK then answers the query itself over those items, as the node does:
-    /// the items that parse as JSON, in key order; the filter (one equality
-    /// on a field, numbers compared by value); the sort (numbers by value,
-    /// strings by their UTF-8 bytes, anything else as equal, ties kept in key
-    /// order); then the offset and limit (default 100). The documents the
-    /// API serves are not used: every result is a proven item, with its key,
-    /// and `totalCount` counts the proven items that pass the filter. Any
-    /// failure throws.
+    /// element must be an item, and its root must be the chain's app hash
+    /// after the block the proof's state is from, as in `get`. The SDK then
+    /// answers the query itself over those items, as the node does, reading
+    /// the items and the request body it sends as the node's JSON reader
+    /// does (`serde_json` with arbitrary precision):
+    ///
+    /// - the items that parse as JSON, in key order;
+    /// - the filter: the value at the field's dotted path (object keys
+    ///   compared as UTF-8 bytes) must equal the filter's value as JSON
+    ///   values, numbers compared by their text as the node keeps it (so `1`
+    ///   isn't `1.0`, nor `9007199254740993` `9007199254740992`), strings by
+    ///   their UTF-8 bytes;
+    /// - the sort, stable: numbers by value, strings by their UTF-8 bytes;
+    /// - the offset and limit (default 100).
+    ///
+    /// Of the API's answer only the proof and its height are read; the
+    /// documents it serves are not used. Every result is a proven item, with
+    /// its key, and `totalCount` counts the proven items that pass the
+    /// filter. Numbers in the results are `Int` when they are integers that
+    /// fit, else `Double`. Any failure throws.
+    ///
+    /// Where the node's answer can't be reproduced, the query isn't verified:
+    /// it throws a proof error when the sort field holds, across the matching
+    /// items, numbers or strings that differ alongside values of another kind
+    /// (or no value), which the node's sort doesn't put in one order; when a
+    /// proven item has an object whose first key is one of serde_json's
+    /// private tokens; and when a result holds a number outside `Double`'s
+    /// range or an object two of whose keys differ only as Unicode canonical
+    /// equivalents. `queryUnverified` returns the node's answer to such a
+    /// query, unchecked.
     ///
     /// The app hash is only as trustworthy as the light client's header: see
     /// `LightClient`. A request the node can't run (see `QueryRequest`) is
@@ -179,23 +201,30 @@ public class DataOperations {
 
         var queryWithProof = query
         queryWithProof.includeProof = true
-        let envelope: ApiResponse<QueryResponse> = try await client.postVerbatim(path: "/query/\(pathSegment(subgroveId))", body: queryWithProof)
+        // The body is written once: the query is answered from these bytes,
+        // read as the node reads them, and these bytes are sent.
+        let body = try WillowClient.verbatimBody(queryWithProof)
+        let plan = try NodeQueryPlan(body: body)
+        let envelope: ApiResponse<ServedQueryProof> = try await client.postData(path: "/query/\(pathSegment(subgroveId))", body: body)
         let served = try client.unwrap(envelope, "query result")
 
-        guard let proof = served.proof, !proof.isEmpty else {
+        guard let proofHex = served.proof else {
             throw ProofError("The API returned no proof for the query on \(subgroveId)")
+        }
+        guard let proof = Data(hexString: proofHex.hasPrefix("0x") ? String(proofHex.dropFirst(2)) : proofHex), !proof.isEmpty else {
+            throw ProofError("The API returned a proof for the query on \(subgroveId) that isn't hex")
         }
         guard let height = served.height, height > 0 else {
             throw ProofError("The API returned the proof for the query on \(subgroveId) without the height of its state")
         }
 
-        let answer = try DataOperations.answer(query, proof: proof, path: DataOperations.dataPath(subgroveId))
+        let answer = try DataOperations.answer(plan, proof: proof, path: DataOperations.dataPath(subgroveId))
         try await DataOperations.requireRoot(answer.rootHash, stateAfter: height, lightClient: lc)
 
         var response = QueryResponse(
             results: answer.results,
             totalCount: answer.total,
-            hasMore: (query.offset ?? 0) + answer.results.count < answer.total,
+            hasMore: plan.offset + answer.results.count < answer.total,
             proof: proof,
             height: height
         )
@@ -206,38 +235,53 @@ public class DataOperations {
     }
 
     /// Verifies `proof` as a proof of the whole tree at `path` holding only
-    /// items, and answers `query` over those items as the node's query route
-    /// does (see `query(subgroveId:query:)`).
+    /// items, and answers `query`, as the SDK sends it, over those items as
+    /// the node's query route does (see `query(subgroveId:query:)`).
     internal static func answer(_ query: QueryRequest, proof: Data, path: [[UInt8]]) throws -> (rootHash: String, results: [QueryResult], total: Int) {
         try query.validateForNode()
+        return try answer(NodeQueryPlan(body: WillowClient.verbatimBody(query)), proof: proof, path: path)
+    }
+
+    internal static func answer(_ plan: NodeQueryPlan, proof: Data, path: [[UInt8]]) throws -> (rootHash: String, results: [QueryResult], total: Int) {
         let (rootHash, tree) = try GroveDBVerifier.verifyTree(proof, at: path)
+
+        // The node reads the tree in key order.
+        var items: [(key: Data, bytes: Data)] = []
+        for entry in tree.entries.sorted(by: { $0.key.lexicographicallyPrecedes($1.key) }) {
+            guard entry.nodeType == .kv, entry.isValueBound, let bytes = groveItemBytes(entry.value) else {
+                throw ProofError("The data tree holds an element that isn't an item, at key \(entry.key.hexString)")
+            }
+            items.append((entry.key, bytes))
+        }
         guard tree.complete else {
             throw ProofError("The proof doesn't show the whole data tree (it hides nodes), so the query's answer can't be checked")
         }
 
-        // The node reads the tree in key order and skips items that aren't JSON.
-        var documents: [(key: String, value: Any)] = []
-        for entry in tree.entries.sorted(by: { $0.key.lexicographicallyPrecedes($1.key) }) {
-            guard entry.nodeType == .kv, let bytes = groveItemBytes(entry.value) else {
-                throw ProofError("The data tree holds an element that isn't an item, at key \(entry.key.hexString)")
-            }
-            if let json = try? JSONDecoder().decode(AnyCodable.self, from: bytes) {
-                documents.append((String(decoding: entry.key, as: UTF8.self), json.value))
+        // It skips an item its JSON reader refuses.
+        var documents: [(key: Data, value: NodeJSON)] = []
+        for item in items {
+            do {
+                documents.append((item.key, try NodeJSON.parse(item.bytes)))
+            } catch NodeJSON.ReadError.notJSON {
+                continue
+            } catch NodeJSON.ReadError.unsupported(let why) {
+                throw unverifiable("the item at key \(item.key.hexString) can't be read as the node reads it: \(why)")
             }
         }
 
-        if let filter = query.filters.first {
-            documents = documents.filter { document in
-                guard let field = fieldValue(document.value, filter.field) else { return false }
-                return jsonEqual(field, filter.value.value)
-            }
+        if let filter = plan.filter {
+            documents = documents.filter { $0.value.value(atPath: filter.field) == filter.value }
         }
-        if let sort = query.sort {
+        if let sort = plan.sort {
+            let keys = documents.map { SortKey($0.value.value(atPath: sort.field)) }
+            guard SortKey.orderIsConsistent(keys) else {
+                throw unverifiable(
+                    "its sort field holds, across the matching items, numbers or strings that differ alongside values of another kind or no value, which the node's sort doesn't put in one order")
+            }
             // A stable sort: ties keep key order.
-            let keys: [Any?] = documents.map { fieldValue($0.value, sort.field) }
             let order: [Int] = Array(documents.indices).sorted { (i: Int, j: Int) -> Bool in
-                var compared: Int = compareForSort(keys[i], keys[j])
-                if !sort.ascending {
+                var compared: Int = SortKey.compare(keys[i], keys[j])
+                if sort.descending {
                     compared = -compared
                 }
                 if compared != 0 {
@@ -249,83 +293,93 @@ public class DataOperations {
         }
 
         let total = documents.count
-        let page = documents.dropFirst(query.offset ?? 0).prefix(query.limit ?? 100)
+        let page = documents.dropFirst(plan.offset).prefix(plan.limit)
         let results = try page.map { document -> QueryResult in
-            guard let object = document.value as? [String: Any] else {
-                throw SerializationError("The document at key \(document.key) is not a JSON object")
+            guard case .object = document.value else {
+                throw SerializationError("The document at key \(document.key.hexString) is not a JSON object")
             }
-            return QueryResult(key: document.key, data: object.mapValues { AnyCodable($0) })
+            let object: [String: Any]
+            do {
+                object = try document.value.foundationValue() as? [String: Any] ?? [:]
+            } catch NodeJSON.ReadError.unsupported(let why) {
+                throw unverifiable("the result at key \(document.key.hexString) can't be returned exactly: \(why)")
+            }
+            return QueryResult(key: String(decoding: document.key, as: UTF8.self), data: object.mapValues { AnyCodable($0) })
         }
         return (rootHash.hexString, results, total)
     }
 
-    /// The value at a dotted field path, through JSON objects only.
-    internal static func fieldValue(_ document: Any, _ path: String) -> Any? {
-        var current = document
-        for part in path.split(separator: ".", omittingEmptySubsequences: false) {
-            guard let object = current as? [String: Any], let next = object[String(part)] else { return nil }
-            current = next
-        }
-        return current
+    /// The error for a query whose answer the SDK can't reproduce.
+    private static func unverifiable(_ why: String) -> WillowError {
+        return ProofError("This query can't be verified: \(why). queryUnverified returns the node's answer, unchecked")
     }
 
-    /// JSON equality: null, booleans, numbers (by value), strings (by their
-    /// UTF-8 bytes), arrays, and objects. A boolean is not a number.
-    internal static func jsonEqual(_ a: Any, _ b: Any) -> Bool {
-        switch (a, b) {
-        case (is NSNull, is NSNull):
-            return true
-        case let (x as [Any], y as [Any]):
-            guard x.count == y.count else { return false }
-            for i in x.indices where !jsonEqual(x[i], y[i]) {
+    /// A sort field's value as the node's comparator sees it: a number as
+    /// `f64` (none when it isn't finite, which sorts first), a string as its
+    /// UTF-8 bytes, anything else (a missing field included) as equal to
+    /// everything.
+    internal enum SortKey: Equatable {
+        case number(Double?)
+        case string([UInt8])
+        case other
+
+        init(_ value: NodeJSON?) {
+            switch value {
+            case .number(let text)?:
+                let double = Double(text)
+                self = .number(double.flatMap { $0.isFinite ? ($0 == 0 ? 0 : $0) : nil })
+            case .string(let bytes)?:
+                self = .string(bytes)
+            default:
+                self = .other
+            }
+        }
+
+        /// -1, 0, or 1, as the node compares two values.
+        static func compare(_ a: SortKey, _ b: SortKey) -> Int {
+            switch (a, b) {
+            case let (.number(x), .number(y)):
+                switch (x, y) {
+                case (nil, nil): return 0
+                case (nil, _): return -1
+                case (_, nil): return 1
+                case let (x?, y?): return x < y ? -1 : (x > y ? 1 : 0)
+                }
+            case let (.string(x), .string(y)):
+                return x == y ? 0 : (x.lexicographicallyPrecedes(y) ? -1 : 1)
+            default:
+                return 0
+            }
+        }
+
+        /// Whether the node's comparator orders `keys` consistently (a strict
+        /// weak order), so that its stable sort has one answer. It does when
+        /// the keys are all numbers, all strings, or all equal to each other;
+        /// numbers (or strings) that differ, alongside a key of another kind,
+        /// are each equal to that key but not to each other.
+        static func orderIsConsistent(_ keys: [SortKey]) -> Bool {
+            var numbers = Set<Double?>()
+            var strings = Set<[UInt8]>()
+            var (numberCount, stringCount, otherCount) = (0, 0, 0)
+            for key in keys {
+                switch key {
+                case .number(let value):
+                    numbers.insert(value)
+                    numberCount += 1
+                case .string(let bytes):
+                    strings.insert(bytes)
+                    stringCount += 1
+                case .other:
+                    otherCount += 1
+                }
+            }
+            if numbers.count > 1, stringCount > 0 || otherCount > 0 {
+                return false
+            }
+            if strings.count > 1, numberCount > 0 || otherCount > 0 {
                 return false
             }
             return true
-        case let (x as [String: Any], y as [String: Any]):
-            guard x.count == y.count else { return false }
-            for (key, value) in x {
-                guard let other = y[key], jsonEqual(value, other) else { return false }
-            }
-            return true
-        case let (x as String, y as String):
-            return Array(x.utf8) == Array(y.utf8)
-        default:
-            if let x = jsonBool(a), let y = jsonBool(b) { return x == y }
-            if let x = jsonNumber(a), let y = jsonNumber(b) { return x == y }
-            return false
-        }
-    }
-
-    /// -1, 0, or 1, as the node sorts: numbers by value, strings by their
-    /// UTF-8 bytes, anything else (a missing field, mixed kinds) as equal.
-    internal static func compareForSort(_ a: Any?, _ b: Any?) -> Int {
-        if let a = a, let b = b, let x = jsonNumber(a), let y = jsonNumber(b) {
-            return x < y ? -1 : (x > y ? 1 : 0)
-        }
-        if let x = a as? String, let y = b as? String {
-            let (u, v) = (Array(x.utf8), Array(y.utf8))
-            return u == v ? 0 : (u.lexicographicallyPrecedes(v) ? -1 : 1)
-        }
-        return 0
-    }
-
-    private static func jsonBool(_ value: Any) -> Bool? {
-        if type(of: value) == Bool.self {
-            return value as? Bool
-        }
-        if let number = value as? NSNumber, CFGetTypeID(number) == CFBooleanGetTypeID() {
-            return number.boolValue
-        }
-        return nil
-    }
-
-    private static func jsonNumber(_ value: Any) -> Double? {
-        if jsonBool(value) != nil { return nil }
-        switch value {
-        case let int as Int: return Double(int)
-        case let double as Double: return double
-        case let number as NSNumber: return number.doubleValue
-        default: return nil
         }
     }
 
@@ -470,6 +524,78 @@ public class DataOperations {
 private struct ServedProof: Codable {
     let proof: String
     let height: Int64?
+}
+
+/// The part of `POST /query`'s answer a verified query reads: the proof and
+/// its height.
+private struct ServedQueryProof: Codable {
+    let proof: String?
+    let height: Int64?
+}
+
+/// A query as the node's query route reads it from the request body: the
+/// first member of `filters` as an equality filter unless its value is an
+/// object, the sort's field and order (`desc`, or else ascending), the
+/// offset, and the limit (default 100).
+internal struct NodeQueryPlan {
+    let filter: (field: [UInt8], value: NodeJSON)?
+    let sort: (field: [UInt8], descending: Bool)?
+    let offset: Int
+    let limit: Int
+
+    init(body: Data) throws {
+        guard case .object(let request)? = try? NodeJSON.parse(body) else {
+            throw ValidationError("The query body isn't a JSON object the node reads")
+        }
+        func key(_ name: String) -> NodeJSON? {
+            return request[Array(name.utf8)]
+        }
+        func count(_ name: String, default fallback: Int) throws -> Int {
+            switch key(name) {
+            case nil, .null?:
+                return fallback
+            case .number(let text)?:
+                guard let value = UInt32(text) else { throw ValidationError("A query's \(name) must be 0 to \(UInt32.max)") }
+                return Int(value)
+            default:
+                throw ValidationError("A query's \(name) must be a number")
+            }
+        }
+
+        if case .object(let filters)? = key("filters") {
+            // The node takes the map's first member: one is unambiguous.
+            guard filters.count <= 1 else {
+                throw ValidationError("The node's query route runs one filter; this query has \(filters.count)")
+            }
+            if let field = filters.keys.first, let value = filters[field] {
+                if case .object = value {
+                    filter = nil
+                } else {
+                    filter = (field, value)
+                }
+            } else {
+                filter = nil
+            }
+        } else {
+            filter = nil
+        }
+
+        switch key("sort") {
+        case nil, .null?:
+            sort = nil
+        case .object(let members)?:
+            guard case .string(let field)? = members[Array("field".utf8)],
+                  case .string(let order)? = members[Array("order".utf8)] else {
+                throw ValidationError("A query's sort needs a field and an order")
+            }
+            sort = (field, order == Array("desc".utf8))
+        default:
+            throw ValidationError("A query's sort must be an object")
+        }
+
+        offset = try count("offset", default: 0)
+        limit = try count("limit", default: 100)
+    }
 }
 
 // MARK: - Query Builder

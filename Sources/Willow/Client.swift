@@ -325,9 +325,20 @@ public class WillowClient {
     /// chose (a filter's field, a GraphQL variable) go out as written. The
     /// body's own CodingKeys spell the wire names.
     internal func postVerbatim<T: Decodable, B: Encodable>(base: URL? = nil, path: String, body: B) async throws -> T {
+        return try await send(method: "POST", base: base ?? config.baseURL, path: path, body: try WillowClient.verbatimBody(body))
+    }
+
+    /// The body `postVerbatim` sends for `body`: JSON with sorted keys and no
+    /// key conversion.
+    internal static func verbatimBody<B: Encodable>(_ body: B) throws -> Data {
         let verbatim = JSONEncoder()
         verbatim.outputFormatting = [.sortedKeys]
-        return try await send(method: "POST", base: base ?? config.baseURL, path: path, body: try verbatim.encode(body))
+        return try verbatim.encode(body)
+    }
+
+    /// Posts bytes already written as the body.
+    internal func postData<T: Decodable>(path: String, body: Data) async throws -> T {
+        return try await send(method: "POST", base: config.baseURL, path: path, body: body)
     }
 
     internal func put<T: Decodable, B: Encodable>(path: String, body: B) async throws -> T {

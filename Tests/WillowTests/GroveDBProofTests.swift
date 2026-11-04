@@ -239,6 +239,9 @@ final class GroveDBProofTests: XCTestCase {
             XCTAssertEqual(tree.path, parent, name)
             XCTAssertEqual(tree.key, Data("Supply".utf8), name)
             XCTAssertTrue(groveTreeRootKey(tree.value).isTree, name)
+            // Only its key is bound, so the proof doesn't show the tree whole.
+            XCTAssertFalse(tree.isValueBound, name)
+            XCTAssertFalse(result.coversWholeTree, name)
             XCTAssertEqual(try GroveDBVerifier.verifyProof(proofBytes: dropped).rootHash, f.root, name)
         }
         // An item's bytes must still hash to its value hash: the same proof

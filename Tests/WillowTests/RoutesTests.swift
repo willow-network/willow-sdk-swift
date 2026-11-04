@@ -130,6 +130,11 @@ final class RoutesTests: XCTestCase {
             GroveDBQueryResult(path: DataOperations.dataPath("sg"), key: Data("k".utf8), value: Data([0x02]) + item.dropFirst()),
         ])
         XCTAssertThrowsError(try DataOperations.requireProven(subgroveId: "sg", key: "k", value: served, in: notItem))
+
+        let unbound = GroveDBVerificationResult(rootHash: "00", results: [
+            GroveDBQueryResult(path: DataOperations.dataPath("sg"), key: Data("k".utf8), value: item, isValueBound: false),
+        ])
+        XCTAssertThrowsError(try DataOperations.requireProven(subgroveId: "sg", key: "k", value: served, in: unbound))
     }
 
     func testGroveItemBytesReadsLongLengths() {

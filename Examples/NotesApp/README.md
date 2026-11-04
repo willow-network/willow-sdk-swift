@@ -121,4 +121,4 @@ In `NotesApp.swift`, update the `SchemaDefinition` in `setupApp()`.
 
 - This example uses `UserDefaults` for credential storage. In production, use Keychain.
 - The app connects to `localhost:3031` by default. Update for production deployment.
-- `client.data.query` checks the notes against a GroveDB proof and compares its root with the app hash of the header after the proof's block; the light client accepts headers without verifying their commit signatures. See the SDK README's Verification section for what is and isn't checked.
+- `client.data.query` checks the notes against a GroveDB proof and compares its root with the chain's app hash after the proof's block, from a header the light client accepts; the light client accepts headers without verifying their commit signatures. See the SDK README's Verification section for what is and isn't checked.

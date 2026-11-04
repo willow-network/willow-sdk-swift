@@ -149,6 +149,50 @@ final class VerifiedReadsTests: XCTestCase {
         XCTAssertFalse(try GroveDBVerifier.verifyProof(proofBytes: Self.hex(bob.proof_hex), expectedPath: Self.path(bob.path)).coversWholeTree)
     }
 
+    /// A KV node for an item, a KVDigest node hiding it, and a KVValueHash
+    /// node carrying bytes that read as a tree with the item's value hash all
+    /// hash alike: a value-hash node's hash covers the value hash, not the
+    /// bytes it carries.
+    func testATreeShapedValueWithoutItsLowerLayerIsNotBound() throws {
+        let key: [UInt8] = Array("k".utf8)
+        let item = ProofBuilder.item(#"{"n":1}"#)
+        let fakeTree = ProofBuilder.tree(rootKey: Array("zz".utf8))
+        let itemHash = Willow.valueHash(Data(item))
+        func proof(_ ops: [UInt8]) -> ProofBuilder.Built {
+            let kv = kvDigestToKvHash(key: Data(key), valueHash: itemHash)
+            let data = ProofBuilder.Built(
+                merk: ops, hash: computeNodeHash(kvHash: kv, leftHash: nullHash, rightHash: nullHash), rootKey: key, lower: [])
+            return ProofBuilder.layer(trees: [("subgroves", ProofBuilder.layer(trees: [("sg", ProofBuilder.layer(trees: [("data", data)]))]))])
+        }
+        let honest = proof([0x03, UInt8(key.count)] + key + [0, UInt8(item.count)] + item)
+        let hidden = proof([0x05, UInt8(key.count)] + key + itemHash.bytes)
+        let spoofed = proof([0x04, UInt8(key.count)] + key + [0, UInt8(fakeTree.count)] + fakeTree + itemHash.bytes)
+        XCTAssertEqual(spoofed.hash, honest.hash)
+        XCTAssertEqual(hidden.hash, honest.hash)
+        let path = DataOperations.dataPath("sg")
+
+        let real = try GroveDBVerifier.verifyProof(proofBytes: honest.proof, expectedPath: path)
+        XCTAssertTrue(real.coversWholeTree)
+        XCTAssertEqual(real.results.map { $0.isValueBound }, [true])
+        XCTAssertFalse(try GroveDBVerifier.verifyProof(proofBytes: hidden.proof, expectedPath: path).coversWholeTree)
+
+        // Rewriting the hidden node as a tree element verifies to the same
+        // root, but its bytes aren't bound and the tree isn't shown whole.
+        let forged = try GroveDBVerifier.verifyProof(proofBytes: spoofed.proof, expectedPath: path)
+        XCTAssertEqual(forged.rootHash, real.rootHash)
+        XCTAssertFalse(forged.coversWholeTree)
+        XCTAssertEqual(forged.results.map { $0.isValueBound }, [false])
+        XCTAssertEqual(forged.results.first?.value, Data(fakeTree))
+        let pathless = try GroveDBVerifier.verifyProof(proofBytes: spoofed.proof)
+        XCTAssertEqual(pathless.results.map { $0.isValueBound }, [false])
+
+        // Neither verified read takes it.
+        XCTAssertThrowsError(try DataOperations.answer(QueryRequest(), proof: spoofed.proof, path: path))
+        let served: [String: AnyCodable] = ["n": AnyCodable(1)]
+        XCTAssertNoThrow(try DataOperations.requireProven(subgroveId: "sg", key: "k", value: served, in: real))
+        XCTAssertThrowsError(try DataOperations.requireProven(subgroveId: "sg", key: "k", value: served, in: forged))
+    }
+
     func testAnEmptyTreeAtThePathIsProvenEmpty() throws {
         let root = ProofBuilder.layer(trees: [("subgroves", ProofBuilder.layer(trees: [
             ("notes", ProofBuilder.layer(trees: [("data", .empty)])),
@@ -244,28 +288,178 @@ final class VerifiedReadsTests: XCTestCase {
         XCTAssertEqual(try DataOperations.answer(QueryRequest(limit: 1), proof: root.proof, path: path).total, 2)
     }
 
-    func testJSONEqualityAndSortOrderFollowTheNode() {
-        XCTAssertTrue(DataOperations.jsonEqual(1, 1.0))
-        XCTAssertFalse(DataOperations.jsonEqual(true, 1))
-        XCTAssertFalse(DataOperations.jsonEqual(NSNumber(value: true), 1))
-        XCTAssertTrue(DataOperations.jsonEqual(NSNumber(value: true), true))
-        XCTAssertTrue(DataOperations.jsonEqual(NSNull(), NSNull()))
-        XCTAssertTrue(DataOperations.jsonEqual([1, "a"] as [Any], [1, "a"] as [Any]))
-        XCTAssertTrue(DataOperations.jsonEqual(["a": [1]] as [String: Any], ["a": [1]] as [String: Any]))
-        XCTAssertFalse(DataOperations.jsonEqual(["a": 1] as [String: Any], ["a": 1, "b": 2] as [String: Any]))
-        // Strings compare by their bytes: a precomposed é isn't e + U+0301.
-        XCTAssertFalse(DataOperations.jsonEqual("\u{e9}", "e\u{301}"))
+    // MARK: - JSON as the node reads it
 
-        XCTAssertEqual(DataOperations.fieldValue(["a": ["b": 2]] as [String: Any], "a.b") as? Int, 2)
-        XCTAssertNil(DataOperations.fieldValue(["a": [1, 2]] as [String: Any], "a.0"))
+    static func node(_ text: String) throws -> NodeJSON {
+        return try NodeJSON.parse(Data(text.utf8))
+    }
 
-        XCTAssertEqual(DataOperations.compareForSort(2, 10), -1)
-        XCTAssertEqual(DataOperations.compareForSort("b", "a"), 1)
-        XCTAssertEqual(DataOperations.compareForSort("Z", "a"), -1)
-        XCTAssertEqual(DataOperations.compareForSort("\u{e9}", "f"), 1, "by UTF-8 bytes, not by Unicode collation")
-        XCTAssertEqual(DataOperations.compareForSort(1, "a"), 0)
-        XCTAssertEqual(DataOperations.compareForSort(nil, 1), 0)
-        XCTAssertEqual(DataOperations.compareForSort(true, false), 0)
+    func testNumbersCompareByTheTextTheNodeKeeps() throws {
+        XCTAssertNotEqual(try Self.node("1"), try Self.node("1.0"))
+        XCTAssertNotEqual(try Self.node("9007199254740993"), try Self.node("9007199254740992"))
+        XCTAssertNotEqual(try Self.node("100"), try Self.node("1e2"))
+        XCTAssertNotEqual(try Self.node("1e-5"), try Self.node("1e-05"))
+        XCTAssertNotEqual(try Self.node("true"), try Self.node("1"))
+        // An integer that fits u64 or i64 is its digits, so -0 is 0; an
+        // exponent is written e with a sign.
+        XCTAssertEqual(try Self.node("-0"), .number("0"))
+        XCTAssertEqual(try Self.node("-0.0"), .number("-0.0"))
+        XCTAssertEqual(try Self.node("1E5"), .number("1e+5"))
+        XCTAssertEqual(try Self.node("1e5"), try Self.node("1E+5"))
+        XCTAssertEqual(try Self.node("18446744073709551615"), .number("18446744073709551615"))
+        XCTAssertEqual(try Self.node("18446744073709551616"), .number("18446744073709551616"))
+        XCTAssertEqual(try Self.node("-9223372036854775809"), .number("-9223372036854775809"))
+        XCTAssertEqual(try Self.node("1e400"), .number("1e+400"))
+
+        // Strings by their bytes: a precomposed é isn't e + U+0301.
+        XCTAssertNotEqual(try Self.node(#""é""#), try Self.node(#""é""#))
+        XCTAssertEqual(try Self.node(#""é""#), .string([0xC3, 0xA9]))
+        XCTAssertEqual(try Self.node(#""😀""#), .string(Array("\u{1F600}".utf8)))
+        // Objects in any order; a repeated key keeps its last value.
+        XCTAssertEqual(try Self.node(#"{"a":1,"b":[2]}"#), try Self.node(#"{"b":[2],"a":1}"#))
+        XCTAssertEqual(try Self.node(#"{"a":1,"a":2}"#), try Self.node(#"{"a":2}"#))
+        XCTAssertNotEqual(try Self.node(#"{"a":1}"#), try Self.node(#"{"a":1,"b":2}"#))
+    }
+
+    func testFieldPathsMatchKeysByTheirBytes() throws {
+        let document = try Self.node(#"{"a":{"b":2},"l":[1,2],"é":3,"x.y":4}"#)
+        XCTAssertEqual(document.value(atPath: Array("a.b".utf8)), .number("2"))
+        XCTAssertNil(document.value(atPath: Array("l.0".utf8)), "an array has no members")
+        XCTAssertEqual(document.value(atPath: Array("\u{e9}".utf8)), .number("3"))
+        XCTAssertNil(document.value(atPath: Array("e\u{301}".utf8)), "a canonical equivalent is other bytes")
+        XCTAssertNil(document.value(atPath: Array("x.y".utf8)), "a dot always splits the path")
+    }
+
+    func testTheNodesJSONReaderIsStrict() throws {
+        for refused in [
+            "", "nul", "01", "1.", "-", "1e", "[1,]", #"{"a":1,}"#, "[1] x", #"{"a" 1}"#, "'a'",
+            #""\ud800""#, #""\udc00""#, #""\ud800A""#, #""\x""#, "\"a\u{1}\"", "\u{feff}{}",
+        ] {
+            XCTAssertThrowsError(try Self.node(refused), refused) { error in
+                guard case NodeJSON.ReadError.notJSON = error else { return XCTFail("\(refused): \(error)") }
+            }
+        }
+        // Bytes that aren't UTF-8 in a string: an overlong encoding and a lone continuation byte.
+        for bytes: [UInt8] in [[0x22, 0xC0, 0x80, 0x22], [0x22, 0x80, 0x22], [0x22, 0xED, 0xA0, 0x80, 0x22]] {
+            XCTAssertThrowsError(try NodeJSON.parse(bytes))
+        }
+        // serde_json reads at most 127 levels of nesting.
+        XCTAssertNoThrow(try Self.node(String(repeating: "[", count: 127) + String(repeating: "]", count: 127)))
+        XCTAssertThrowsError(try Self.node(String(repeating: "[", count: 128) + String(repeating: "]", count: 128)))
+        XCTAssertNoThrow(try Self.node(" \t\r\n{\"a\" : [ true , false , null ] } \n"))
+
+        // An object whose first key is one of serde_json's private tokens
+        // isn't read as an object; the SDK doesn't guess how.
+        XCTAssertThrowsError(try Self.node(#"{"$serde_json::private::Number":"1"}"#)) { error in
+            guard case NodeJSON.ReadError.unsupported = error else { return XCTFail("\(error)") }
+        }
+        XCTAssertNoThrow(try Self.node(#"{"a":1,"$serde_json::private::Number":"1"}"#))
+    }
+
+    func testSortOrderFollowsTheNode() throws {
+        typealias Key = DataOperations.SortKey
+        func key(_ text: String?) throws -> Key {
+            return Key(try text.map { try Self.node($0) })
+        }
+        XCTAssertEqual(Key.compare(try key("2"), try key("10")), -1)
+        XCTAssertEqual(Key.compare(try key("2.0"), try key("2")), 0)
+        XCTAssertEqual(Key.compare(try key(#""b""#), try key(#""a""#)), 1)
+        XCTAssertEqual(Key.compare(try key(#""Z""#), try key(#""a""#)), -1)
+        XCTAssertEqual(Key.compare(try key(#""é""#), try key(#""f""#)), 1, "by UTF-8 bytes, not by Unicode collation")
+        XCTAssertEqual(Key.compare(try key("1"), try key(#""a""#)), 0)
+        XCTAssertEqual(Key.compare(try key(nil), try key("1")), 0)
+        XCTAssertEqual(Key.compare(try key("true"), try key("false")), 0)
+        // A number outside f64's range has no value, and sorts first.
+        XCTAssertEqual(Key.compare(try key("1e400"), try key("-5")), -1)
+        XCTAssertEqual(Key.compare(try key("1e400"), try key("-1e400")), 0)
+
+        // The comparator is one order only when the keys are all numbers,
+        // all strings, or all equal.
+        let consistent: [[String?]] = [
+            ["1", "3", "2"], [#""a""#, #""c""#], [nil, nil, "true"], ["1", "1.0", #""a""#, nil], ["1", #""a""#], [],
+        ]
+        for keys in consistent {
+            XCTAssertTrue(Key.orderIsConsistent(try keys.map(key)), "\(keys)")
+        }
+        let inconsistent: [[String?]] = [["1", "2", #""a""#], ["1", "2", nil], [#""a""#, #""b""#, "1"], [#""a""#, #""b""#, "null"]]
+        for keys in inconsistent {
+            XCTAssertFalse(Key.orderIsConsistent(try keys.map(key)), "\(keys)")
+        }
+    }
+
+    /// A data tree of `items` at `subgroves/sg/data`.
+    static func dataTree(_ items: [(String, String)]) -> ProofBuilder.Built {
+        let data = ProofBuilder.layer(items: items.map { ($0.0, ProofBuilder.item($0.1)) })
+        return ProofBuilder.layer(trees: [("subgroves", ProofBuilder.layer(trees: [("sg", ProofBuilder.layer(trees: [("data", data)]))]))])
+    }
+
+    func testAQueryFiltersByTheNumberTextTheNodeCompares() throws {
+        let root = Self.dataTree([
+            ("a", #"{"n":1}"#), ("b", #"{"n":1.0}"#), ("c", #"{"n":9007199254740993}"#),
+            ("d", #"{"n":9007199254740992}"#), ("e", #"{"n":1E2}"#), ("f", #"{"n":-0}"#),
+        ])
+        let path = DataOperations.dataPath("sg")
+        func keys(_ request: QueryRequest) throws -> [String] {
+            return try DataOperations.answer(request, proof: root.proof, path: path).results.map { $0.key }
+        }
+        XCTAssertEqual(try keys(QueryBuilder().equals("n", 1).build()), ["a"])
+        XCTAssertEqual(try keys(QueryBuilder().equals("n", 9007199254740993).build()), ["c"])
+        XCTAssertEqual(try keys(QueryBuilder().equals("n", 9007199254740992).build()), ["d"])
+        XCTAssertEqual(try keys(QueryBuilder().equals("n", 0).build()), ["f"])
+        XCTAssertEqual(try keys(QueryBuilder().equals("n", 100).build()), [], "1E2 is kept as 1e+2, not 100")
+        XCTAssertEqual(try keys(QueryBuilder().equals("n", NSNumber(value: 1)).build()), ["a"], "an NSNumber 1 is a number, not true")
+
+        // A Double goes out as the encoder writes it, and is compared as that text.
+        let request = QueryBuilder().equals("n", 1.0).build()
+        let sent = try XCTUnwrap(String(data: WillowClient.verbatimBody(request), encoding: .utf8))
+        XCTAssertEqual(try keys(request), sent.contains(#""n":1}"#) ? ["a"] : ["b"], sent)
+        let one = try DataOperations.answer(QueryBuilder().equals("n", 1).build(), proof: root.proof, path: path)
+        XCTAssertEqual(one.results.first?.data["n"]?.value as? Int, 1)
+        XCTAssertEqual(one.total, 1)
+    }
+
+    func testAQueryFiltersOnFieldBytes() throws {
+        let root = Self.dataTree([("a", #"{"é":1}"#), ("b", #"{"é":1}"#)])
+        let path = DataOperations.dataPath("sg")
+        let precomposed = try DataOperations.answer(QueryBuilder().equals("\u{e9}", 1).build(), proof: root.proof, path: path)
+        XCTAssertEqual(precomposed.results.map { $0.key }, ["a"])
+        let decomposed = try DataOperations.answer(QueryBuilder().equals("e\u{301}", 1).build(), proof: root.proof, path: path)
+        XCTAssertEqual(decomposed.results.map { $0.key }, ["b"])
+    }
+
+    func testAQueryWithANumberOutsideDoublesRange() throws {
+        let root = Self.dataTree([("a", #"{"n":1}"#), ("b", #"{"n":1e400}"#), ("c", #"{"n":2}"#)])
+        let path = DataOperations.dataPath("sg")
+        // The node reads the item (it keeps the number's text) and filters it out.
+        let filtered = try DataOperations.answer(QueryBuilder().equals("n", 2).build(), proof: root.proof, path: path)
+        XCTAssertEqual(filtered.results.map { $0.key }, ["c"])
+        // It sorts first, as the node's f64 comparison has no value for it.
+        let sorted = try DataOperations.answer(QueryBuilder().sortAsc("n").limit(2).offset(1).build(), proof: root.proof, path: path)
+        XCTAssertEqual(sorted.results.map { $0.key }, ["a", "c"])
+        XCTAssertEqual(sorted.total, 3)
+        // Returned, it can't be a Double, so the query isn't verified.
+        XCTAssertThrowsError(try DataOperations.answer(QueryRequest(), proof: root.proof, path: path)) { error in
+            XCTAssertEqual((error as? WillowError)?.type, .proof)
+            XCTAssertTrue((error as? WillowError)?.message.contains("can't be verified") ?? false, "\(error)")
+        }
+    }
+
+    func testASortTheNodeDoesntOrderIsNotVerified() throws {
+        let root = Self.dataTree([("a", #"{"r":2,"t":"x"}"#), ("b", #"{"r":"z","t":"y"}"#), ("c", #"{"r":1,"t":"x"}"#), ("d", #"{"t":"x"}"#)])
+        let path = DataOperations.dataPath("sg")
+        for request in [QueryBuilder().sortAsc("r").build(), QueryBuilder().equals("t", "x").sortDesc("r").build()] {
+            XCTAssertThrowsError(try DataOperations.answer(request, proof: root.proof, path: path)) { error in
+                XCTAssertEqual((error as? WillowError)?.type, .proof)
+                XCTAssertTrue((error as? WillowError)?.message.contains("can't be verified") ?? false, "\(error)")
+            }
+        }
+        // Over the items that match, the sort field is all numbers.
+        let numbers = Self.dataTree([("a", #"{"r":2,"t":"x"}"#), ("b", #"{"r":"z","t":"y"}"#), ("c", #"{"r":1,"t":"x"}"#)])
+        let answer = try DataOperations.answer(QueryBuilder().equals("t", "x").sortAsc("r").build(), proof: numbers.proof, path: path)
+        XCTAssertEqual(answer.results.map { $0.key }, ["c", "a"])
+        // A field no item has leaves key order.
+        let missing = try DataOperations.answer(QueryBuilder().sortDesc("nope").build(), proof: root.proof, path: path)
+        XCTAssertEqual(missing.results.map { $0.key }, ["a", "b", "c", "d"])
     }
 
     // MARK: - Requests the node can and can't run
@@ -336,8 +530,9 @@ final class VerifiedReadsTests: XCTestCase {
         let stub = StubServer { request in
             guard request.url.host == "api.test", request.path == "/query/notes" else { return (404, "") }
             served += 1
-            // The documents served are not the proven ones; the SDK doesn't use them.
-            return (200, #"{"success":true,"data":{"documents":[{"title":"forged"}],"total":1,"offset":0,"limit":100,"proof":"\#(tree.proof.hexString)","height":41}}"#)
+            // The documents served are not the proven ones, and one isn't
+            // even an object; the SDK doesn't read them.
+            return (200, #"{"success":true,"data":{"documents":[{"title":"forged","n":1e400},7],"total":1,"offset":0,"limit":100,"proof":"\#(tree.proof.hexString)","height":41}}"#)
         }
         let client = try stub.client(baseURL: "http://api.test")
         // The header after block 41 carries the state the proof is from; its
@@ -420,29 +615,72 @@ final class VerifiedReadsTests: XCTestCase {
         XCTAssertTrue(stub.requests.allSatisfy { $0.url.host == "api.test" })
     }
 
-    func testAVerifiedGetRefusesAHeaderBelowTheTrustedOne() async throws {
+    /// A stub API serving `bob`'s value and its proof, with `height`.
+    static func bobServer(height: Int64, rpc: @escaping (ReceivedRequest) -> (Int, String) = { _ in (404, "") }) throws -> StubServer {
         let f = try GroveDBProofTests.fixture("nested_single_key_user_bob", as: SingleKey.self)
-        let stub = StubServer { request in
+        return StubServer { request in
+            if request.url.host == "rpc.test" {
+                return rpc(request)
+            }
             switch request.path {
             case "/data/my-sub/user:bob":
                 return (200, #"{"success":true,"data":{"balance":250}}"#)
             case "/proof/my-sub/user:bob":
-                return (200, #"{"success":true,"data":{"proof":"\#(f.proof_hex)","height":41}}"#)
+                return (200, #"{"success":true,"data":{"proof":"\#(f.proof_hex)","height":\#(height)}}"#)
             default:
                 return (404, "")
             }
         }
+    }
+
+    func testAVerifiedGetTakesALaterAcceptedHeaderCarryingTheRoot() async throws {
+        let f = try GroveDBProofTests.fixture("nested_single_key_user_bob", as: SingleKey.self)
+        let stub = try Self.bobServer(height: 41)
         let client = try stub.client(baseURL: "http://api.test")
+        // No block with transactions since block 41: the header at 50 still
+        // carries the state after it.
         client.setLightClient(try Self.pinnedLightClient(height: 50, appHash: f.expected_root_hex, stub: stub))
+
+        let response = try await client.data.get(subgroveId: "my-sub", key: "user:bob")
+        XCTAssertEqual(response.data["balance"]?.value as? Int, 250)
+        XCTAssertFalse(stub.requests.contains { $0.url.host == "rpc.test" })
+    }
+
+    func testAVerifiedGetRefusesAStateOlderThanEveryAcceptedHeader() async throws {
+        let stub = try Self.bobServer(height: 41)
+        let client = try stub.client(baseURL: "http://api.test")
+        // The header at 50 carries another state, and the header at 42 is
+        // below every header the light client has accepted.
+        client.setLightClient(try Self.pinnedLightClient(height: 50, appHash: String(repeating: "ab", count: 32), stub: stub))
 
         do {
             _ = try await client.data.get(subgroveId: "my-sub", key: "user:bob")
-            XCTFail("a proof older than the trusted header can't be checked")
+            XCTFail("a proof older than the trusted header, of a state since changed, can't be checked")
         } catch let error as WillowError {
             XCTAssertEqual(error.type, .lightClient)
-            XCTAssertTrue(error.message.contains("below the trusted header"), error.message)
+            XCTAssertTrue(error.message.contains("below every header"), error.message)
         }
         XCTAssertFalse(stub.requests.contains { $0.url.host == "rpc.test" })
+    }
+
+    func testAVerifiedGetFetchesAndAcceptsTheNextHeader() async throws {
+        let f = try GroveDBProofTests.fixture("nested_single_key_user_bob", as: SingleKey.self)
+        // The header at 42 is an hour old: no transaction since block 41.
+        let chain = StubChain(chainId: "willow-chain", headers: [42: (f.expected_root_hex.uppercased(), Date().addingTimeInterval(-3600))])
+        let stub = try Self.bobServer(height: 41, rpc: chain.answer)
+        let client = try stub.client(baseURL: "http://api.test")
+        let lc = try Self.pinnedLightClient(height: 41, appHash: "00", stub: stub)
+        client.setLightClient(lc)
+
+        let response = try await client.data.get(subgroveId: "my-sub", key: "user:bob")
+        XCTAssertEqual(response.data["balance"]?.value as? Int, 250)
+        XCTAssertEqual(lc.getSyncStatus().latestTrustedHeight, 42)
+        let rpc = stub.requests.filter { $0.url.host == "rpc.test" }.map { $0.target }
+        XCTAssertEqual(rpc, ["/commit?height=42", "/validators?height=42&page=1&per_page=100"])
+
+        // A later read of the same state takes the header from memory.
+        _ = try await client.data.get(subgroveId: "my-sub", key: "user:bob")
+        XCTAssertEqual(stub.requests.filter { $0.url.host == "rpc.test" }.count, 2)
     }
 
     func testAVerifiedGetWaitsForTheNextHeaderThenGivesUp() async throws {

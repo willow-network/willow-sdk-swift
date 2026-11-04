@@ -1275,16 +1275,23 @@ public struct AnyCodable: Codable {
         }
     }
 
+    /// Writes the value as JSON. A Swift `Bool`, or an `NSNumber` that is a
+    /// `CFBoolean` (as `JSONSerialization` and bridging make them), is a
+    /// boolean; any other `NSNumber`, 0 and 1 included, is a number.
     public func encode(to encoder: Encoder) throws {
         var container = encoder.singleValueContainer()
 
+        if let bool = AnyCodable.boolean(value) {
+            try container.encode(bool)
+            return
+        }
         switch value {
         case is NSNull:
             try container.encodeNil()
-        case let bool as Bool:
-            try container.encode(bool)
         case let int as Int:
             try container.encode(int)
+        case let uint as UInt64:
+            try container.encode(uint)
         case let double as Double:
             try container.encode(double)
         case let string as String:
@@ -1296,5 +1303,18 @@ public struct AnyCodable: Codable {
         default:
             throw EncodingError.invalidValue(value, EncodingError.Context(codingPath: container.codingPath, debugDescription: "Cannot encode AnyCodable"))
         }
+    }
+
+    /// The value as a boolean if it is one: a Swift `Bool`, or an `NSNumber`
+    /// that is a `CFBoolean`. An `NSNumber` holding 0 or 1 casts to `Bool`
+    /// in Swift, but it is a number.
+    internal static func boolean(_ value: Any) -> Bool? {
+        if type(of: value) == Bool.self {
+            return value as? Bool
+        }
+        if let number = value as? NSNumber, CFGetTypeID(number) == CFBooleanGetTypeID() {
+            return number.boolValue
+        }
+        return nil
     }
 }

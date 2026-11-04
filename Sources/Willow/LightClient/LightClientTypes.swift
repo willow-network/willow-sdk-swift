@@ -28,14 +28,18 @@ public struct LightClientConfig {
     public let validatorEndpoints: [String]
     public let trustThreshold: TrustThreshold
     public let trustingPeriod: TimeInterval
+    /// How far ahead of this clock a header's time may be. A header may be
+    /// any age: the header after a proof's block may be read long after it
+    /// was made.
     public let maxClockDrift: TimeInterval
     public let minValidatorsForConsensus: Int
     public let autoSync: Bool
     public let syncInterval: TimeInterval
     public let rpcTimeout: TimeInterval
     public let maxRetries: Int
-    /// How long `LightClient.verifiedAppHash(atHeight:)` waits for a header
-    /// the chain hasn't produced yet.
+    /// How long `LightClient.verifiedAppHash(atHeight:)` and
+    /// `LightClient.verifyAppHash(_:forStateAfter:)` wait for a header the
+    /// chain hasn't produced yet.
     public let headerWaitTimeout: TimeInterval
 
     public init(
@@ -189,6 +193,26 @@ public struct Header: Codable {
         self.evidenceHash = nil
         self.proposerAddress = nil
     }
+
+    /// Reads a header as CometBFT's RPC writes one: the height as a decimal
+    /// string (a number is read too) and the time as RFC 3339 text with up
+    /// to nine fractional digits.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        chainId = try container.decode(String.self, forKey: .chainId)
+        height = try container.decodeCometInt64(forKey: .height)
+        time = try container.decodeCometTime(forKey: .time)
+        lastBlockId = try container.decodeIfPresent(BlockID.self, forKey: .lastBlockId)
+        lastCommitHash = try container.decodeIfPresent(String.self, forKey: .lastCommitHash)
+        dataHash = try container.decodeIfPresent(String.self, forKey: .dataHash)
+        validatorsHash = try container.decodeIfPresent(String.self, forKey: .validatorsHash)
+        nextValidatorsHash = try container.decodeIfPresent(String.self, forKey: .nextValidatorsHash)
+        consensusHash = try container.decodeIfPresent(String.self, forKey: .consensusHash)
+        appHash = try container.decode(String.self, forKey: .appHash)
+        lastResultsHash = try container.decodeIfPresent(String.self, forKey: .lastResultsHash)
+        evidenceHash = try container.decodeIfPresent(String.self, forKey: .evidenceHash)
+        proposerAddress = try container.decodeIfPresent(String.self, forKey: .proposerAddress)
+    }
 }
 
 // MARK: - Commit Signature
@@ -205,6 +229,21 @@ public struct CommitSig: Codable {
         case validatorAddress = "validator_address"
         case timestamp
         case signature
+    }
+
+    /// Reads a signature as CometBFT's RPC writes one. An absent signature's
+    /// timestamp (CometBFT writes the zero time) reads as nil if it isn't
+    /// RFC 3339 text.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        blockIdFlag = try container.decode(Int.self, forKey: .blockIdFlag)
+        validatorAddress = try container.decodeIfPresent(String.self, forKey: .validatorAddress)
+        if let text = try? container.decodeIfPresent(String.self, forKey: .timestamp) {
+            timestamp = RFC3339.date(from: text)
+        } else {
+            timestamp = nil
+        }
+        signature = try container.decodeIfPresent(String.self, forKey: .signature)
     }
 
     /// Returns true if this is an absent signature.
@@ -239,6 +278,16 @@ public struct Commit: Codable {
         self.round = round
         self.blockId = blockId
         self.signatures = signatures
+    }
+
+    /// Reads a commit as CometBFT's RPC writes one: the height as a decimal
+    /// string (a number is read too).
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        height = try container.decodeCometInt64(forKey: .height)
+        round = try container.decode(Int.self, forKey: .round)
+        blockId = try container.decodeIfPresent(BlockID.self, forKey: .blockId)
+        signatures = try container.decodeIfPresent([CommitSig].self, forKey: .signatures)
     }
 }
 
@@ -360,5 +409,94 @@ public struct ProofVerificationResult {
         self.expectedHash = expectedHash
         self.height = height
         self.error = error
+    }
+}
+
+// MARK: - CometBFT JSON
+
+extension KeyedDecodingContainer {
+    /// An int64, which CometBFT's JSON writes as a decimal string.
+    func decodeCometInt64(forKey key: Key) throws -> Int64 {
+        if let text = try? decode(String.self, forKey: key) {
+            guard let value = Int64(text) else {
+                throw DecodingError.dataCorruptedError(forKey: key, in: self, debugDescription: "Not an int64: \(text)")
+            }
+            return value
+        }
+        return try decode(Int64.self, forKey: key)
+    }
+
+    /// A time, which CometBFT's JSON writes as RFC 3339 text; anything else
+    /// is read with the decoder's date strategy.
+    func decodeCometTime(forKey key: Key) throws -> Date {
+        if let text = try? decode(String.self, forKey: key) {
+            guard let date = RFC3339.date(from: text) else {
+                throw DecodingError.dataCorruptedError(forKey: key, in: self, debugDescription: "Not an RFC 3339 time: \(text)")
+            }
+            return date
+        }
+        return try decode(Date.self, forKey: key)
+    }
+}
+
+/// RFC 3339 times as CometBFT writes them: `YYYY-MM-DDTHH:MM:SS`, an optional
+/// fraction of any length, and `Z` or a `+HH:MM` / `-HH:MM` offset.
+internal enum RFC3339 {
+    static func date(from text: String) -> Date? {
+        let b = Array(text.utf8)
+        func number(_ range: Range<Int>) -> Int? {
+            guard range.upperBound <= b.count else { return nil }
+            var value = 0
+            for i in range {
+                guard (0x30...0x39).contains(b[i]) else { return nil }
+                value = value * 10 + Int(b[i] - 0x30)
+            }
+            return value
+        }
+        guard b.count >= 20, b[4] == UInt8(ascii: "-"), b[7] == UInt8(ascii: "-"),
+              b[10] == UInt8(ascii: "T") || b[10] == UInt8(ascii: "t"),
+              b[13] == UInt8(ascii: ":"), b[16] == UInt8(ascii: ":"),
+              let year = number(0..<4), let month = number(5..<7), let day = number(8..<10),
+              let hour = number(11..<13), let minute = number(14..<16), let second = number(17..<19),
+              (1...12).contains(month), (1...31).contains(day), hour < 24, minute < 60, second <= 60 else {
+            return nil
+        }
+        var i = 19
+        var fraction = 0.0
+        if b[i] == UInt8(ascii: ".") {
+            i += 1
+            let start = i
+            while i < b.count, (0x30...0x39).contains(b[i]) {
+                i += 1
+            }
+            guard i > start, let value = Double("0." + String(decoding: b[start..<i], as: UTF8.self)) else { return nil }
+            fraction = value
+        }
+        guard i < b.count else { return nil }
+        var offset = 0
+        switch b[i] {
+        case UInt8(ascii: "Z"), UInt8(ascii: "z"):
+            i += 1
+        case UInt8(ascii: "+"), UInt8(ascii: "-"):
+            guard i + 6 <= b.count, b[i + 3] == UInt8(ascii: ":"),
+                  let hours = number((i + 1)..<(i + 3)), let minutes = number((i + 4)..<(i + 6)) else {
+                return nil
+            }
+            offset = (hours * 3600 + minutes * 60) * (b[i] == UInt8(ascii: "-") ? -1 : 1)
+            i += 6
+        default:
+            return nil
+        }
+        guard i == b.count else { return nil }
+
+        // Days from 1970-01-01 to the civil date (proleptic Gregorian).
+        let y = month <= 2 ? year - 1 : year
+        let era = (y >= 0 ? y : y - 399) / 400
+        let yearOfEra = y - era * 400
+        let dayOfYear = (153 * (month + (month > 2 ? -3 : 9)) + 2) / 5 + day - 1
+        let dayOfEra = yearOfEra * 365 + yearOfEra / 4 - yearOfEra / 100 + dayOfYear
+        let days = era * 146_097 + dayOfEra - 719_468
+        let seconds = days * 86_400 + hour * 3600 + minute * 60 + second - offset
+        return Date(timeIntervalSince1970: TimeInterval(seconds) + fraction)
     }
 }

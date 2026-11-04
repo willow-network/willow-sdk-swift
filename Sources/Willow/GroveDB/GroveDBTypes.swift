@@ -297,15 +297,20 @@ public struct GroveDBQueryResult {
     public let path: [[UInt8]]
     public let key: Data
     /// The serialized grovedb element (for a reference, the element it points
-    /// to), bound to the root. A tree element proven without its lower layer
-    /// is the exception: only its key is bound, not its bytes (a root key,
-    /// sum, count, or flags, or even its being a tree rather than an item).
+    /// to). It is bound to the root only when `isValueBound` is true.
     public let value: Data
+    /// Whether `value` is bound to the root. It is false for a node that
+    /// carries a tree element without the tree's lower layer: that node's
+    /// value hash combines the element's bytes with a subtree root the proof
+    /// doesn't carry, so only the key is bound, and the bytes are whatever the
+    /// proof says (they may not even be a tree's: the key may hold an item).
+    public let isValueBound: Bool
 
-    public init(path: [[UInt8]], key: Data, value: Data) {
+    public init(path: [[UInt8]], key: Data, value: Data, isValueBound: Bool = true) {
         self.path = path
         self.key = key
         self.value = value
+        self.isValueBound = isValueBound
     }
 }
 
@@ -317,8 +322,11 @@ public struct GroveDBVerificationResult {
     public let rootHash: String
     public let results: [GroveDBQueryResult]
     /// True when the proof shows every element of the tree at the path it
-    /// was verified at, so `results` is that whole tree and a key missing
-    /// from it is absent. Only `verifyProof(proofBytes:expectedPath:)` sets it.
+    /// was verified at, each bound to the root, so `results` is that whole
+    /// tree and a key missing from it is absent. It is false when the proof
+    /// hides a node or carries a result whose value isn't bound
+    /// (`GroveDBQueryResult.isValueBound`). Only
+    /// `verifyProof(proofBytes:expectedPath:)` sets it.
     public let coversWholeTree: Bool
 
     public init(rootHash: String, results: [GroveDBQueryResult], coversWholeTree: Bool = false) {
