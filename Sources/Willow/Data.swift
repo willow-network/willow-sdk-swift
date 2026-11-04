@@ -186,11 +186,17 @@ public class DataOperations {
     /// that JSON text's UTF-8 bytes under the identity's next nonce, signed
     /// over `storeDataMessage`. A subgrove ID, key, or DID holding a line
     /// break is refused with a validation error before anything is signed.
-    /// Writes sent before the previous one lands take consecutive nonces. A
-    /// write the API doesn't accept gives its nonce back, so calling again
-    /// signs under the same nonce; one refused in its block after its
-    /// signature and nonce verify spends its nonce, and calling again signs
-    /// under the next.
+    ///
+    /// The nonce is the lowest one above the account's base that the client
+    /// hasn't seen used and that no other write in flight from this process
+    /// holds, so writes sent before earlier ones land take distinct nonces. A
+    /// write refused at CheckTx gives its nonce back, unless the refusal says
+    /// the nonce is held by a pending transaction, already used, or spent. A
+    /// write refused in its block after its signature and nonce verify spends
+    /// its nonce, so calling again signs under another. One whose submission
+    /// failed in transit (a network error or a 5xx) may still land, so its
+    /// nonce stays held for 120 s: check whether it landed before storing it
+    /// again.
     @discardableResult
     public func store(subgroveId: String, key: String, data: [String: Any]) async throws -> BroadcastResult {
         guard let client = client else { throw NetworkError("Client deallocated") }

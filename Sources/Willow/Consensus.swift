@@ -477,20 +477,24 @@ public struct DeregisterSubgroveTx: Codable {
 public class ConsensusClient {
     private let config: ConsensusConfig
     private let session: URLSession
-    private var nonceCache: [String: Int] = [:]
+    private let nonces: NonceAllocator
 
     public init(_ config: ConsensusConfig) {
         self.config = config
         let sessionConfig = URLSessionConfiguration.default
         sessionConfig.timeoutIntervalForRequest = config.requestTimeoutSecs
         self.session = URLSession(configuration: sessionConfig)
+        self.nonces = .shared
     }
 
     /// Testing seam: supply a `URLSession` (e.g. backed by a stub `URLProtocol`)
-    /// so the RPC + indexer fetches can be exercised without a live node.
-    internal init(_ config: ConsensusConfig, session: URLSession) {
+    /// so the RPC + indexer fetches can be exercised without a live node, and
+    /// the nonce allocator (a fresh one unless given; the public initializer
+    /// uses the process's shared one).
+    internal init(_ config: ConsensusConfig, session: URLSession, nonces: NonceAllocator = NonceAllocator()) {
         self.config = config
         self.session = session
+        self.nonces = nonces
     }
 
     // MARK: - High-Level Transaction Methods
@@ -516,35 +520,33 @@ public class ConsensusClient {
         signFunction: (Data, Data) throws -> Data
     ) async throws -> BroadcastResult {
         let did = (didDocument["id"] as? String) ?? ""
-        let nonce = try await getNextNonce(did: did)
 
         // Convert to AnyCodable for encoding
         let codableDocument = didDocument.mapValues { AnyCodable($0) }
-
-        var tx = RegisterDidTx(
-            didDocument: codableDocument,
-            publicKeyId: publicKeyId,
-            nonce: nonce
-        )
-
-        // Create sign message and sign
         let signMessage = createSignMessage(txType: "RegisterDid", didDocument: didDocument)
-        let signatureData = try signFunction(Data(signMessage.utf8), privateKey)
-        tx.signature = Array(signatureData)
 
-        return try await broadcastTransaction(txType: "RegisterDid", transaction: tx)
+        return try await submitUnderNextNonce(did: did) { nonce in
+            var tx = RegisterDidTx(
+                didDocument: codableDocument,
+                publicKeyId: publicKeyId,
+                nonce: nonce
+            )
+            tx.signature = Array(try signFunction(Data(signMessage.utf8), privateKey))
+            return try encodeTransaction(txType: "RegisterDid", transaction: tx)
+        }
     }
 
     /// Register a subgrove (dataset) on the blockchain as a `RegisterSubgrove`
     /// transaction.
     ///
-    /// The transaction is `registration` under the owner's next nonce (its
-    /// `nonce` and `signature` are replaced). `signFunction` signs
-    /// `registerSubgroveMessage` over the subgrove ID, the owner DID, the
-    /// SHA-256 of the transaction's bincode with an empty signature, and the
-    /// nonce; the SDK sends exactly the fields it hashed. A BlockchainIndexing
-    /// mode, or a subgrove ID or owner DID holding a line break, is refused
-    /// with a validation error before anything is signed.
+    /// The transaction is `registration` under a nonce of the owner's that no
+    /// other write in flight holds (its `nonce` and `signature` are replaced).
+    /// `signFunction` signs `registerSubgroveMessage` over the subgrove ID,
+    /// the owner DID, the SHA-256 of the transaction's bincode with an empty
+    /// signature, and the nonce; the SDK sends exactly the fields it hashed.
+    /// A BlockchainIndexing mode, or a subgrove ID or owner DID holding a
+    /// line break, is refused with a validation error before anything is
+    /// signed.
     public func registerSubgrove(
         _ registration: RegisterSubgroveTx,
         privateKey: Data,
@@ -555,9 +557,12 @@ public class ConsensusClient {
         tx.nonce = 0
         // Refuse what can't be signed before spending a request on the nonce.
         _ = try registerSubgroveMessage(tx)
-        tx.nonce = try await getNextNonce(did: tx.ownerDid)
-        let body = try signedRegisterSubgroveBody(tx) { try signFunction($0, privateKey) }
-        return try await broadcastBody(body)
+        let unsigned = tx
+        return try await submitUnderNextNonce(did: tx.ownerDid) { nonce in
+            var tx = unsigned
+            tx.nonce = nonce
+            return try signedRegisterSubgroveBody(tx) { try signFunction($0, privateKey) }
+        }
     }
 
     /// Register a subgrove (dataset) on the blockchain: `registerSubgrove(_:)`
@@ -595,22 +600,19 @@ public class ConsensusClient {
         signFunction: (Data, Data) throws -> Data,
         memo: String? = nil
     ) async throws -> BroadcastResult {
-        let nonce = try await getNextNonce(did: fromDid)
-
-        var tx = TransferTx(
-            fromDid: fromDid,
-            toDid: toDid,
-            amount: amount,
-            memo: memo,
-            publicKeyId: publicKeyId,
-            nonce: nonce
-        )
-
-        let signMessage = createSignMessageForTransfer(tx: tx)
-        let signatureData = try signFunction(Data(signMessage.utf8), privateKey)
-        tx.signature = Array(signatureData)
-
-        return try await broadcastTransaction(txType: "Transfer", transaction: tx)
+        return try await submitUnderNextNonce(did: fromDid) { nonce in
+            var tx = TransferTx(
+                fromDid: fromDid,
+                toDid: toDid,
+                amount: amount,
+                memo: memo,
+                publicKeyId: publicKeyId,
+                nonce: nonce
+            )
+            let signMessage = createSignMessageForTransfer(tx: tx)
+            tx.signature = Array(try signFunction(Data(signMessage.utf8), privateKey))
+            return try encodeTransaction(txType: "Transfer", transaction: tx)
+        }
     }
 
     /// Store data on the blockchain as a `StoreData` transaction.
@@ -623,8 +625,10 @@ public class ConsensusClient {
     /// ID, key, or owner DID holding a line break, is refused with a
     /// validation error before anything is signed.
     ///
+    /// The nonce is the lowest one above the account's base that the chain
+    /// doesn't show used and no other write in flight from this process holds.
     /// A write refused in its block after its signature and nonce verify still
-    /// spends its nonce. Calling again signs anew under the next free nonce.
+    /// spends its nonce; calling again signs anew under another.
     public func storeData(
         subgroveId: String,
         key: String,
@@ -635,12 +639,13 @@ public class ConsensusClient {
         signFunction: (Data, Data) throws -> Data
     ) async throws -> BroadcastResult {
         let dataString = try storeDataText(data)
-        let nonce = try await getNextNonce(did: ownerDid)
-        let tx = try signedStoreData(
-            subgroveId: subgroveId, key: key, data: dataString, ownerDid: ownerDid,
-            publicKeyId: publicKeyId, nonce: nonce
-        ) { try signFunction($0, privateKey) }
-        return try await broadcastTransaction(txType: "StoreData", transaction: tx)
+        return try await submitUnderNextNonce(did: ownerDid) { nonce in
+            let tx = try signedStoreData(
+                subgroveId: subgroveId, key: key, data: dataString, ownerDid: ownerDid,
+                publicKeyId: publicKeyId, nonce: nonce
+            ) { try signFunction($0, privateKey) }
+            return try encodeTransaction(txType: "StoreData", transaction: tx)
+        }
     }
 
     /// Deregister (delete) a subgrove. Remaining funding is refunded to the owner.
@@ -651,20 +656,17 @@ public class ConsensusClient {
         publicKeyId: String,
         signFunction: (Data, Data) throws -> Data
     ) async throws -> BroadcastResult {
-        let nonce = try await getNextNonce(did: ownerDid)
-
-        let signMessage = deregisterSubgroveMessage(subgroveId: subgroveId, ownerDid: ownerDid, nonce: nonce)
-        let signatureData = try signFunction(Data(signMessage.utf8), privateKey)
-
-        var tx = DeregisterSubgroveTx(
-            subgroveId: subgroveId,
-            ownerDid: ownerDid,
-            publicKeyId: publicKeyId,
-            nonce: nonce
-        )
-        tx.signature = Array(signatureData)
-
-        return try await broadcastTransaction(txType: "DeregisterSubgrove", transaction: tx)
+        return try await submitUnderNextNonce(did: ownerDid) { nonce in
+            let signMessage = deregisterSubgroveMessage(subgroveId: subgroveId, ownerDid: ownerDid, nonce: nonce)
+            var tx = DeregisterSubgroveTx(
+                subgroveId: subgroveId,
+                ownerDid: ownerDid,
+                publicKeyId: publicKeyId,
+                nonce: nonce
+            )
+            tx.signature = Array(try signFunction(Data(signMessage.utf8), privateKey))
+            return try encodeTransaction(txType: "DeregisterSubgrove", transaction: tx)
+        }
     }
 
     // MARK: - Transaction Status
@@ -805,7 +807,19 @@ public class ConsensusClient {
     /// The RPC envelope base64-encodes `response.value`; this decodes it. A
     /// non-zero `response.code` (the query failed, e.g. key absent) throws.
     internal func abciQuery(path: String) async throws -> Data {
-        let result = try await rpcRequest(method: "abci_query", params: ["path": path, "data": ""])
+        let value = try await abciQueryValue(path: path)
+        // An OK response with no value means the key is absent.
+        guard !value.isEmpty else {
+            throw ConsensusClientError("abci_query: no value for \(path)")
+        }
+        return value
+    }
+
+    /// The `value` bytes `abci_query` answers for `path`, empty when it
+    /// answers none, in at most `maxRetries + 1` attempts (the config's
+    /// retries unless given).
+    private func abciQueryValue(path: String, maxRetries: Int? = nil) async throws -> Data {
+        let result = try await rpcRequest(method: "abci_query", params: ["path": path, "data": ""], maxRetries: maxRetries)
 
         guard let response = result["response"] as? [String: Any] else {
             throw ConsensusClientError("abci_query: missing response")
@@ -818,10 +832,10 @@ public class ConsensusClient {
             throw ConsensusClientError("abci_query failed for \(path): \(info)")
         }
 
-        // An OK response with no value means the key is absent.
-        guard let base64 = response["value"] as? String, !base64.isEmpty,
-              let value = Data(base64Encoded: base64)
-        else {
+        guard let base64 = response["value"] as? String, !base64.isEmpty else {
+            return Data()
+        }
+        guard let value = Data(base64Encoded: base64) else {
             throw ConsensusClientError("abci_query: no value for \(path)")
         }
         return value
@@ -853,22 +867,39 @@ public class ConsensusClient {
 
     // MARK: - Private Methods
 
-    internal func broadcastPrivacyTransaction<T: Encodable>(txType: String, transaction: T) async throws -> BroadcastResult {
-        return try await broadcastTransaction(txType: txType, transaction: transaction)
+    /// Signs and submits the transaction `build` makes under a nonce for
+    /// `did` that no other write in flight holds (see `NonceAllocator`): the
+    /// lowest one above the account's base that the chain doesn't show used
+    /// and no write holds.
+    ///
+    /// A transaction the API refuses (CheckTx, or a 4xx before it) gives its
+    /// nonce back, unless the refusal says the nonce is held by a pending
+    /// transaction, already used, or spent. A submission whose fate is unknown
+    /// (a network error or a 5xx) may still land, so its nonce stays held for
+    /// 120 s.
+    internal func submitUnderNextNonce(did: String, _ build: (Int) throws -> Data) async throws -> BroadcastResult {
+        let submitURL = try txSubmitURL()
+        let account = NonceAccount(did: did, api: config.apiUrl ?? "")
+        return try await nonces.submit(account, chain: try await accountNonces(did: did), build: build) { body in
+            let (result, status) = try await self.broadcastBody(body, to: submitURL)
+            return (result, NonceOutcome.submission(status: status, result: result))
+        }
     }
 
-    internal func getNextNonce(did: String) async throws -> Int {
-        return try await _getNextNonce(did: did)
+    /// `did`'s nonce state: the base and the nonces used above it from the
+    /// ABCI query `/store/account_nonce_state/{did}`, or, when the RPC can't
+    /// answer that, the base alone from the API's `GET /account/{did}/nonce`.
+    internal func accountNonces(did: String) async throws -> ChainNonces {
+        do {
+            return try ChainNonces(nonceState: try await abciQueryValue(path: "/store/account_nonce_state/\(did)", maxRetries: 0))
+        } catch {
+            guard config.apiUrl != nil else { throw error }
+            return try ChainNonces(base: try await getAccountNonce(did: did))
+        }
     }
 
-    private func broadcastTransaction<T: Encodable>(txType: String, transaction: T) async throws -> BroadcastResult {
-        return try await broadcastBody(try encodeTransaction(txType: txType, transaction: transaction))
-    }
-
-    /// Submits a `/tx/submit` body already encoded as JSON through the API
-    /// server, which bincode-encodes it (the chain's on-the-wire format) and
-    /// forwards it to CometBFT.
-    private func broadcastBody(_ body: Data) async throws -> BroadcastResult {
+    /// The API's `POST /tx/submit` URL.
+    private func txSubmitURL() throws -> URL {
         guard let apiUrl = config.apiUrl, !apiUrl.isEmpty else {
             throw ConsensusClientError("apiUrl is required for transaction submission")
         }
@@ -877,7 +908,13 @@ public class ConsensusClient {
         guard let url = URL(string: "\(trimmed)/tx/submit") else {
             throw ConsensusClientError("Invalid API URL for /tx/submit")
         }
+        return url
+    }
 
+    /// Submits a `/tx/submit` body already encoded as JSON through the API
+    /// server, which bincode-encodes it (the chain's on-the-wire format) and
+    /// forwards it to CometBFT. Returns the answer and its HTTP status.
+    private func broadcastBody(_ body: Data, to url: URL) async throws -> (BroadcastResult, Int) {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -888,7 +925,7 @@ public class ConsensusClient {
             throw ConsensusClientError("Invalid response")
         }
 
-        return try parseTxSubmitResponse(data: data, statusCode: httpResponse.statusCode)
+        return (try parseTxSubmitResponse(data: data, statusCode: httpResponse.statusCode), httpResponse.statusCode)
     }
 
     private func queryTransaction(txHash: String) async throws -> [String: Any]? {
@@ -899,7 +936,7 @@ public class ConsensusClient {
         }
     }
 
-    private func rpcRequest(method: String, params: [String: Any]) async throws -> [String: Any] {
+    private func rpcRequest(method: String, params: [String: Any], maxRetries: Int? = nil) async throws -> [String: Any] {
         let rpcBody: [String: Any] = [
             "jsonrpc": "2.0",
             "id": 1,
@@ -908,8 +945,9 @@ public class ConsensusClient {
         ]
 
         var lastError: Error?
+        let maxRetries = max(0, maxRetries ?? config.maxRetries)
 
-        for attempt in 0...config.maxRetries {
+        for attempt in 0...maxRetries {
             do {
                 guard let url = URL(string: config.consensusRpcUrl) else {
                     throw ConsensusClientError("Invalid RPC URL")
@@ -943,35 +981,25 @@ public class ConsensusClient {
 
             } catch {
                 lastError = error
-                if attempt < config.maxRetries {
+                if attempt < maxRetries {
                     try await Task.sleep(nanoseconds: UInt64(config.retryDelaySecs * Double(attempt + 1) * 1_000_000_000))
                 }
             }
         }
 
-        throw lastError ?? ConsensusClientError("Request failed after \(config.maxRetries + 1) attempts")
+        throw lastError ?? ConsensusClientError("Request failed after \(maxRetries + 1) attempts")
     }
 
-    private func _getNextNonce(did: String) async throws -> Int {
-        do {
-            let currentNonce = try await getAccountNonce(did: did)
-            let nextNonce = currentNonce + 1
-            nonceCache[did] = nextNonce
-            return nextNonce
-        } catch {
-            let currentNonce = nonceCache[did] ?? 0
-            let nextNonce = currentNonce + 1
-            nonceCache[did] = nextNonce
-            return nextNonce
+    /// The account's base nonce from the API's `GET /account/{did}/nonce`.
+    private func getAccountNonce(did: String) async throws -> UInt64 {
+        struct AccountNonce: Codable {
+            let nonce: UInt64
         }
-    }
-
-    private func getAccountNonce(did: String) async throws -> Int {
         guard let apiUrl = config.apiUrl else {
-            return nonceCache[did] ?? 0
+            throw ConsensusClientError("apiUrl is required to read an account's nonce")
         }
-
-        guard let url = URL(string: "\(apiUrl)/account/\(did.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? did)/nonce") else {
+        let trimmed = apiUrl.hasSuffix("/") ? String(apiUrl.dropLast()) : apiUrl
+        guard let url = URL(string: "\(trimmed)/account/\(pathSegment(did))/nonce") else {
             throw ConsensusClientError("Invalid API URL")
         }
 
@@ -981,10 +1009,8 @@ public class ConsensusClient {
             throw ConsensusClientError("Failed to fetch nonce")
         }
 
-        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let success = json["success"] as? Bool, success,
-              let dataObj = json["data"] as? [String: Any],
-              let nonce = dataObj["nonce"] as? Int else {
+        guard let answer = try? JSONDecoder().decode(ApiResponse<AccountNonce>.self, from: data),
+              answer.success, let nonce = answer.data?.nonce else {
             throw ConsensusClientError("Failed to parse nonce response")
         }
 
@@ -1021,8 +1047,10 @@ public class ConsensusClient {
     /// and its nonce. A text field holding a line break is refused with a
     /// validation error before anything is signed.
     ///
+    /// The nonce is the lowest one above the account's base that the chain
+    /// doesn't show used and no other write in flight from this process holds.
     /// A write refused in its block after its signature and nonce verify still
-    /// spends its nonce. Calling again signs anew under the next free nonce.
+    /// spends its nonce; calling again signs anew under another.
     public func storeFileManifest(
         subgroveId: String,
         fileKey: String,
@@ -1043,41 +1071,40 @@ public class ConsensusClient {
         let totalSizeValue = try unsignedField("totalSize", totalSize, as: UInt64.self)
         let chunkCountValue = try unsignedField("chunkCount", chunkCount, as: UInt32.self)
         let chunkSizeValue = try unsignedField("chunkSize", chunkSize, as: UInt32.self)
-        let nonce = try await getNextNonce(did: ownerDid)
 
-        let signMessage = try storeFileManifestMessage(
-            subgroveId: subgroveId,
-            fileKey: fileKey,
-            ownerDid: ownerDid,
-            filename: filename,
-            contentType: contentType,
-            totalSize: totalSizeValue,
-            contentHash: contentHashBytes,
-            chunkCount: chunkCountValue,
-            chunkSize: chunkSizeValue,
-            chunkMerkleRoot: chunkMerkleRootBytes,
-            nonce: unsignedField("nonce", nonce, as: UInt64.self)
-        )
-        let signatureData = try signFunction(Data(signMessage.utf8), privateKey)
-        let signatureBytes = Array(signatureData).map { Int($0) }
+        return try await submitUnderNextNonce(did: ownerDid) { nonce in
+            let signMessage = try storeFileManifestMessage(
+                subgroveId: subgroveId,
+                fileKey: fileKey,
+                ownerDid: ownerDid,
+                filename: filename,
+                contentType: contentType,
+                totalSize: totalSizeValue,
+                contentHash: contentHashBytes,
+                chunkCount: chunkCountValue,
+                chunkSize: chunkSizeValue,
+                chunkMerkleRoot: chunkMerkleRootBytes,
+                nonce: unsignedField("nonce", nonce, as: UInt64.self)
+            )
+            let signatureBytes = Array(try signFunction(Data(signMessage.utf8), privateKey)).map { Int($0) }
 
-        let tx = StoreFileManifestConsensusBody(
-            subgrove_id: subgroveId,
-            file_key: fileKey,
-            filename: filename,
-            content_type: contentType,
-            total_size: totalSize,
-            content_hash: contentHashBytes.map { Int($0) },
-            chunk_count: chunkCount,
-            chunk_size: chunkSize,
-            chunk_merkle_root: chunkMerkleRootBytes.map { Int($0) },
-            owner_did: ownerDid,
-            signature: signatureBytes,
-            public_key_id: publicKeyId,
-            nonce: nonce
-        )
-
-        return try await broadcastTransaction(txType: "StoreFileManifest", transaction: tx)
+            let tx = StoreFileManifestConsensusBody(
+                subgrove_id: subgroveId,
+                file_key: fileKey,
+                filename: filename,
+                content_type: contentType,
+                total_size: totalSize,
+                content_hash: contentHashBytes.map { Int($0) },
+                chunk_count: chunkCount,
+                chunk_size: chunkSize,
+                chunk_merkle_root: chunkMerkleRootBytes.map { Int($0) },
+                owner_did: ownerDid,
+                signature: signatureBytes,
+                public_key_id: publicKeyId,
+                nonce: nonce
+            )
+            return try encodeTransaction(txType: "StoreFileManifest", transaction: tx)
+        }
     }
 
     /// Delete a file manifest from the blockchain.
@@ -1086,8 +1113,10 @@ public class ConsensusClient {
     /// file key, owner DID, and the transaction's nonce. A text field holding a
     /// line break is refused with a validation error before anything is signed.
     ///
+    /// The nonce is the lowest one above the account's base that the chain
+    /// doesn't show used and no other write in flight from this process holds.
     /// A write refused in its block after its signature and nonce verify still
-    /// spends its nonce. Calling again signs anew under the next free nonce.
+    /// spends its nonce; calling again signs anew under another.
     public func deleteFileManifest(
         subgroveId: String,
         fileKey: String,
@@ -1096,27 +1125,25 @@ public class ConsensusClient {
         publicKeyId: String,
         signFunction: (Data, Data) throws -> Data
     ) async throws -> BroadcastResult {
-        let nonce = try await getNextNonce(did: ownerDid)
+        return try await submitUnderNextNonce(did: ownerDid) { nonce in
+            let signMessage = try deleteFileManifestMessage(
+                subgroveId: subgroveId,
+                fileKey: fileKey,
+                ownerDid: ownerDid,
+                nonce: unsignedField("nonce", nonce, as: UInt64.self)
+            )
+            let signatureBytes = Array(try signFunction(Data(signMessage.utf8), privateKey)).map { Int($0) }
 
-        let signMessage = try deleteFileManifestMessage(
-            subgroveId: subgroveId,
-            fileKey: fileKey,
-            ownerDid: ownerDid,
-            nonce: unsignedField("nonce", nonce, as: UInt64.self)
-        )
-        let signatureData = try signFunction(Data(signMessage.utf8), privateKey)
-        let signatureBytes = Array(signatureData).map { Int($0) }
-
-        let tx = DeleteFileManifestConsensusBody(
-            subgrove_id: subgroveId,
-            file_key: fileKey,
-            owner_did: ownerDid,
-            signature: signatureBytes,
-            public_key_id: publicKeyId,
-            nonce: nonce
-        )
-
-        return try await broadcastTransaction(txType: "DeleteFileManifest", transaction: tx)
+            let tx = DeleteFileManifestConsensusBody(
+                subgrove_id: subgroveId,
+                file_key: fileKey,
+                owner_did: ownerDid,
+                signature: signatureBytes,
+                public_key_id: publicKeyId,
+                nonce: nonce
+            )
+            return try encodeTransaction(txType: "DeleteFileManifest", transaction: tx)
+        }
     }
 }
 

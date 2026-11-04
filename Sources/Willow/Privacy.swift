@@ -403,24 +403,24 @@ public class PrivacyOperations {
 
         // Refuse a line break before spending a request on the nonce.
         _ = try grantSubgroveKeyMessage(subgroveId: subgroveId, senderDid: identity.did, grant: grant, nonce: 0)
-        let nonce = try await consensus.getNextNonce(did: identity.did)
 
-        var tx = GrantSubgroveKeyTx(
-            subgroveId: subgroveId,
-            encryptedKeyGrant: grant,
-            senderDid: identity.did,
-            publicKeyId: identity.publicKeyId,
-            nonce: nonce
-        )
-        let signMessage = try grantSubgroveKeyMessage(
-            subgroveId: tx.subgroveId,
-            senderDid: tx.senderDid,
-            grant: tx.encryptedKeyGrant,
-            nonce: unsignedField("nonce", tx.nonce, as: UInt64.self)
-        )
-        tx.signature = Array(try signFunction(Data(signMessage.utf8), privateKey))
-
-        return try await consensus.broadcastPrivacyTransaction(txType: "GrantSubgroveKey", transaction: tx)
+        return try await consensus.submitUnderNextNonce(did: identity.did) { nonce in
+            var tx = GrantSubgroveKeyTx(
+                subgroveId: subgroveId,
+                encryptedKeyGrant: grant,
+                senderDid: identity.did,
+                publicKeyId: identity.publicKeyId,
+                nonce: nonce
+            )
+            let signMessage = try grantSubgroveKeyMessage(
+                subgroveId: tx.subgroveId,
+                senderDid: tx.senderDid,
+                grant: tx.encryptedKeyGrant,
+                nonce: unsignedField("nonce", tx.nonce, as: UInt64.self)
+            )
+            tx.signature = Array(try signFunction(Data(signMessage.utf8), privateKey))
+            return try encodeTransaction(txType: "GrantSubgroveKey", transaction: tx)
+        }
     }
 
     /// Revokes a DID's access to a subgrove's encryption key.
@@ -448,24 +448,23 @@ public class PrivacyOperations {
             throw AuthenticationError("Identity not set")
         }
 
-        let nonce = try await consensus.getNextNonce(did: identity.did)
-
-        var tx = RevokeSubgroveKeyTx(
-            subgroveId: subgroveId,
-            revokeeDid: revokeeDid,
-            senderDid: identity.did,
-            publicKeyId: identity.publicKeyId,
-            nonce: nonce
-        )
-        let signMessage = revokeSubgroveKeyMessage(
-            subgroveId: tx.subgroveId,
-            revokeeDid: tx.revokeeDid,
-            senderDid: tx.senderDid,
-            nonce: try unsignedField("nonce", tx.nonce, as: UInt64.self)
-        )
-        tx.signature = Array(try signFunction(Data(signMessage.utf8), privateKey))
-
-        return try await consensus.broadcastPrivacyTransaction(txType: "RevokeSubgroveKey", transaction: tx)
+        return try await consensus.submitUnderNextNonce(did: identity.did) { nonce in
+            var tx = RevokeSubgroveKeyTx(
+                subgroveId: subgroveId,
+                revokeeDid: revokeeDid,
+                senderDid: identity.did,
+                publicKeyId: identity.publicKeyId,
+                nonce: nonce
+            )
+            let signMessage = revokeSubgroveKeyMessage(
+                subgroveId: tx.subgroveId,
+                revokeeDid: tx.revokeeDid,
+                senderDid: tx.senderDid,
+                nonce: try unsignedField("nonce", tx.nonce, as: UInt64.self)
+            )
+            tx.signature = Array(try signFunction(Data(signMessage.utf8), privateKey))
+            return try encodeTransaction(txType: "RevokeSubgroveKey", transaction: tx)
+        }
     }
 
     /// Rotates the subgrove encryption key to a new epoch with new grants.
@@ -502,25 +501,25 @@ public class PrivacyOperations {
 
         // Refuse a line break before spending a request on the nonce.
         _ = try rotateSubgroveKeyMessage(subgroveId: subgroveId, senderDid: identity.did, newEpoch: newEpoch, newGrants: newGrants, nonce: 0)
-        let nonce = try await consensus.getNextNonce(did: identity.did)
 
-        var tx = RotateSubgroveKeyTx(
-            subgroveId: subgroveId,
-            newEpoch: newEpoch,
-            newGrants: newGrants,
-            senderDid: identity.did,
-            publicKeyId: identity.publicKeyId,
-            nonce: nonce
-        )
-        let signMessage = try rotateSubgroveKeyMessage(
-            subgroveId: tx.subgroveId,
-            senderDid: tx.senderDid,
-            newEpoch: tx.newEpoch,
-            newGrants: tx.newGrants,
-            nonce: unsignedField("nonce", tx.nonce, as: UInt64.self)
-        )
-        tx.signature = Array(try signFunction(Data(signMessage.utf8), privateKey))
-
-        return try await consensus.broadcastPrivacyTransaction(txType: "RotateSubgroveKey", transaction: tx)
+        return try await consensus.submitUnderNextNonce(did: identity.did) { nonce in
+            var tx = RotateSubgroveKeyTx(
+                subgroveId: subgroveId,
+                newEpoch: newEpoch,
+                newGrants: newGrants,
+                senderDid: identity.did,
+                publicKeyId: identity.publicKeyId,
+                nonce: nonce
+            )
+            let signMessage = try rotateSubgroveKeyMessage(
+                subgroveId: tx.subgroveId,
+                senderDid: tx.senderDid,
+                newEpoch: tx.newEpoch,
+                newGrants: tx.newGrants,
+                nonce: unsignedField("nonce", tx.nonce, as: UInt64.self)
+            )
+            tx.signature = Array(try signFunction(Data(signMessage.utf8), privateKey))
+            return try encodeTransaction(txType: "RotateSubgroveKey", transaction: tx)
+        }
     }
 }

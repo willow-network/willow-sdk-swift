@@ -80,9 +80,9 @@ public class RegistrationOperations {
     }
 
     /// Deletes a subgrove as a `DeregisterSubgrove` transaction, signed by
-    /// the client's identity (the owner) under its next nonce and submitted to
-    /// `POST /tx/submit`. The subgrove's remaining funding is refunded to the
-    /// owner.
+    /// the client's identity (the owner) under its next free nonce and
+    /// submitted to `POST /tx/submit`. The subgrove's remaining funding is
+    /// refunded to the owner.
     @discardableResult
     public func deleteSubgrove(subgroveId: String) async throws -> BroadcastResult {
         guard let client = client else { throw NetworkError("Client deallocated") }

@@ -405,13 +405,13 @@ final class StubServer {
         return URLSession(configuration: configuration)
     }
 
-    func client(baseURL: String, indexerURL: String? = nil) throws -> WillowClient {
+    func client(baseURL: String, indexerURL: String? = nil, nonces: NonceAllocator = NonceAllocator()) throws -> WillowClient {
         let config = ClientConfig(
             baseURL: URL(string: baseURL)!,
             indexerURL: indexerURL.flatMap { URL(string: $0) },
             retryConfig: RetryConfig(maxRetries: 2, initialBackoff: 0.001, maxBackoff: 0.001, backoffFactor: 1)
         )
-        return WillowClient(config: config, session: session)
+        return WillowClient(config: config, session: session, nonces: nonces)
     }
 
     fileprivate func answer(_ request: URLRequest) -> (Int, Data) {

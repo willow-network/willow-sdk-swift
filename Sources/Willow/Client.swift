@@ -44,8 +44,7 @@ public class WillowClient {
     private let decoder: JSONDecoder
 
     private var currentIdentity: Identity?
-    private let nonceLock = NSLock()
-    private var lastNonces: [String: Int] = [:]
+    private let nonces: NonceAllocator
     private var lightClient: LightClient?
     private var lightClientInitTask: Task<LightClient, Error>?
 
@@ -99,14 +98,16 @@ public class WillowClient {
         if let apiKey = apiKey {
             sessionConfig.httpAdditionalHeaders = ["X-API-Key": apiKey]
         }
-        self.init(config: config, session: URLSession(configuration: sessionConfig))
+        self.init(config: config, session: URLSession(configuration: sessionConfig), nonces: .shared)
     }
 
-    /// Testing seam: supply the configuration and a `URLSession` (e.g. backed
-    /// by a stub `URLProtocol`).
-    internal init(config: ClientConfig, session: URLSession) {
+    /// Testing seam: supply the configuration, a `URLSession` (e.g. backed by
+    /// a stub `URLProtocol`), and the nonce allocator (a fresh one unless
+    /// given; the public initializers use the process's shared one).
+    internal init(config: ClientConfig, session: URLSession, nonces: NonceAllocator = NonceAllocator()) {
         self.config = config
         self.session = session
+        self.nonces = nonces
 
         self.encoder = JSONEncoder()
         self.encoder.keyEncodingStrategy = .convertToSnakeCase
@@ -234,52 +235,29 @@ public class WillowClient {
         return identity
     }
 
-    /// The nonce for `did`'s next transaction: one above the account's nonce
-    /// (`GET /account/{did}/nonce`), or above the last one this client handed
-    /// out if that is higher, so a write sent before the previous one lands
-    /// takes the next free nonce instead of one a pending transaction holds.
-    /// Pass it back with `releaseNonce` when the transaction isn't accepted,
-    /// so a retry signs under the same nonce.
-    internal func nextNonce(did: String) async throws -> Int {
+    /// `did`'s nonce state as `GET /account/{did}/nonce` reports it: the base
+    /// alone (the API serves no bitmap of the nonces used above it).
+    internal func accountNonces(did: String) async throws -> ChainNonces {
         struct AccountNonce: Codable {
             let nonce: UInt64
         }
         let response: ApiResponse<AccountNonce> = try await get(path: "/account/\(pathSegment(did))/nonce")
-        let nonce = try unwrap(response, "account nonce").nonce
-        guard let base = Int(exactly: nonce), base < Int.max else {
-            throw ValidationError("The account nonce \(nonce) is out of range")
-        }
-        return reserveNonce(did: did, above: base)
+        return try ChainNonces(base: try unwrap(response, "account nonce").nonce)
     }
 
-    /// The next nonce above both `base` and the last one handed out for `did`, recorded as handed out.
-    private func reserveNonce(did: String, above base: Int) -> Int {
-        nonceLock.lock()
-        defer { nonceLock.unlock() }
-        let next = max(base + 1, (lastNonces[did] ?? 0) + 1)
-        lastNonces[did] = next
-        return next
-    }
-
-    /// Returns `nonce` for `did` when its transaction wasn't accepted, if no
-    /// later one has been handed out since.
-    internal func releaseNonce(_ nonce: Int, did: String) {
-        nonceLock.lock()
-        defer { nonceLock.unlock() }
-        if lastNonces[did] == nonce {
-            lastNonces[did] = nonce - 1
-        }
-    }
-
-    /// Signs and submits the transaction `build` makes under `did`'s next
-    /// nonce, releasing the nonce if it isn't accepted.
+    /// Signs and submits the transaction `build` makes under a nonce for
+    /// `did` that no other write in flight holds (see `NonceAllocator`): the
+    /// lowest one above the account's base that isn't held or seen used.
+    ///
+    /// A transaction the API refuses (CheckTx, or a 4xx before it) gives its
+    /// nonce back, unless the refusal says the nonce is held by a pending
+    /// transaction, already used, or spent. A submission whose fate is unknown
+    /// (a network error or a 5xx) may still land, so its nonce stays held for
+    /// 120 s.
     internal func submitUnderNextNonce(did: String, _ build: (Int) throws -> Data) async throws -> BroadcastResult {
-        let nonce = try await nextNonce(did: did)
-        do {
-            return try await submitTransaction(try build(nonce))
-        } catch {
-            releaseNonce(nonce, did: did)
-            throw error
+        let account = NonceAccount(did: did, api: config.baseURL.absoluteString)
+        return try await nonces.submit(account, chain: try await accountNonces(did: did), build: build) { body in
+            (try await self.submitTransaction(body), .accepted)
         }
     }
 
@@ -354,9 +332,9 @@ public class WillowClient {
     /// The API answers HTTP 200 with a nonzero `code` when CheckTx refuses the
     /// transaction; that is thrown as a `TransactionError`. It is sent once: a
     /// 5xx can follow a transaction that reached the mempool, and resending it
-    /// would be refused as a replay. A data or file write refused in its block
-    /// after its signature and nonce verify still spends its nonce, so a retry
-    /// is signed again under the next free nonce.
+    /// would be refused as a replay. A write refused in its block after its
+    /// signature and nonce verify still spends its nonce, so a retry is signed
+    /// again under a nonce not yet used.
     @discardableResult
     internal func submitTransaction(_ body: Data) async throws -> BroadcastResult {
         let (data, status) = try await sendRaw(method: "POST", base: config.baseURL, path: "/tx/submit", body: body, retry: false)

@@ -83,7 +83,7 @@ let headers = try signRequestWithNonce(method: "POST", pathAndQuery: "/query/my-
 
 ## Writes
 
-The API serves no REST write route: every write is a consensus transaction, sent as JSON to `POST /tx/submit`. With an identity set, the client builds, signs, and submits these itself, each under the identity's next nonce (`GET /account/{did}/nonce`):
+The API serves no REST write route: every write is a consensus transaction, sent as JSON to `POST /tx/submit`. With an identity set, the client builds, signs, and submits these itself, each under the identity's next free nonce (see [Nonces](#nonces)):
 
 - `data.store` — StoreData
 - `registration.registerSubgrove` — RegisterSubgrove, a DataStorage subgrove the identity owns, its schema in the node's form (`SubgroveSchema`)
@@ -183,7 +183,16 @@ RevokeSubgroveKey is signed over `RevokeSubgroveKey:<subgrove id>:<revokee DID>:
 - `storeDataMessage`, `storeFileManifestMessage`, `deleteFileManifestMessage`, `registerSubgroveMessage`, `grantSubgroveKeyMessage`, `rotateSubgroveKeyMessage`, `revokeSubgroveKeyMessage`, and `unregisterStorageNodeMessage` return the exact message, and the SDK's own transactions are built with them.
 - Ed25519 signs the message's UTF-8 bytes; secp256k1 signs their Keccak-256.
 - The message is built after the nonce is chosen. A transaction refused in its block after its signature and nonce verify still spends its nonce; one that never landed spends nothing, and a retry of it should sign under the same nonce, so that at most one of the two can run.
-- The client's writes take the account's next nonce, or the one after the last nonce the client handed out if that is higher, so writes sent before the previous one lands take consecutive nonces. A write the API doesn't accept gives its nonce back, so calling again signs under the same nonce. The `ConsensusClient` methods fetch the account's next nonce on each call. For `files`, pass new `FileSigningOptions` with the nonce to sign under.
+
+### Nonces
+
+The node accepts a nonce in the 24 above the account's base that it hasn't used, and the base advances only over used nonces with no gap, so a nonce handed out and never used blocks the window until something uses it. The client's writes and the `ConsensusClient` methods take their nonces from one allocator per process, kept per DID and API URL:
+
+- Each write takes the lowest nonce above the base that isn't used and isn't held by another write in flight, so writes sent together take distinct nonces. The base comes from `GET /account/{did}/nonce`. `ConsensusClient` also reads which nonces above the base are used, from the ABCI query `/store/account_nonce_state/{did}` on its CometBFT RPC.
+- A nonce is held from when it is handed out until the chain shows it used, or for 120 s (the node's admission hold) if it never lands.
+- A write refused at CheckTx gives its nonce back, unless the refusal says the nonce is held by a pending transaction, already used, or spent; then it is treated as taken. A submission that failed in transit (a network error or a 5xx) may still land, so its nonce stays held: check whether the write landed before sending it again.
+- With every nonce in the window held or used, a write fails with a "nonce window is full" error instead of signing one the node refuses. More than 24 writes from one identity have to wait for earlier ones to land.
+- For `files`, pass new `FileSigningOptions` with the nonce to sign under.
 
 ## What's in the box
 
