@@ -153,7 +153,7 @@ public actor WillowIndexers {
         IndexerInfo(
             indexerDid: "explicit-override",
             subgroves: [],
-            stakeAmount: 0,
+            stakeAmount: "0",
             endpoint: url,
             queryEndpoint: url,
             status: "active",

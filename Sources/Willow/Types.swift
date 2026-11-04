@@ -186,42 +186,155 @@ public struct RegisterSubgroveRequest: Codable {
     }
 }
 
-/// A registered subgrove.
+/// The document schema a subgrove registers, as the node reads it: field
+/// names mapped to types ("string", "number", "boolean", "array", "object",
+/// or "bytes"), indexes, and required fields.
+public struct SubgroveSchema: Codable, Equatable {
+    public struct Index: Codable, Equatable {
+        public let name: String
+        public let fields: [String]
+        public let unique: Bool
+
+        public init(name: String, fields: [String], unique: Bool = false) {
+            self.name = name
+            self.fields = fields
+            self.unique = unique
+        }
+    }
+
+    public let version: UInt32
+    public let fields: [String: String]
+    public let indexes: [Index]
+    public let requiredFields: [String]
+
+    enum CodingKeys: String, CodingKey {
+        case version
+        case fields
+        case indexes
+        case requiredFields = "required_fields"
+    }
+
+    public init(version: UInt32 = 1, fields: [String: String] = [:], indexes: [Index] = [], requiredFields: [String] = []) {
+        self.version = version
+        self.fields = fields
+        self.indexes = indexes
+        self.requiredFields = requiredFields
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        version = try container.decodeIfPresent(UInt32.self, forKey: .version) ?? 1
+        fields = try container.decodeIfPresent([String: String].self, forKey: .fields) ?? [:]
+        indexes = try container.decodeIfPresent([Index].self, forKey: .indexes) ?? []
+        requiredFields = try container.decodeIfPresent([String].self, forKey: .requiredFields) ?? []
+    }
+
+    /// `definition` in the node's form. A field's type maps to the node's
+    /// ("int", "float", and "number" to number; "bool" to boolean; "array" and
+    /// "array:<item>" to array); a required field is listed in
+    /// `requiredFields`. The node keeps no per-field index flag and no index
+    /// type, so `SchemaField.indexed` and `IndexDefinition.type` are not
+    /// carried. Throws a validation error for a type the node has no match for.
+    public init(_ definition: SchemaDefinition) throws {
+        var fields: [String: String] = [:]
+        for field in definition.fields {
+            let type = field.type.lowercased()
+            switch type {
+            case "string", "number", "object", "bytes", "boolean":
+                fields[field.name] = type
+            case "int", "integer", "float", "double":
+                fields[field.name] = "number"
+            case "bool":
+                fields[field.name] = "boolean"
+            case _ where type == "array" || type.hasPrefix("array:"):
+                fields[field.name] = "array"
+            default:
+                throw ValidationError("Schema field \(field.name) has type \(field.type), which the node has no match for")
+            }
+        }
+        self.init(
+            version: 1,
+            fields: fields,
+            indexes: definition.indexes.map { Index(name: $0.name, fields: $0.fields, unique: $0.unique) },
+            requiredFields: definition.fields.filter { $0.required }.map { $0.name }
+        )
+    }
+
+    /// The schema as the JSON text a registration carries, keys sorted.
+    public func jsonText() throws -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        return String(decoding: try encoder.encode(self), as: UTF8.self)
+    }
+}
+
+/// A registered subgrove as `GET /subgroves` lists it.
 public struct SubgroveRegistration: Codable {
     public let subgroveId: String
     public let name: String
-    public let description: String?
-    public let schema: SchemaDefinition
+    public let description: String
+    public let admins: [String]
+    public let schema: SubgroveSchema
     public let ownerDid: String
-    public let writers: [String]?
-    public let readers: [String]?
-    public let rewardRate: UInt64?
+    public let writers: [String]
+    public let freeReaders: [String]
+    public let readPricing: ReadPricing?
+    public let privacy: PrivacyConfig?
     public let retentionWindow: RetentionWindow?
-    public let itemCount: UInt64
-    public let storageUsed: UInt64
-    public let createdAt: Int64
-    public let updatedAt: Int64
+    public let confirmationDepth: UInt32
+    public let createdAt: UInt64
+    public let updatedAt: UInt64
+    /// "DataStorage" or "BlockchainIndexing".
+    public let mode: String?
+    public let chain: String?
+    public let indexerCount: Int?
 
     enum CodingKeys: String, CodingKey {
         case subgroveId = "subgrove_id"
         case name
         case description
+        case admins
         case schema
         case ownerDid = "owner_did"
         case writers
-        case readers
-        case rewardRate = "reward_rate"
+        case freeReaders = "free_readers"
+        case readPricing = "read_pricing"
+        case privacy
         case retentionWindow = "retention_window"
-        case itemCount = "item_count"
-        case storageUsed = "storage_used"
+        case confirmationDepth = "confirmation_depth"
         case createdAt = "created_at"
         case updatedAt = "updated_at"
+        case mode
+        case chain
+        case indexerCount = "indexer_count"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        subgroveId = try container.decode(String.self, forKey: .subgroveId)
+        name = try container.decode(String.self, forKey: .name)
+        description = try container.decodeIfPresent(String.self, forKey: .description) ?? ""
+        admins = try container.decodeIfPresent([String].self, forKey: .admins) ?? []
+        schema = try container.decode(SubgroveSchema.self, forKey: .schema)
+        ownerDid = try container.decode(String.self, forKey: .ownerDid)
+        writers = try container.decodeIfPresent([String].self, forKey: .writers) ?? []
+        freeReaders = try container.decodeIfPresent([String].self, forKey: .freeReaders) ?? []
+        readPricing = try container.decodeIfPresent(ReadPricing.self, forKey: .readPricing)
+        privacy = try container.decodeIfPresent(PrivacyConfig.self, forKey: .privacy)
+        retentionWindow = try container.decodeIfPresent(RetentionWindow.self, forKey: .retentionWindow)
+        confirmationDepth = try container.decodeIfPresent(UInt32.self, forKey: .confirmationDepth) ?? 0
+        createdAt = try container.decode(UInt64.self, forKey: .createdAt)
+        updatedAt = try container.decode(UInt64.self, forKey: .updatedAt)
+        mode = try container.decodeIfPresent(String.self, forKey: .mode)
+        chain = try container.decodeIfPresent(String.self, forKey: .chain)
+        indexerCount = try container.decodeIfPresent(Int.self, forKey: .indexerCount)
     }
 }
 
 // MARK: - Token Types
 
-/// Information about the WILL token.
+/// Information about the WILL token (`GET /token/info`). Supplies are in the
+/// token's smallest unit, as decimal digits (they exceed `UInt64`).
 public struct TokenInfo: Codable {
     public let name: String
     public let symbol: String
@@ -240,14 +353,41 @@ public struct TokenInfo: Codable {
         case maxSupply = "max_supply"
         case circulatingSupply = "circulating_supply"
     }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        name = try container.decode(String.self, forKey: .name)
+        symbol = try container.decode(String.self, forKey: .symbol)
+        decimals = try container.decode(UInt8.self, forKey: .decimals)
+        genesisSupply = try container.decodeAmount(forKey: .genesisSupply)
+        mintedSupply = try container.decodeAmount(forKey: .mintedSupply)
+        maxSupply = try container.decodeAmount(forKey: .maxSupply)
+        circulatingSupply = try container.decodeAmount(forKey: .circulatingSupply)
+    }
 }
 
-/// Balance information for a DID.
+/// A DID's balance (`GET /token/balance/{did}`), in the token's smallest
+/// unit, as decimal digits. An account the chain doesn't know reads as zeros.
 public struct BalanceInfo: Codable {
-    public let id: String
-    public let balance: UInt64
-    public let available: UInt64
-    public let locked: UInt64
+    public let did: String
+    public let available: String
+    public let staked: String
+    public let locked: String
+
+    enum CodingKeys: String, CodingKey {
+        case did
+        case available
+        case staked
+        case locked
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        did = try container.decode(String.self, forKey: .did)
+        available = try container.decodeAmount(forKey: .available)
+        staked = try container.decodeAmount(forKey: .staked)
+        locked = try container.decodeAmount(forKey: .locked)
+    }
 }
 
 /// Fee schedule for operations.
@@ -276,27 +416,32 @@ public struct FeeSchedule: Codable {
     /// some), so each is read as a string or an integer and kept as its digits.
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        func amount(_ key: CodingKeys) throws -> String {
-            if let string = try? container.decode(String.self, forKey: key) {
-                return string
-            }
-            if let integer = try? container.decode(UInt64.self, forKey: key) {
-                return String(integer)
-            }
-            let decimal = try container.decode(Decimal.self, forKey: key)
-            guard decimal.isFinite, decimal >= 0, decimal == decimal.wholePart() else {
-                throw DecodingError.dataCorruptedError(forKey: key, in: container, debugDescription: "Not a whole amount")
-            }
-            return NSDecimalNumber(decimal: decimal).stringValue
-        }
-        didRegistration = try amount(.didRegistration)
-        subgroveRegistration = try amount(.subgroveRegistration)
-        baseTxCost = try amount(.baseTxCost)
-        costPerByte = try amount(.costPerByte)
-        queryFee = try amount(.queryFee)
+        didRegistration = try container.decodeAmount(forKey: .didRegistration)
+        subgroveRegistration = try container.decodeAmount(forKey: .subgroveRegistration)
+        baseTxCost = try container.decodeAmount(forKey: .baseTxCost)
+        costPerByte = try container.decodeAmount(forKey: .costPerByte)
+        queryFee = try container.decodeAmount(forKey: .queryFee)
         transferFeePercentage = try container.decode(UInt32.self, forKey: .transferFeePercentage)
         maxTxSizeBytes = try container.decode(UInt64.self, forKey: .maxTxSizeBytes)
         maxDataPayloadBytes = try container.decode(UInt64.self, forKey: .maxDataPayloadBytes)
+    }
+}
+
+extension KeyedDecodingContainer {
+    /// A token amount the API serves as a JSON integer (a u128, beyond
+    /// `UInt64` for some) or a decimal string, kept as its digits.
+    func decodeAmount(forKey key: Key) throws -> String {
+        if let string = try? decode(String.self, forKey: key) {
+            return string
+        }
+        if let integer = try? decode(UInt64.self, forKey: key) {
+            return String(integer)
+        }
+        let decimal = try decode(Decimal.self, forKey: key)
+        guard decimal.isFinite, decimal >= 0, decimal == decimal.wholePart() else {
+            throw DecodingError.dataCorruptedError(forKey: key, in: self, debugDescription: "Not a whole amount")
+        }
+        return NSDecimalNumber(decimal: decimal).stringValue
     }
 }
 
@@ -318,26 +463,43 @@ public enum ValidatorStatus: String, Codable {
     case jailed = "jailed"
 }
 
-/// Information about a validator.
+/// A validator as `GET /validators` and `GET /validators/{did}` serve it.
+/// Stakes are in the token's smallest unit, as decimal digits.
 public struct ValidatorInfo: Codable {
-    public let address: String
-    public let publicKey: String
-    public let votingPower: Int64
-    public let status: ValidatorStatus
-    public let commission: Double
-    public let moniker: String?
-    public let website: String?
-    public let details: String?
+    public let did: String
+    public let totalStake: String
+    public let selfStake: String
+    public let active: Bool
+    public let jailed: Bool
+    /// When a jailed validator's jail ends (Unix seconds).
+    public let jailEndTime: UInt64?
+    public let consensusPubkey: String?
 
     enum CodingKeys: String, CodingKey {
-        case address
-        case publicKey = "public_key"
-        case votingPower = "voting_power"
-        case status
-        case commission
-        case moniker
-        case website
-        case details
+        case did
+        case totalStake = "total_stake"
+        case selfStake = "self_stake"
+        case active
+        case jailed
+        case jailEndTime = "jail_end_time"
+        case consensusPubkey = "consensus_pubkey"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        did = try container.decode(String.self, forKey: .did)
+        totalStake = try container.decodeAmount(forKey: .totalStake)
+        selfStake = try container.decodeAmount(forKey: .selfStake)
+        active = try container.decode(Bool.self, forKey: .active)
+        jailed = try container.decode(Bool.self, forKey: .jailed)
+        jailEndTime = try container.decodeIfPresent(UInt64.self, forKey: .jailEndTime)
+        consensusPubkey = try container.decodeIfPresent(String.self, forKey: .consensusPubkey)
+    }
+
+    /// Jailed, active, or inactive.
+    public var status: ValidatorStatus {
+        if jailed { return .jailed }
+        return active ? .active : .inactive
     }
 }
 
@@ -551,8 +713,8 @@ public struct CheckpointInfo: Codable {
     public let subgroveId: String
     public let stateRoot: String
     public let blockRange: (UInt64, UInt64)
-    public let indexerDid: String
-    public let submittedAt: UInt64
+    public let indexerDid: String?
+    public let submittedAt: UInt64?
     public let isTrusted: Bool
 
     enum CodingKeys: String, CodingKey {
@@ -570,8 +732,8 @@ public struct CheckpointInfo: Codable {
         checkpointId = try container.decode(String.self, forKey: .checkpointId)
         subgroveId = try container.decode(String.self, forKey: .subgroveId)
         stateRoot = try container.decode(String.self, forKey: .stateRoot)
-        indexerDid = try container.decode(String.self, forKey: .indexerDid)
-        submittedAt = try container.decode(UInt64.self, forKey: .submittedAt)
+        indexerDid = try container.decodeIfPresent(String.self, forKey: .indexerDid)
+        submittedAt = try container.decodeIfPresent(UInt64.self, forKey: .submittedAt)
         isTrusted = try container.decode(Bool.self, forKey: .isTrusted)
 
         // Decode block_range as array of two UInt64
@@ -588,8 +750,8 @@ public struct CheckpointInfo: Codable {
         try container.encode(subgroveId, forKey: .subgroveId)
         try container.encode(stateRoot, forKey: .stateRoot)
         try container.encode([blockRange.0, blockRange.1], forKey: .blockRange)
-        try container.encode(indexerDid, forKey: .indexerDid)
-        try container.encode(submittedAt, forKey: .submittedAt)
+        try container.encodeIfPresent(indexerDid, forKey: .indexerDid)
+        try container.encodeIfPresent(submittedAt, forKey: .submittedAt)
         try container.encode(isTrusted, forKey: .isTrusted)
     }
 }
@@ -699,80 +861,84 @@ public enum RetentionWindow: Codable, Equatable {
         case verifyOnly = "VerifyOnly"
     }
 
+    /// Reads serde's form: a unit variant as its name (`"Indefinite"`), a
+    /// variant with a count as `{"Blocks": n}`.
     public init(from decoder: Decoder) throws {
+        if let single = try? decoder.singleValueContainer(), let value = try? single.decode(String.self) {
+            switch value {
+            case "Indefinite":
+                self = .indefinite
+            case "VerifyOnly":
+                self = .verifyOnly
+            default:
+                throw DecodingError.dataCorruptedError(
+                    in: single,
+                    debugDescription: "Unknown RetentionWindow value: \(value)"
+                )
+            }
+            return
+        }
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        if let n = try? container.decode(UInt64.self, forKey: .blocks) {
+        if let n = try container.decodeIfPresent(UInt64.self, forKey: .blocks) {
             self = .blocks(n)
-            return
-        }
-        if let n = try? container.decode(UInt64.self, forKey: .seconds) {
+        } else if let n = try container.decodeIfPresent(UInt64.self, forKey: .seconds) {
             self = .seconds(n)
-            return
-        }
-        if container.contains(.indefinite) {
+        } else if container.contains(.indefinite) {
             self = .indefinite
-            return
-        }
-        if container.contains(.verifyOnly) {
+        } else if container.contains(.verifyOnly) {
             self = .verifyOnly
-            return
-        }
-
-        // Try single-value string for simple variant
-        let singleContainer = try decoder.singleValueContainer()
-        let value = try singleContainer.decode(String.self)
-        switch value {
-        case "Indefinite":
-            self = .indefinite
-        case "VerifyOnly":
-            self = .verifyOnly
-        default:
-            throw DecodingError.dataCorruptedError(
-                in: singleContainer,
-                debugDescription: "Unknown RetentionWindow value: \(value)"
-            )
+        } else {
+            throw DecodingError.dataCorrupted(DecodingError.Context(
+                codingPath: decoder.codingPath, debugDescription: "Unknown RetentionWindow value"
+            ))
         }
     }
 
+    /// Writes serde's form: a unit variant as its name, a count as `{"Blocks": n}`.
     public func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
         switch self {
         case .blocks(let n):
+            var container = encoder.container(keyedBy: CodingKeys.self)
             try container.encode(n, forKey: .blocks)
         case .seconds(let n):
+            var container = encoder.container(keyedBy: CodingKeys.self)
             try container.encode(n, forKey: .seconds)
         case .indefinite:
-            try container.encode("Indefinite", forKey: .indefinite)
+            var container = encoder.singleValueContainer()
+            try container.encode("Indefinite")
         case .verifyOnly:
-            try container.encode("VerifyOnly", forKey: .verifyOnly)
+            var container = encoder.singleValueContainer()
+            try container.encode("VerifyOnly")
         }
     }
 }
 
 // MARK: - Subgrove Types
 
-/// Information about a subgrove (indexed blockchain data).
+/// A subgrove as `GET /subgroves/{id}` and `GET /subgroves/indexed` serve
+/// it. A storage subgrove reads with zero blocks and no indexers.
 public struct SubgroveInfo: Codable {
-    public let id: String
+    public let subgroveId: String
     public let name: String
-    public let description: String?
-    public let network: String
-    public let startBlock: UInt64
-    public let currentBlock: UInt64
+    public let ownerDid: String
     public let status: String
-    public let createdAt: Int64
-    public let updatedAt: Int64
+    /// The latest indexed source-chain block, 0 before any.
+    public let latestBlock: UInt64
+    /// The Willow height the subgrove was registered at.
+    public let deploymentBlock: UInt64
+    public let indexers: [String]
+    /// The chain an indexing subgrove indexes.
+    public let chain: String?
 
     enum CodingKeys: String, CodingKey {
-        case id
+        case subgroveId = "subgrove_id"
         case name
-        case description
-        case network
-        case startBlock = "start_block"
-        case currentBlock = "current_block"
+        case ownerDid = "owner_did"
         case status
-        case createdAt = "created_at"
-        case updatedAt = "updated_at"
+        case latestBlock = "latest_block"
+        case deploymentBlock = "deployment_block"
+        case indexers
+        case chain
     }
 }
 
@@ -781,7 +947,8 @@ public struct SubgroveInfo: Codable {
 public struct IndexerInfo: Codable {
     public let indexerDid: String
     public let subgroves: [String]
-    public let stakeAmount: UInt64
+    /// The indexer's stake in the token's smallest unit, as decimal digits.
+    public let stakeAmount: String
     /// Monitoring / health endpoint (historically also used for queries).
     public let endpoint: String
     /// Preferred endpoint for client query traffic (GraphQL/SQL).
@@ -795,7 +962,7 @@ public struct IndexerInfo: Codable {
     public init(
         indexerDid: String,
         subgroves: [String],
-        stakeAmount: UInt64,
+        stakeAmount: String,
         endpoint: String,
         queryEndpoint: String? = nil,
         status: String,
@@ -823,6 +990,18 @@ public struct IndexerInfo: Codable {
         case lastUpdate = "last_update"
     }
 
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        indexerDid = try container.decode(String.self, forKey: .indexerDid)
+        subgroves = try container.decode([String].self, forKey: .subgroves)
+        stakeAmount = try container.decodeAmount(forKey: .stakeAmount)
+        endpoint = try container.decode(String.self, forKey: .endpoint)
+        queryEndpoint = try container.decodeIfPresent(String.self, forKey: .queryEndpoint)
+        status = try container.decode(String.self, forKey: .status)
+        performanceScore = try container.decode(Double.self, forKey: .performanceScore)
+        lastUpdate = try container.decode(UInt64.self, forKey: .lastUpdate)
+    }
+
     /// URL clients should POST GraphQL/SQL queries to. Prefers `queryEndpoint`
     /// when non-nil; falls back to `endpoint` otherwise.
     public func effectiveQueryEndpoint() -> String {
@@ -832,22 +1011,18 @@ public struct IndexerInfo: Codable {
 
 // MARK: - Health Types
 
-/// Health status of a node.
+/// A node's health as `GET /health` serves it.
 public struct HealthStatus: Codable {
-    public let healthy: Bool
+    /// "healthy", "degraded", or "unhealthy".
+    public let status: String
+    /// RFC 3339.
+    public let timestamp: String
     public let version: String
-    public let nodeId: String
-    public let network: String
-    public let blockHeight: Int64
-    public let syncStatus: String
+    /// Each check's result, as the node reports it.
+    public let checks: [String: AnyCodable]?
 
-    enum CodingKeys: String, CodingKey {
-        case healthy
-        case version
-        case nodeId = "node_id"
-        case network
-        case blockHeight = "block_height"
-        case syncStatus = "sync_status"
+    public var healthy: Bool {
+        return status == "healthy"
     }
 }
 

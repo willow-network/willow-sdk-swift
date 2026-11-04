@@ -63,7 +63,6 @@ struct LightClientExample {
             // 4. Set identity for per-request signing
             print("4. Setting identity...")
             let identity = try newIdentity(algorithm: .ed25519)
-            _ = try? await client.registerDID(identity.didDocument)
             client.setIdentity(identity)
             print("   Authenticated as: \(identity.did)")
             print()

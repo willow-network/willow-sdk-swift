@@ -103,26 +103,100 @@ public struct RegisterDidTx: Codable {
     }
 }
 
+/// Paid-read pricing for a subgrove: the chain's `ReadPricing`.
+public struct ReadPricing: Codable, Equatable {
+    /// Whether readers outside the free-reader list pay per query.
+    public var enabled: Bool
+    /// The price of one query, in the token's smallest unit.
+    public var pricePerQuery: U128
+    /// The owner's share of read revenue in basis points (10000 = 100%).
+    public var ownerRevenueShareBps: UInt32
+
+    enum CodingKeys: String, CodingKey {
+        case enabled
+        case pricePerQuery = "price_per_query"
+        case ownerRevenueShareBps = "owner_revenue_share_bps"
+    }
+
+    public init(enabled: Bool, pricePerQuery: U128, ownerRevenueShareBps: UInt32) {
+        self.enabled = enabled
+        self.pricePerQuery = pricePerQuery
+        self.ownerRevenueShareBps = ownerRevenueShareBps
+    }
+}
+
 /// DataStorage mode configuration for a subgrove.
 public struct SubgroveDataStorage: Codable {
     public var name: String
     public var writers: [String]
     public var freeReaders: [String]
+    /// Paid-read pricing; `nil` for none.
+    public var readPricing: ReadPricing?
 
     enum CodingKeys: String, CodingKey {
         case name
         case writers
         case freeReaders = "free_readers"
+        case readPricing = "read_pricing"
     }
 
-    public init(name: String = "", writers: [String] = [], freeReaders: [String] = []) {
+    public init(name: String = "", writers: [String] = [], freeReaders: [String] = [], readPricing: ReadPricing? = nil) {
         self.name = name
         self.writers = writers
         self.freeReaders = freeReaders
+        self.readPricing = readPricing
+    }
+}
+
+/// FileStorage mode configuration for a subgrove: files whose manifests go
+/// through consensus and whose chunks live on storage nodes.
+public struct SubgroveFileStorage: Codable {
+    public var name: String
+    /// The largest file accepted, in bytes.
+    public var maxFileSize: UInt64
+    /// How many storage nodes must hold each file.
+    public var replicationFactor: UInt8
+    public var writers: [String]
+    public var freeReaders: [String]
+    /// Paid-download pricing; `nil` for none.
+    public var readPricing: ReadPricing?
+    /// How long files are kept, in seconds (0 = permanently).
+    public var retentionPeriod: UInt64
+
+    enum CodingKeys: String, CodingKey {
+        case name
+        case maxFileSize = "max_file_size"
+        case replicationFactor = "replication_factor"
+        case writers
+        case freeReaders = "free_readers"
+        case readPricing = "read_pricing"
+        case retentionPeriod = "retention_period"
+    }
+
+    public init(
+        name: String,
+        maxFileSize: UInt64,
+        replicationFactor: UInt8,
+        writers: [String] = [],
+        freeReaders: [String] = [],
+        readPricing: ReadPricing? = nil,
+        retentionPeriod: UInt64 = 0
+    ) {
+        self.name = name
+        self.maxFileSize = maxFileSize
+        self.replicationFactor = replicationFactor
+        self.writers = writers
+        self.freeReaders = freeReaders
+        self.readPricing = readPricing
+        self.retentionPeriod = retentionPeriod
     }
 }
 
 /// BlockchainIndexing mode configuration for a subgrove.
+///
+/// The node's BlockchainIndexing registration also needs a manifest, an
+/// execution mode, and an indexer config, which this type doesn't carry, so
+/// the SDK refuses to sign a registration in this mode.
 public struct SubgroveBlockchainIndexing: Codable {
     /// How long real-time indexed data is retained on consensus nodes.
     public var retentionWindow: RetentionWindow?
@@ -136,13 +210,15 @@ public struct SubgroveBlockchainIndexing: Codable {
     }
 }
 
-/// SubgroveMode: DataStorage or BlockchainIndexing.
+/// SubgroveMode: DataStorage, FileStorage, or BlockchainIndexing.
 public enum SubgroveMode: Codable {
     case dataStorage(SubgroveDataStorage)
+    case fileStorage(SubgroveFileStorage)
     case blockchainIndexing(SubgroveBlockchainIndexing)
 
     enum CodingKeys: String, CodingKey {
         case dataStorage = "DataStorage"
+        case fileStorage = "FileStorage"
         case blockchainIndexing = "BlockchainIndexing"
     }
 
@@ -150,6 +226,8 @@ public enum SubgroveMode: Codable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         if let ds = try container.decodeIfPresent(SubgroveDataStorage.self, forKey: .dataStorage) {
             self = .dataStorage(ds)
+        } else if let fs = try container.decodeIfPresent(SubgroveFileStorage.self, forKey: .fileStorage) {
+            self = .fileStorage(fs)
         } else if let bi = try container.decodeIfPresent(SubgroveBlockchainIndexing.self, forKey: .blockchainIndexing) {
             self = .blockchainIndexing(bi)
         } else {
@@ -162,49 +240,81 @@ public enum SubgroveMode: Codable {
         switch self {
         case .dataStorage(let ds):
             try container.encode(ds, forKey: .dataStorage)
+        case .fileStorage(let fs):
+            try container.encode(fs, forKey: .fileStorage)
         case .blockchainIndexing(let bi):
             try container.encode(bi, forKey: .blockchainIndexing)
         }
     }
+
+    /// The mode's name, empty for BlockchainIndexing.
+    internal var name: String {
+        switch self {
+        case .dataStorage(let mode): return mode.name
+        case .fileStorage(let mode): return mode.name
+        case .blockchainIndexing: return ""
+        }
+    }
 }
 
-/// Subgrove registration transaction.
-public struct RegisterSubgroveTx: Codable {
+/// Subgrove registration transaction: the chain's `RegisterSubgroveTx`.
+///
+/// It is signed over `registerSubgroveMessage`, whose `Config` line is the
+/// SHA-256 of the transaction's bincode with an empty signature, so it binds
+/// every field. The SDK sends every field explicitly (`template_config` and
+/// the checkpoint TEE requirement as none, `cryptographic_completeness` as
+/// false) and hashes exactly what it sends. A BlockchainIndexing mode is
+/// refused: this type can't carry everything that mode needs.
+public struct RegisterSubgroveTx {
     public var subgroveId: String
+    /// Human-readable name.
+    public var name: String
+    public var description: String
+    /// The schema as JSON text, e.g. `{"version":1,"fields":{},"indexes":[],"required_fields":[]}`.
     public var schema: String
     public var ownerDid: String
-    public var mode: SubgroveMode?
-    public var retentionWindow: RetentionWindow?
+    /// DIDs with admin rights.
+    public var admins: [String]
+    /// Tokens (smallest unit) moved from the owner to fund the subgrove at registration.
+    public var initialFunding: U128?
+    public var mode: SubgroveMode
+    /// Set for a private subgrove.
+    public var privacy: PrivacyConfig?
+    /// The owner's own key grant, for a private subgrove.
+    public var initialOwnerKeyGrant: EncryptedKeyGrant?
+    /// Blocks held in the chain-tip buffer before submissions fire.
+    public var confirmationDepth: UInt32
     public var signature: [UInt8]
     public var publicKeyId: String
     public var nonce: Int
 
-    enum CodingKeys: String, CodingKey {
-        case subgroveId = "subgrove_id"
-        case schema
-        case ownerDid = "owner_did"
-        case mode
-        case retentionWindow = "retention_window"
-        case signature
-        case publicKeyId = "public_key_id"
-        case nonce
-    }
-
     public init(
         subgroveId: String,
+        name: String = "",
+        description: String = "",
         schema: String,
         ownerDid: String,
-        mode: SubgroveMode? = nil,
-        retentionWindow: RetentionWindow? = nil,
+        admins: [String] = [],
+        initialFunding: U128? = nil,
+        mode: SubgroveMode = .dataStorage(SubgroveDataStorage()),
+        privacy: PrivacyConfig? = nil,
+        initialOwnerKeyGrant: EncryptedKeyGrant? = nil,
+        confirmationDepth: UInt32 = 0,
         signature: [UInt8] = [],
         publicKeyId: String,
         nonce: Int
     ) {
         self.subgroveId = subgroveId
+        self.name = name
+        self.description = description
         self.schema = schema
         self.ownerDid = ownerDid
+        self.admins = admins
+        self.initialFunding = initialFunding
         self.mode = mode
-        self.retentionWindow = retentionWindow
+        self.privacy = privacy
+        self.initialOwnerKeyGrant = initialOwnerKeyGrant
+        self.confirmationDepth = confirmationDepth
         self.signature = signature
         self.publicKeyId = publicKeyId
         self.nonce = nonce
@@ -425,7 +535,34 @@ public class ConsensusClient {
         return try await broadcastTransaction(txType: "RegisterDid", transaction: tx)
     }
 
-    /// Register a subgrove (dataset) on the blockchain.
+    /// Register a subgrove (dataset) on the blockchain as a `RegisterSubgrove`
+    /// transaction.
+    ///
+    /// The transaction is `registration` under the owner's next nonce (its
+    /// `nonce` and `signature` are replaced). `signFunction` signs
+    /// `registerSubgroveMessage` over the subgrove ID, the owner DID, the
+    /// SHA-256 of the transaction's bincode with an empty signature, and the
+    /// nonce; the SDK sends exactly the fields it hashed. A BlockchainIndexing
+    /// mode, or a subgrove ID or owner DID holding a line break, is refused
+    /// with a validation error before anything is signed.
+    public func registerSubgrove(
+        _ registration: RegisterSubgroveTx,
+        privateKey: Data,
+        signFunction: (Data, Data) throws -> Data
+    ) async throws -> BroadcastResult {
+        var tx = registration
+        tx.signature = []
+        tx.nonce = 0
+        // Refuse what can't be signed before spending a request on the nonce.
+        _ = try registerSubgroveMessage(tx)
+        tx.nonce = try await getNextNonce(did: tx.ownerDid)
+        let body = try signedRegisterSubgroveBody(tx) { try signFunction($0, privateKey) }
+        return try await broadcastBody(body)
+    }
+
+    /// Register a subgrove (dataset) on the blockchain: `registerSubgrove(_:)`
+    /// with the subgrove's name taken from the mode's (DataStorage when `mode`
+    /// is nil) and every other field at its default.
     public func registerSubgrove(
         subgroveId: String,
         schema: String,
@@ -433,26 +570,19 @@ public class ConsensusClient {
         privateKey: Data,
         publicKeyId: String,
         signFunction: (Data, Data) throws -> Data,
-        mode: SubgroveMode? = nil,
-        retentionWindow: RetentionWindow? = nil
+        mode: SubgroveMode? = nil
     ) async throws -> BroadcastResult {
-        let nonce = try await getNextNonce(did: ownerDid)
-
-        var tx = RegisterSubgroveTx(
+        let mode = mode ?? .dataStorage(SubgroveDataStorage())
+        let registration = RegisterSubgroveTx(
             subgroveId: subgroveId,
+            name: mode.name,
             schema: schema,
             ownerDid: ownerDid,
             mode: mode,
-            retentionWindow: retentionWindow,
             publicKeyId: publicKeyId,
-            nonce: nonce
+            nonce: 0
         )
-
-        let signMessage = createSignMessageForSubgrove(tx: tx)
-        let signatureData = try signFunction(Data(signMessage.utf8), privateKey)
-        tx.signature = Array(signatureData)
-
-        return try await broadcastTransaction(txType: "RegisterSubgrove", transaction: tx)
+        return try await registerSubgrove(registration, privateKey: privateKey, signFunction: signFunction)
     }
 
     /// Transfer tokens between DIDs.
@@ -485,12 +615,13 @@ public class ConsensusClient {
 
     /// Store data on the blockchain as a `StoreData` transaction.
     ///
-    /// `data` (a JSON object or array) is serialized once, with sorted keys;
-    /// the transaction carries that JSON text's UTF-8 bytes. `signFunction` signs
+    /// `data` (a JSON object) is serialized once, with sorted keys; the
+    /// transaction carries that JSON text's UTF-8 bytes. `signFunction` signs
     /// `storeDataMessage` over the subgrove ID, key, owner DID, the SHA-256 of
-    /// those bytes, and the transaction's nonce. A subgrove ID, key, or owner
-    /// DID holding a line break is refused with a validation error before
-    /// anything is signed.
+    /// those bytes, and the transaction's nonce. Anything but a JSON object
+    /// (the node refuses it in the block, spending the nonce), or a subgrove
+    /// ID, key, or owner DID holding a line break, is refused with a
+    /// validation error before anything is signed.
     ///
     /// A write refused in its block after its signature and nonce verify still
     /// spends its nonce. Calling again signs anew under the next free nonce.
@@ -503,37 +634,12 @@ public class ConsensusClient {
         publicKeyId: String,
         signFunction: (Data, Data) throws -> Data
     ) async throws -> BroadcastResult {
-        // JSONSerialization raises an Objective-C exception, which Swift
-        // cannot catch, for anything else.
-        guard JSONSerialization.isValidJSONObject(data) else {
-            throw ValidationError("data must be a JSON object or array")
-        }
-        let jsonData = try JSONSerialization.data(withJSONObject: data, options: .sortedKeys)
-        guard let dataString = String(data: jsonData, encoding: .utf8) else {
-            throw ValidationError("data did not serialize as UTF-8")
-        }
-
+        let dataString = try storeDataText(data)
         let nonce = try await getNextNonce(did: ownerDid)
-
-        var tx = DataStoreTx(
-            subgroveId: subgroveId,
-            key: key,
-            data: dataString,
-            ownerDid: ownerDid,
-            publicKeyId: publicKeyId,
-            nonce: nonce
-        )
-
-        let signMessage = try storeDataMessage(
-            subgroveId: tx.subgroveId,
-            key: tx.key,
-            ownerDid: tx.ownerDid,
-            data: tx.dataBytes,
-            nonce: unsignedField("nonce", tx.nonce, as: UInt64.self)
-        )
-        let signatureData = try signFunction(Data(signMessage.utf8), privateKey)
-        tx.signature = Array(signatureData)
-
+        let tx = try signedStoreData(
+            subgroveId: subgroveId, key: key, data: dataString, ownerDid: ownerDid,
+            publicKeyId: publicKeyId, nonce: nonce
+        ) { try signFunction($0, privateKey) }
         return try await broadcastTransaction(txType: "StoreData", transaction: tx)
     }
 
@@ -547,7 +653,7 @@ public class ConsensusClient {
     ) async throws -> BroadcastResult {
         let nonce = try await getNextNonce(did: ownerDid)
 
-        let signMessage = "DeregisterSubgrove:\(subgroveId):\(ownerDid):\(nonce)"
+        let signMessage = deregisterSubgroveMessage(subgroveId: subgroveId, ownerDid: ownerDid, nonce: nonce)
         let signatureData = try signFunction(Data(signMessage.utf8), privateKey)
 
         var tx = DeregisterSubgroveTx(
@@ -756,14 +862,16 @@ public class ConsensusClient {
     }
 
     private func broadcastTransaction<T: Encodable>(txType: String, transaction: T) async throws -> BroadcastResult {
-        // Submit through the API server's /tx/submit endpoint: it accepts
-        // JSON, bincode-encodes, and forwards to CometBFT. The chain's
-        // on-the-wire format is bincode.
+        return try await broadcastBody(try encodeTransaction(txType: txType, transaction: transaction))
+    }
+
+    /// Submits a `/tx/submit` body already encoded as JSON through the API
+    /// server, which bincode-encodes it (the chain's on-the-wire format) and
+    /// forwards it to CometBFT.
+    private func broadcastBody(_ body: Data) async throws -> BroadcastResult {
         guard let apiUrl = config.apiUrl, !apiUrl.isEmpty else {
             throw ConsensusClientError("apiUrl is required for transaction submission")
         }
-
-        let body = try encodeTransaction(txType: txType, transaction: transaction)
 
         let trimmed = apiUrl.hasSuffix("/") ? String(apiUrl.dropLast()) : apiUrl
         guard let url = URL(string: "\(trimmed)/tx/submit") else {
@@ -893,44 +1001,6 @@ public class ConsensusClient {
         return "{}"
     }
 
-    private func createSignMessageForSubgrove(tx: RegisterSubgroveTx) -> String {
-        if let mode = tx.mode {
-            switch mode {
-            case .blockchainIndexing(let bi):
-                return """
-                RegisterSubgrove
-                Subgrove ID: \(tx.subgroveId)
-                Mode: BlockchainIndexing
-                Schema: \(tx.schema)
-                Owner: \(tx.ownerDid)
-                Nonce: \(tx.nonce)
-                """
-            case .dataStorage(let ds):
-                return """
-                RegisterSubgrove
-                Subgrove ID: \(tx.subgroveId)
-                Name: \(ds.name)
-                Schema: \(tx.schema)
-                Owner: \(tx.ownerDid)
-                Writers: \(ds.writers.joined(separator: ","))
-                Readers: \(ds.freeReaders.joined(separator: ","))
-                Nonce: \(tx.nonce)
-                """
-            }
-        }
-        // Default: DataStorage with empty values
-        return """
-        RegisterSubgrove
-        Subgrove ID: \(tx.subgroveId)
-        Name: \
-        Schema: \(tx.schema)
-        Owner: \(tx.ownerDid)
-        Writers: \
-        Readers: \
-        Nonce: \(tx.nonce)
-        """
-    }
-
     private func createSignMessageForTransfer(tx: TransferTx) -> String {
         return """
         Transfer
@@ -1057,6 +1127,69 @@ public class ConsensusClient {
 /// Encoded with no key conversion, so the variant name keeps its case.
 internal func encodeTransaction<T: Encodable>(txType: String, transaction: T) throws -> Data {
     return try JSONEncoder().encode([txType: transaction])
+}
+
+/// The message a DeregisterSubgrove transaction is signed over:
+/// `DeregisterSubgrove:<subgroveId>:<ownerDid>:<nonce>`.
+internal func deregisterSubgroveMessage(subgroveId: String, ownerDid: String, nonce: Int) -> String {
+    return "DeregisterSubgrove:\(subgroveId):\(ownerDid):\(nonce)"
+}
+
+/// `data` as the JSON text a StoreData transaction carries: serialized once,
+/// with sorted keys. Refuses anything but a JSON object.
+internal func storeDataText(_ data: Any) throws -> String {
+    // JSONSerialization raises an Objective-C exception, which Swift cannot
+    // catch, for anything it can't write, so check first.
+    guard data is [String: Any], JSONSerialization.isValidJSONObject(data) else {
+        throw ValidationError("data must be a JSON object")
+    }
+    let jsonData = try JSONSerialization.data(withJSONObject: data, options: .sortedKeys)
+    guard let text = String(data: jsonData, encoding: .utf8) else {
+        throw ValidationError("data did not serialize as UTF-8")
+    }
+    return text
+}
+
+/// A StoreData transaction under `nonce`, signed with `sign` over
+/// `storeDataMessage` built from its own fields.
+internal func signedStoreData(
+    subgroveId: String,
+    key: String,
+    data: String,
+    ownerDid: String,
+    publicKeyId: String,
+    nonce: Int,
+    sign: (Data) throws -> Data
+) throws -> DataStoreTx {
+    var tx = DataStoreTx(
+        subgroveId: subgroveId,
+        key: key,
+        data: data,
+        ownerDid: ownerDid,
+        publicKeyId: publicKeyId,
+        nonce: nonce
+    )
+    let message = try storeDataMessage(
+        subgroveId: tx.subgroveId,
+        key: tx.key,
+        ownerDid: tx.ownerDid,
+        data: tx.dataBytes,
+        nonce: unsignedField("nonce", tx.nonce, as: UInt64.self)
+    )
+    tx.signature = Array(try sign(Data(message.utf8)))
+    return tx
+}
+
+/// The `/tx/submit` body of `tx` signed with `sign`: the signature is over
+/// `registerSubgroveMessage(tx)`, which hashes the very JSON sent (signature
+/// aside), so the node decodes the fields that were signed.
+internal func signedRegisterSubgroveBody(_ tx: RegisterSubgroveTx, sign: (Data) throws -> Data) throws -> Data {
+    var unsigned = tx
+    unsigned.signature = []
+    let message = try registerSubgroveMessage(json: unsigned.wireJSON())
+    var signed = unsigned
+    signed.signature = Array(try sign(Data(message.utf8)))
+    return try signed.submitBody()
 }
 
 /// Reads a `POST /tx/submit` answer: `{ success, data: { tx_hash, code, log }, error }`.

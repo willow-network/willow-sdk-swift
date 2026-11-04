@@ -92,7 +92,9 @@ final class GroveDBTests: XCTestCase {
         let value = Data("value".utf8)
         let hash = valueHash(value)
 
-        XCTAssertEqual(hash, computeHash(value))
+        // Merk prefixes the value with its varint length before hashing.
+        XCTAssertEqual(hash, computeHash(Data([UInt8(value.count)]) + value))
+        XCTAssertNotEqual(hash, computeHash(value))
     }
 
     func testKVHash() {

@@ -12,46 +12,92 @@ public class RegistrationOperations {
 
     // MARK: - Subgrove Operations
 
-    /// Registers a new subgrove.
-    public func registerSubgrove(_ request: RegisterSubgroveRequest) async throws -> SubgroveRegistration {
+    /// Registers a new DataStorage subgrove as a `RegisterSubgrove`
+    /// transaction, signed by the client's identity (the owner) and submitted
+    /// to `POST /tx/submit` (the API serves no registration route).
+    ///
+    /// The subgrove's name, description, writers, and readers (as free
+    /// readers) come from `request`, and its schema is `request.schema` in the
+    /// node's form (`SubgroveSchema(_:)`). The transaction goes out under the
+    /// identity's next nonce, signed over `registerSubgroveMessage`. Refused
+    /// with a validation error before anything is signed: an owner DID other
+    /// than the identity's, a reward rate or retention window (they belong to
+    /// BlockchainIndexing, which this SDK can't register), a schema type the
+    /// node has no match for, or a subgrove ID or owner holding a line break.
+    @discardableResult
+    public func registerSubgrove(_ request: RegisterSubgroveRequest) async throws -> BroadcastResult {
         guard let client = client else { throw NetworkError("Client deallocated") }
-        try client.requireAuth()
-
-        return try await client.post(path: "/subgroves", body: request)
+        let identity = try client.transactionIdentity()
+        guard request.ownerDid.isEmpty || request.ownerDid == identity.did else {
+            throw ValidationError("The owner \(request.ownerDid) is not the identity \(identity.did) that signs the registration")
+        }
+        guard request.rewardRate == 0, request.retentionWindow == nil else {
+            throw ValidationError(
+                "A reward rate and retention window belong to a BlockchainIndexing registration, which this SDK can't build"
+            )
+        }
+        var tx = RegisterSubgroveTx(
+            subgroveId: request.subgroveId,
+            name: request.name,
+            description: request.description ?? "",
+            schema: try SubgroveSchema(request.schema).jsonText(),
+            ownerDid: identity.did,
+            mode: .dataStorage(SubgroveDataStorage(name: request.name, writers: request.writers, freeReaders: request.readers)),
+            publicKeyId: identity.publicKeyId,
+            nonce: 0
+        )
+        // Refuse what can't be signed before spending a request on the nonce.
+        _ = try registerSubgroveMessage(tx)
+        return try await client.submitUnderNextNonce(did: identity.did) { nonce in
+            tx.nonce = nonce
+            return try signedRegisterSubgroveBody(tx, sign: identity.sign)
+        }
     }
 
-    /// Retrieves information about a subgrove.
-    public func getSubgrove(subgroveId: String) async throws -> SubgroveRegistration {
+    /// Retrieves information about a subgrove (`GET /subgroves/{id}`).
+    public func getSubgrove(subgroveId: String) async throws -> SubgroveInfo {
         guard let client = client else { throw NetworkError("Client deallocated") }
 
-        let path = "/subgroves/\(pathSegment(subgroveId))"
-        return try await client.get(path: path)
+        return try await client.getData(path: "/subgroves/\(pathSegment(subgroveId))", "subgrove")
     }
 
-    /// Lists all subgroves.
+    /// Lists the subgroves `GET /subgroves` serves: the public ones, and with
+    /// an identity set, those it can access.
     public func listSubgroves() async throws -> [SubgroveRegistration] {
         guard let client = client else { throw NetworkError("Client deallocated") }
 
-        return try await client.get(path: "/subgroves")
+        return try await client.getData(path: "/subgroves", "subgroves")
     }
 
     /// Updates an existing subgrove.
+    ///
+    /// The API serves no subgrove update route, and this SDK builds no
+    /// transaction for one, so this throws a validation error and sends
+    /// nothing.
+    @available(*, deprecated, message: "The API serves no subgrove update route.")
     public func updateSubgrove(subgroveId: String, updates: [String: Any]) async throws -> SubgroveRegistration {
-        guard let client = client else { throw NetworkError("Client deallocated") }
-        try client.requireAuth()
-
-        let path = "/subgroves/\(pathSegment(subgroveId))"
-        let body = updates.mapValues { AnyCodable($0) }
-        return try await client.put(path: path, body: body)
+        throw ValidationError("The API serves no subgrove update route, and this SDK builds no transaction for one")
     }
 
-    /// Deletes a subgrove.
-    public func deleteSubgrove(subgroveId: String) async throws {
+    /// Deletes a subgrove as a `DeregisterSubgrove` transaction, signed by
+    /// the client's identity (the owner) under its next nonce and submitted to
+    /// `POST /tx/submit`. The subgrove's remaining funding is refunded to the
+    /// owner.
+    @discardableResult
+    public func deleteSubgrove(subgroveId: String) async throws -> BroadcastResult {
         guard let client = client else { throw NetworkError("Client deallocated") }
-        try client.requireAuth()
-
-        let path = "/subgroves/\(pathSegment(subgroveId))"
-        try await client.delete(path: path)
+        let identity = try client.transactionIdentity()
+        return try await client.submitUnderNextNonce(did: identity.did) { nonce in
+            var tx = DeregisterSubgroveTx(
+                subgroveId: subgroveId,
+                ownerDid: identity.did,
+                publicKeyId: identity.publicKeyId,
+                nonce: nonce
+            )
+            let message = deregisterSubgroveMessage(subgroveId: tx.subgroveId, ownerDid: tx.ownerDid, nonce: tx.nonce)
+            tx.signature = Array(try identity.sign(Data(message.utf8)))
+            return try encodeTransaction(txType: "DeregisterSubgrove", transaction: tx)
+        }
     }
 
     // MARK: - Permission Operations
@@ -66,24 +112,23 @@ public class RegistrationOperations {
     }
 
     /// Grants a permission to a DID.
+    ///
+    /// The API serves no permission route, and this SDK builds no transaction
+    /// that grants one, so this throws a validation error and sends nothing.
+    @available(*, deprecated, message: "The API serves no permission route.")
     public func grantPermission(_ permission: Permission) async throws {
-        guard let client = client else { throw NetworkError("Client deallocated") }
-        try client.requireAuth()
-
-        let _: EmptyResponse = try await client.post(path: "/permissions", body: permission)
+        throw ValidationError("The API serves no permission route, and this SDK builds no transaction that grants one")
     }
 
     /// Revokes a permission from a DID.
+    ///
+    /// The API serves no permission route, and this SDK builds no transaction
+    /// that revokes one, so this throws a validation error and sends nothing.
+    @available(*, deprecated, message: "The API serves no permission route.")
     public func revokePermission(did: String, subgroveId: String) async throws {
-        guard let client = client else { throw NetworkError("Client deallocated") }
-        try client.requireAuth()
-
-        let path = "/permissions/\(pathSegment(did))/\(pathSegment(subgroveId))"
-        try await client.delete(path: path)
+        throw ValidationError("The API serves no permission route, and this SDK builds no transaction that revokes one")
     }
 }
-
-private struct EmptyResponse: Codable {}
 
 // MARK: - Subgrove Builder
 

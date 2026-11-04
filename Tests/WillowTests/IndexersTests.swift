@@ -6,7 +6,7 @@ final class IndexersTests: XCTestCase {
         let info = IndexerInfo(
             indexerDid: "x",
             subgroves: ["sg"],
-            stakeAmount: 100,
+            stakeAmount: "100",
             endpoint: "http://x:9090",
             queryEndpoint: "http://x:3032",
             status: "active",
@@ -20,7 +20,7 @@ final class IndexersTests: XCTestCase {
         let info = IndexerInfo(
             indexerDid: "x",
             subgroves: ["sg"],
-            stakeAmount: 100,
+            stakeAmount: "100",
             endpoint: "http://x:9090",
             queryEndpoint: nil,
             status: "active",

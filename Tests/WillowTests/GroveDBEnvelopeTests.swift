@@ -5,8 +5,8 @@ import XCTest
 /// layer by the envelope's lowerLayers map key, which is not hash-bound, so a
 /// renamed or dropped subtree on the query path yields the same root with an
 /// empty result set — "K = V" verifies as "K is absent". These build the
-/// decoded envelope directly (the byte decoder's format is a separate issue —
-/// see the PR note), so they exercise the guard on its own.
+/// decoded envelope directly, so they exercise the guard on its own;
+/// GroveDBProofTests runs it on real proofs.
 final class GroveDBEnvelopeTests: XCTestCase {
     let path: [[UInt8]] = [Array("subgroves".utf8), Array("aave-v3-lending".utf8),
                            Array("indexed".utf8), Array("Supply".utf8)]

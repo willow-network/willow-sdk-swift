@@ -46,7 +46,7 @@ struct GraphQLIndexingExample {
                 let subgroves = try await client.indexing.listSubgroves()
                 print("   Found \(subgroves.count) subgroves:")
                 for subgrove in subgroves {
-                    print("   - \(subgrove.name) (\(subgrove.network)): block \(subgrove.currentBlock)")
+                    print("   - \(subgrove.name) (\(subgrove.chain ?? "")): block \(subgrove.latestBlock)")
                 }
             } catch {
                 print("   Note: \(error.localizedDescription)")

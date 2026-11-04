@@ -39,6 +39,45 @@ public struct FileManifest: Codable {
         case encrypted
         case storageNodes = "storage_nodes"
     }
+
+    public init(
+        fileKey: String, filename: String, contentType: String, totalSize: UInt64, contentHash: String,
+        chunkCount: UInt32, chunkSize: UInt32, chunkMerkleRoot: String, ownerDid: String, createdAt: UInt64,
+        updatedAt: UInt64, encrypted: Bool, storageNodes: [String]
+    ) {
+        self.fileKey = fileKey
+        self.filename = filename
+        self.contentType = contentType
+        self.totalSize = totalSize
+        self.contentHash = contentHash
+        self.chunkCount = chunkCount
+        self.chunkSize = chunkSize
+        self.chunkMerkleRoot = chunkMerkleRoot
+        self.ownerDid = ownerDid
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+        self.encrypted = encrypted
+        self.storageNodes = storageNodes
+    }
+
+    /// `GET /files/{subgroveId}` lists manifests without `storage_nodes`,
+    /// which reads as empty.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        fileKey = try container.decode(String.self, forKey: .fileKey)
+        filename = try container.decode(String.self, forKey: .filename)
+        contentType = try container.decode(String.self, forKey: .contentType)
+        totalSize = try container.decode(UInt64.self, forKey: .totalSize)
+        contentHash = try container.decode(String.self, forKey: .contentHash)
+        chunkCount = try container.decode(UInt32.self, forKey: .chunkCount)
+        chunkSize = try container.decode(UInt32.self, forKey: .chunkSize)
+        chunkMerkleRoot = try container.decode(String.self, forKey: .chunkMerkleRoot)
+        ownerDid = try container.decode(String.self, forKey: .ownerDid)
+        createdAt = try container.decode(UInt64.self, forKey: .createdAt)
+        updatedAt = try container.decode(UInt64.self, forKey: .updatedAt)
+        encrypted = try container.decode(Bool.self, forKey: .encrypted)
+        storageNodes = try container.decodeIfPresent([String].self, forKey: .storageNodes) ?? []
+    }
 }
 
 /// Response for listing files.
@@ -289,10 +328,17 @@ public class FileOperations {
     }
 
     /// Unregister a storage node (submits UnregisterStorageNode to consensus).
+    ///
+    /// `signFunction` signs `unregisterStorageNodeMessage` over the node DID
+    /// and `signing.nonce`. A node DID holding a line break, or a negative
+    /// nonce, is refused with a validation error before anything is signed.
     public func unregisterStorageNode(nodeDid: String, signing: FileSigningOptions) async throws {
         guard let client = client else { throw NetworkError("Client deallocated") }
 
-        let signMessage = "unregister_storage_node:\(nodeDid)"
+        let signMessage = try unregisterStorageNodeMessage(
+            nodeDid: nodeDid,
+            nonce: unsignedField("nonce", signing.nonce, as: UInt64.self)
+        )
         let signatureData = try signing.signFunction(Data(signMessage.utf8), signing.privateKey)
         let signatureBytes = Array(signatureData).map { Int($0) }
 

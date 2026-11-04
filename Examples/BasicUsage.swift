@@ -32,14 +32,9 @@ struct BasicUsageExample {
             print("   Public Key ID: \(identity.publicKeyId)")
             print()
 
-            // 3. Register the DID
-            print("3. Registering DID...")
-            do {
-                _ = try await client.registerDID(identity.didDocument)
-                print("   DID registered successfully")
-            } catch {
-                print("   Note: \(error.localizedDescription)")
-            }
+            // 3. The DID must be registered on chain and funded for fees
+            // (a RegisterDid transaction) before it can sign writes.
+            print("3. DID: \(identity.did)")
             print()
 
             // 4. Set identity for per-request signing (synchronous; no server session).

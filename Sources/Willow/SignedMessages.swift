@@ -1,10 +1,13 @@
 import Foundation
 import CryptoKit
 
-// MARK: - Signed Messages for Data and File Writes
+// MARK: - Signed Messages
 
-// The messages StoreData, StoreFileManifest, and DeleteFileManifest
-// transactions are signed over.
+// The messages transactions are signed over: StoreData, StoreFileManifest,
+// and DeleteFileManifest (data and file writes); RegisterSubgrove,
+// GrantSubgroveKey, RotateSubgroveKey, and UnregisterStorageNode
+// (registrations, key grants, and storage-node removals); and
+// RevokeSubgroveKey, whose older form already binds every field.
 //
 // Each message is a set of lines joined by "\n" (the byte 0x0A), with no
 // trailing newline, as UTF-8: the kind first, then one `Label: value` line per
@@ -19,9 +22,11 @@ import CryptoKit
 // read back one way only.
 //
 // The nonce in the message is the nonce in the transaction, so build the
-// message after the nonce is chosen. A write that lands in a block and is
-// refused there after its signature and nonce verify still spends its nonce;
-// to retry, sign again under the next free nonce.
+// message after the nonce is chosen. A transaction that lands in a block and
+// is refused there after its signature and nonce verify still spends its
+// nonce; to retry it, sign again under a fresh nonce. One that never landed
+// spends nothing: retry it under that attempt's own nonce, so that at most one
+// of the two can run.
 //
 // Ed25519 signs the message's UTF-8 bytes; secp256k1 signs their Keccak-256
 // (see `KeyPair.sign`).
@@ -157,6 +162,159 @@ public func deleteFileManifestMessage(
         try signedTextField("Owner", ownerDid),
         "Nonce: \(nonce)",
     ].joined(separator: "\n")
+}
+
+// MARK: - Registrations, Key Grants, and Storage Nodes
+
+/// The bincode (bincode 1.x's default encoding) of `tx` with an empty
+/// signature, as the node decodes the JSON the SDK sends for it: the bytes a
+/// RegisterSubgrove message's `Config` line hashes.
+///
+/// Throws a validation error for a mode the SDK can't build
+/// (BlockchainIndexing) or a negative nonce.
+public func registerSubgroveUnsignedBincode(_ tx: RegisterSubgroveTx) throws -> Data {
+    var unsigned = tx
+    unsigned.signature = []
+    return try registerSubgroveUnsignedBincode(json: unsigned.wireJSON())
+}
+
+/// The message a RegisterSubgrove transaction is signed over:
+///
+/// ```
+/// RegisterSubgrove
+/// Subgrove: <subgroveId>
+/// Owner: <ownerDid>
+/// Config: <hex SHA-256 of registerSubgroveUnsignedBincode(tx)>
+/// Nonce: <nonce>
+/// ```
+///
+/// `Config` binds every field of the transaction but its signature. Throws a
+/// validation error when the subgrove ID or owner DID holds a line break, for
+/// a mode the SDK can't build (BlockchainIndexing), or a negative nonce.
+public func registerSubgroveMessage(_ tx: RegisterSubgroveTx) throws -> String {
+    var unsigned = tx
+    unsigned.signature = []
+    return try registerSubgroveMessage(json: unsigned.wireJSON())
+}
+
+/// The RegisterSubgrove message for the transaction JSON `tx` (the object
+/// inside `{"RegisterSubgrove": ...}`), as the node rebuilds it.
+internal func registerSubgroveMessage(json tx: WireJSON) throws -> String {
+    let fields = try WireJSONObject(tx, "RegisterSubgrove")
+    let subgroveId = try fields.required("subgrove_id").string("subgrove_id")
+    let ownerDid = try fields.required("owner_did").string("owner_did")
+    let nonce = try fields.required("nonce").unsigned("nonce", as: UInt64.self)
+    let config = Data(SHA256.hash(data: try registerSubgroveUnsignedBincode(json: tx))).hexString
+    return [
+        "RegisterSubgrove",
+        try signedTextField("Subgrove", subgroveId),
+        try signedTextField("Owner", ownerDid),
+        "Config: \(config)",
+        "Nonce: \(nonce)",
+    ].joined(separator: "\n")
+}
+
+/// The message a GrantSubgroveKey transaction is signed over:
+///
+/// ```
+/// GrantSubgroveKey
+/// Subgrove: <subgroveId>
+/// Sender: <senderDid>
+/// Grantee: <grant.granteeDid>
+/// GranteeKey: <grant.granteePublicKeyId>
+/// KeyEpoch: <grant.keyEpoch>
+/// EphemeralKey: <hex grant.ephemeralPublicKey>
+/// EncryptedKey: <hex grant.encryptedKey>
+/// GrantedBy: <grant.grantedBy>
+/// GrantedAt: <grant.grantedAt>
+/// Nonce: <nonce>
+/// ```
+///
+/// Throws a validation error when a text field holds a line break.
+public func grantSubgroveKeyMessage(
+    subgroveId: String,
+    senderDid: String,
+    grant: EncryptedKeyGrant,
+    nonce: UInt64
+) throws -> String {
+    return ([
+        "GrantSubgroveKey",
+        try signedTextField("Subgrove", subgroveId),
+        try signedTextField("Sender", senderDid),
+    ] + (try grantLines(grant)) + [
+        "Nonce: \(nonce)",
+    ]).joined(separator: "\n")
+}
+
+/// The message a RotateSubgroveKey transaction is signed over:
+///
+/// ```
+/// RotateSubgroveKey
+/// Subgrove: <subgroveId>
+/// Sender: <senderDid>
+/// NewEpoch: <newEpoch>
+/// Grants: <newGrants.count>
+/// <each grant's seven lines, Grantee through GrantedAt, in order>
+/// Nonce: <nonce>
+/// ```
+///
+/// Throws a validation error when a text field holds a line break.
+public func rotateSubgroveKeyMessage(
+    subgroveId: String,
+    senderDid: String,
+    newEpoch: UInt32,
+    newGrants: [EncryptedKeyGrant],
+    nonce: UInt64
+) throws -> String {
+    var lines = [
+        "RotateSubgroveKey",
+        try signedTextField("Subgrove", subgroveId),
+        try signedTextField("Sender", senderDid),
+        "NewEpoch: \(newEpoch)",
+        "Grants: \(newGrants.count)",
+    ]
+    for grant in newGrants {
+        lines += try grantLines(grant)
+    }
+    lines.append("Nonce: \(nonce)")
+    return lines.joined(separator: "\n")
+}
+
+/// The message a RevokeSubgroveKey transaction is signed over, which already
+/// binds every field: `RevokeSubgroveKey:<subgroveId>:<revokeeDid>:<senderDid>:<nonce>`.
+public func revokeSubgroveKeyMessage(subgroveId: String, revokeeDid: String, senderDid: String, nonce: UInt64) -> String {
+    return "RevokeSubgroveKey:\(subgroveId):\(revokeeDid):\(senderDid):\(nonce)"
+}
+
+/// The message an UnregisterStorageNode transaction is signed over:
+///
+/// ```
+/// UnregisterStorageNode
+/// Node: <nodeDid>
+/// Nonce: <nonce>
+/// ```
+///
+/// Throws a validation error when the node DID holds a line break.
+public func unregisterStorageNodeMessage(nodeDid: String, nonce: UInt64) throws -> String {
+    return [
+        "UnregisterStorageNode",
+        try signedTextField("Node", nodeDid),
+        "Nonce: \(nonce)",
+    ].joined(separator: "\n")
+}
+
+/// One key grant's lines: `Grantee`, `GranteeKey`, `KeyEpoch`, `EphemeralKey`
+/// and `EncryptedKey` (lowercase hex of the exact bytes), `GrantedBy`, `GrantedAt`.
+private func grantLines(_ grant: EncryptedKeyGrant) throws -> [String] {
+    return [
+        try signedTextField("Grantee", grant.granteeDid),
+        try signedTextField("GranteeKey", grant.granteePublicKeyId),
+        "KeyEpoch: \(grant.keyEpoch)",
+        "EphemeralKey: \(Data(grant.ephemeralPublicKey).hexString)",
+        "EncryptedKey: \(Data(grant.encryptedKey).hexString)",
+        try signedTextField("GrantedBy", grant.grantedBy),
+        "GrantedAt: \(grant.grantedAt)",
+    ]
 }
 
 // MARK: - Helpers

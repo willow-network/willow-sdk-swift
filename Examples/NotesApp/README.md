@@ -14,7 +14,7 @@ A complete SwiftUI notes application demonstrating the Willow Swift SDK.
   - Collection/schema creation for notes
 
 - **Notes Management**
-  - Create, read, update, delete notes
+  - Create and read notes (a note is written once: editing or deleting one needs UpdateData or DeleteData transactions, which the SDK doesn't build, so those calls report an error)
   - Categories (Personal, Work, Ideas, Archive)
   - Tags support
   - Pin important notes
@@ -88,14 +88,11 @@ SwiftUI views with:
 | Feature | Implementation |
 |---------|---------------|
 | DID Generation | `newIdentity(algorithm: .ed25519)` |
-| DID Registration | `client.registerDID(didDocument)` |
-| Authentication | `client.authenticate(identity)` |
+| Request and transaction signing | `client.setIdentity(identity)` |
 | Subgrove Registration | `client.registration.registerSubgrove(request)` |
 | Schema Definition | `SchemaDefinition` with fields and indexes |
-| Data Storage | `client.data.store(...)` |
+| Data Storage | `client.data.store(...)` (a StoreData transaction) |
 | Data Queries | `client.data.query(...)` |
-| Data Updates | `client.data.update(...)` |
-| Data Deletion | `client.data.delete(...)` |
 | Token Balance | `client.token.getBalance(did:)` |
 
 ## Customization

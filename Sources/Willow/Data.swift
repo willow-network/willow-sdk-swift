@@ -21,14 +21,12 @@ public class DataOperations {
     /// proof proves. Any failure throws; the value is never returned
     /// unverified.
     ///
-    /// The proof verifier cannot verify a proof from the chain yet, so this
-    /// throws for every live read: it decodes proof integers as fixed-width
-    /// where grovedb writes bincode varints, it hashes Merk nodes with SHA-256
-    /// where grovedb-merk uses BLAKE3 over length-prefixed fields, it does not
-    /// check a `KVValueHash` node's value against its value hash, and the root
-    /// is compared with the light client's latest trusted header rather than
-    /// the header at the proof's height. Use `getUnverified` to read without a
-    /// proof.
+    /// The proof is checked with Merk's hash rules (BLAKE3) and grovedb's proof
+    /// encoding, and its root must equal the light client's verified app
+    /// hash. The light client syncs once and doesn't follow the chain, and a
+    /// header at height H carries the app hash from after block H-1, so the
+    /// two agree only while the state is unchanged since that sync; otherwise
+    /// the read throws. Use `getUnverified` to read without a proof.
     public func get(subgroveId: String, key: String) async throws -> DataResponse {
         guard let client = client else { throw NetworkError("Client deallocated") }
 
@@ -137,9 +135,9 @@ public class DataOperations {
     ///
     /// Asks `POST /query/{subgroveId}` for a proof and requires it to hash to
     /// the light client's verified root; a response without one throws. The
-    /// documents are not checked against the proof's contents. As with `get`,
-    /// the proof verifier cannot verify a proof from the chain yet, so this
-    /// throws for every live query.
+    /// documents are not checked against the proof's contents, and, as with
+    /// `get`, the root must equal the light client's verified app hash, which
+    /// it syncs once.
     public func query(subgroveId: String, query: QueryRequest) async throws -> QueryResponse {
         guard let client = client else { throw NetworkError("Client deallocated") }
 
@@ -180,57 +178,84 @@ public class DataOperations {
 
     // MARK: - Store Operations
 
-    /// Stores an item.
-    public func store(subgroveId: String, key: String, data: [String: Any]) async throws {
+    /// Stores an item as a `StoreData` transaction, signed by the client's
+    /// identity and submitted to `POST /tx/submit` (the API serves no data
+    /// write route: writes go through consensus).
+    ///
+    /// `data` is serialized once, with sorted keys; the transaction carries
+    /// that JSON text's UTF-8 bytes under the identity's next nonce, signed
+    /// over `storeDataMessage`. A subgrove ID, key, or DID holding a line
+    /// break is refused with a validation error before anything is signed.
+    /// Writes sent before the previous one lands take consecutive nonces. A
+    /// write the API doesn't accept gives its nonce back, so calling again
+    /// signs under the same nonce; one refused in its block after its
+    /// signature and nonce verify spends its nonce, and calling again signs
+    /// under the next.
+    @discardableResult
+    public func store(subgroveId: String, key: String, data: [String: Any]) async throws -> BroadcastResult {
         guard let client = client else { throw NetworkError("Client deallocated") }
-        try client.requireAuth()
-
-        let request = StoreRequest(key: key, data: data)
-        let path = "/subgroves/\(pathSegment(subgroveId))/data"
-        let _: EmptyStoreResponse = try await client.post(path: path, body: request)
+        let identity = try client.transactionIdentity()
+        let text = try storeDataText(data)
+        // Refuse a line break before spending a request on the nonce.
+        _ = try storeDataMessage(subgroveId: subgroveId, key: key, ownerDid: identity.did, data: Data(text.utf8), nonce: 0)
+        return try await client.submitUnderNextNonce(did: identity.did) { nonce in
+            let tx = try signedStoreData(
+                subgroveId: subgroveId, key: key, data: text, ownerDid: identity.did,
+                publicKeyId: identity.publicKeyId, nonce: nonce, sign: identity.sign
+            )
+            return try encodeTransaction(txType: "StoreData", transaction: tx)
+        }
     }
 
     /// Stores multiple items in batch.
+    ///
+    /// The node has no batch write and the API no batch route, so this throws
+    /// a validation error and sends nothing. Store each item with
+    /// `store(subgroveId:key:data:)`, one transaction each.
+    @available(*, deprecated, message: "The node has no batch write; store each item with store(subgroveId:key:data:).")
     public func batchStore(subgroveId: String, items: [StoreRequest]) async throws {
-        guard let client = client else { throw NetworkError("Client deallocated") }
-        try client.requireAuth()
-
-        let path = "/subgroves/\(pathSegment(subgroveId))/data/batch"
-        let batchRequest = BatchStoreRequest(items: items)
-        let _: EmptyStoreResponse = try await client.post(path: path, body: batchRequest)
+        throw ValidationError(
+            "The node has no batch write: store each item with store(subgroveId:key:data:), one StoreData transaction each"
+        )
     }
 
     // MARK: - Update Operations
 
     /// Updates an item.
+    ///
+    /// An update is an UpdateData consensus transaction, which this SDK
+    /// doesn't build, and the API serves no update route, so this throws a
+    /// validation error and sends nothing.
+    @available(*, deprecated, message: "An update is an UpdateData transaction, which this SDK doesn't build.")
     public func update(subgroveId: String, key: String, data: [String: Any]) async throws {
-        guard let client = client else { throw NetworkError("Client deallocated") }
-        try client.requireAuth()
-
-        let path = "/subgroves/\(pathSegment(subgroveId))/data/\(pathSegment(key))"
-        let body = data.mapValues { AnyCodable($0) }
-        let _: EmptyStoreResponse = try await client.put(path: path, body: body)
+        throw ValidationError(
+            "Updating data is an UpdateData consensus transaction, which this SDK doesn't build; the API serves no update route"
+        )
     }
 
     // MARK: - Delete Operations
 
     /// Deletes an item.
+    ///
+    /// A delete is a DeleteData consensus transaction, which this SDK doesn't
+    /// build, and the API serves no delete route, so this throws a validation
+    /// error and sends nothing.
+    @available(*, deprecated, message: "A delete is a DeleteData transaction, which this SDK doesn't build.")
     public func delete(subgroveId: String, key: String) async throws {
-        guard let client = client else { throw NetworkError("Client deallocated") }
-        try client.requireAuth()
-
-        let path = "/subgroves/\(pathSegment(subgroveId))/data/\(pathSegment(key))"
-        try await client.delete(path: path)
+        throw ValidationError(
+            "Deleting data is a DeleteData consensus transaction, which this SDK doesn't build; the API serves no delete route"
+        )
     }
 
     // MARK: - Historical Query Operations
 
-    /// Gets checkpoint state root information.
+    /// Gets checkpoint state root information
+    /// (`GET /checkpoints/{subgroveId}/{checkpointId}/state-root`).
     public func getCheckpointStateRoot(subgroveId: String, checkpointId: String) async throws -> CheckpointInfo {
         guard let client = client else { throw NetworkError("Client deallocated") }
 
         let path = "/checkpoints/\(pathSegment(subgroveId))/\(pathSegment(checkpointId))/state-root"
-        return try await client.get(path: path)
+        return try await client.getData(path: path, "checkpoint")
     }
 
     /// Queries historical indexed data from a checkpoint.
@@ -295,17 +320,11 @@ public class DataOperations {
 
 // MARK: - Helper Types
 
-private struct EmptyStoreResponse: Codable {}
-
 /// What `GET /proof/{subgroveId}/{key}` serves: the hex GroveDB proof and the
 /// block height it was generated at.
 private struct ServedProof: Codable {
     let proof: String
     let height: Int64?
-}
-
-private struct BatchStoreRequest: Codable {
-    let items: [StoreRequest]
 }
 
 // MARK: - Query Builder

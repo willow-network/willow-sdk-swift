@@ -1,5 +1,11 @@
 import Foundation
 
+// A GroveDB proof verifier, verify-only: it decodes a grovedb `GroveDBProof`,
+// replays each layer's Merk proof with Merk's hash rules (BLAKE3; see
+// GroveDBTypes.swift), binds each lower layer to its parent through the tree
+// element's combined value hash, and returns the root hash and the proven
+// values. A proof checks out only if the root it hashes to is the trusted root.
+
 // MARK: - Merk Operation Codes
 
 private let opPushHash: UInt8 = 0x01
@@ -23,7 +29,7 @@ private let opChildInverted: UInt8 = 0x13
 
 // MARK: - Tree
 
-/// A node in the Merk AVL tree.
+/// A node in the Merk AVL tree, as a proof rebuilds it.
 public class Tree {
     public var node: MerkNode
     public var left: Tree?
@@ -39,53 +45,32 @@ public class Tree {
         return max(childHeights.left, childHeights.right) + 1
     }
 
-    /// Computes the hash of this tree node.
+    /// The node's hash: a `Hash` node's stored hash, else
+    /// `computeNodeHash(kvHash, left, right)` with Merk's key-value hash for
+    /// the node's kind.
     public func hash() -> CryptoHash {
-        // Get KV hash based on node type
-        var kvHashVal: CryptoHash
-
+        let kv: CryptoHash
         switch node.type {
         case .hash:
             return node.hash
         case .kvHash:
-            kvHashVal = node.kvHashVal
+            kv = node.kvHashVal
         case .kv:
-            if let key = node.key, let value = node.value {
-                kvHashVal = kvHash(key: key, value: value)
-            } else {
-                kvHashVal = nullHash
-            }
-        case .kvValueHash, .kvRefValueHash, .kvValueHashFeatureType:
-            if let key = node.key {
-                var combined = [UInt8]()
-                combined.append(contentsOf: key)
-                combined.append(contentsOf: node.valueHash.bytes)
-                kvHashVal = computeHash(combined)
-            } else {
-                kvHashVal = nullHash
-            }
-        case .kvDigest:
-            if let key = node.key {
-                var combined = [UInt8]()
-                combined.append(contentsOf: key)
-                combined.append(contentsOf: node.valueHash.bytes)
-                kvHashVal = computeHash(combined)
-            } else {
-                kvHashVal = nullHash
-            }
+            kv = kvHash(key: node.key ?? Data(), value: node.value ?? Data())
+        case .kvValueHash, .kvValueHashFeatureType, .kvDigest:
+            kv = kvDigestToKvHash(key: node.key ?? Data(), valueHash: node.valueHash)
+        case .kvRefValueHash:
+            // A reference commits to its own value hash combined with the
+            // referenced value's.
+            let combined = combineHash(node.valueHash, valueHash(node.value ?? Data()))
+            kv = kvDigestToKvHash(key: node.key ?? Data(), valueHash: combined)
         }
-
-        // Get child hashes
-        let leftHash = left?.hash() ?? nullHash
-        let rightHash = right?.hash() ?? nullHash
-
-        return computeNodeHash(kvHash: kvHashVal, leftHash: leftHash, rightHash: rightHash)
+        return computeNodeHash(kvHash: kv, leftHash: left?.hash() ?? nullHash, rightHash: right?.hash() ?? nullHash)
     }
 
     /// Converts this tree to a hash-only tree.
     public func intoHash() -> Tree {
-        let h = hash()
-        let newTree = Tree(node: MerkNode.hashNode(h))
+        let newTree = Tree(node: MerkNode.hashNode(hash()))
         newTree.childHeights = childHeights
         return newTree
     }
@@ -104,13 +89,16 @@ public class Tree {
 
 // MARK: - Merk Decoder
 
-/// Decodes Merk proof operations from bytes.
+/// Decodes Merk proof operations from bytes: a one-byte op code, then for a
+/// push the node (a key with a one-byte length, a value with a big-endian
+/// two-byte length, 32-byte hashes, and for a feature-type node its tree
+/// feature).
 public class MerkDecoder {
-    private let data: Data
+    private let data: [UInt8]
     private var offset: Int = 0
 
     public init(_ data: Data) {
-        self.data = data
+        self.data = [UInt8](data)
     }
 
     /// Returns true if there are more operations to decode.
@@ -126,143 +114,111 @@ public class MerkDecoder {
         offset += 1
 
         switch opCode {
-        // Push variants
-        case opPushHash:
-            let node = try decodeHash()
-            return MerkOp(type: .push, node: node)
-        case opPushKVHash:
-            let node = try decodeKVHash()
-            return MerkOp(type: .push, node: node)
-        case opPushKV:
-            let node = try decodeKV()
-            return MerkOp(type: .push, node: node)
-        case opPushKVValueHash:
-            let node = try decodeKVValueHash()
-            return MerkOp(type: .push, node: node)
-        case opPushKVDigest:
-            let node = try decodeKVDigest()
-            return MerkOp(type: .push, node: node)
-        case opPushKVRefValueHash:
-            let node = try decodeKVRefValueHash()
-            return MerkOp(type: .push, node: node)
-
-        // Push inverted variants
-        case opPushInvertedHash:
-            let node = try decodeHash()
-            return MerkOp(type: .pushInverted, node: node)
-        case opPushInvertedKVHash:
-            let node = try decodeKVHash()
-            return MerkOp(type: .pushInverted, node: node)
-        case opPushInvertedKV:
-            let node = try decodeKV()
-            return MerkOp(type: .pushInverted, node: node)
-        case opPushInvertedKVValueHash:
-            let node = try decodeKVValueHash()
-            return MerkOp(type: .pushInverted, node: node)
-        case opPushInvertedKVDigest:
-            let node = try decodeKVDigest()
-            return MerkOp(type: .pushInverted, node: node)
-        case opPushInvertedKVRefValueHash:
-            let node = try decodeKVRefValueHash()
-            return MerkOp(type: .pushInverted, node: node)
-
-        // Tree operations
-        case opParent:
-            return MerkOp(type: .parent)
-        case opChild:
-            return MerkOp(type: .child)
-        case opParentInverted:
-            return MerkOp(type: .parentInverted)
-        case opChildInverted:
-            return MerkOp(type: .childInverted)
-
+        case opPushHash: return MerkOp(type: .push, node: try decodeHash())
+        case opPushKVHash: return MerkOp(type: .push, node: try decodeKVHash())
+        case opPushKV: return MerkOp(type: .push, node: try decodeKV())
+        case opPushKVValueHash: return MerkOp(type: .push, node: try decodeKVValueHash(.kvValueHash))
+        case opPushKVDigest: return MerkOp(type: .push, node: try decodeKVDigest())
+        case opPushKVRefValueHash: return MerkOp(type: .push, node: try decodeKVValueHash(.kvRefValueHash))
+        case opPushKVValueHashFeatureType: return MerkOp(type: .push, node: try decodeKVValueHashFeatureType())
+        case opPushInvertedHash: return MerkOp(type: .pushInverted, node: try decodeHash())
+        case opPushInvertedKVHash: return MerkOp(type: .pushInverted, node: try decodeKVHash())
+        case opPushInvertedKV: return MerkOp(type: .pushInverted, node: try decodeKV())
+        case opPushInvertedKVValueHash: return MerkOp(type: .pushInverted, node: try decodeKVValueHash(.kvValueHash))
+        case opPushInvertedKVDigest: return MerkOp(type: .pushInverted, node: try decodeKVDigest())
+        case opPushInvertedKVRefValueHash: return MerkOp(type: .pushInverted, node: try decodeKVValueHash(.kvRefValueHash))
+        case opPushInvertedKVValueHashFeatureType: return MerkOp(type: .pushInverted, node: try decodeKVValueHashFeatureType())
+        case opParent: return MerkOp(type: .parent)
+        case opChild: return MerkOp(type: .child)
+        case opParentInverted: return MerkOp(type: .parentInverted)
+        case opChildInverted: return MerkOp(type: .childInverted)
         default:
             throw VerificationError("Unknown op code: 0x\(String(format: "%02x", opCode))")
         }
     }
 
     private func decodeHash() throws -> MerkNode {
-        let hashData = try readBytes(hashLength)
-        return MerkNode.hashNode(CryptoHash(data: hashData))
+        return MerkNode.hashNode(CryptoHash(data: try readBytes(hashLength)))
     }
 
     private func decodeKVHash() throws -> MerkNode {
-        let hashData = try readBytes(hashLength)
-        return MerkNode.kvHashNode(CryptoHash(data: hashData))
+        return MerkNode.kvHashNode(CryptoHash(data: try readBytes(hashLength)))
     }
 
     private func decodeKV() throws -> MerkNode {
-        guard offset < data.count else {
-            throw VerificationError("Unexpected end of data reading key length")
-        }
-        let keyLen = Int(data[offset])
-        offset += 1
-
-        let key = try readBytes(keyLen)
-        let valueLen = try readU16()
-        let value = try readBytes(Int(valueLen))
-
+        let key = try readBytes(Int(try readU8()))
+        let value = try readBytes(Int(try readU16()))
         return MerkNode.kvNode(key: key, value: value)
     }
 
-    private func decodeKVValueHash() throws -> MerkNode {
-        guard offset < data.count else {
-            throw VerificationError("Unexpected end of data reading key length")
-        }
-        let keyLen = Int(data[offset])
-        offset += 1
-
-        let key = try readBytes(keyLen)
-        let valueLen = try readU16()
-        let value = try readBytes(Int(valueLen))
-        let valueHashData = try readBytes(hashLength)
-
-        return MerkNode(type: .kvValueHash, key: key, value: value, valueHash: CryptoHash(data: valueHashData))
+    private func decodeKVValueHash(_ type: MerkNodeType) throws -> MerkNode {
+        let key = try readBytes(Int(try readU8()))
+        let value = try readBytes(Int(try readU16()))
+        let hash = CryptoHash(data: try readBytes(hashLength))
+        return MerkNode(type: type, key: key, value: value, valueHash: hash)
     }
 
     private func decodeKVDigest() throws -> MerkNode {
-        guard offset < data.count else {
-            throw VerificationError("Unexpected end of data reading key length")
-        }
-        let keyLen = Int(data[offset])
-        offset += 1
-
-        let key = try readBytes(keyLen)
-        let valueHashData = try readBytes(hashLength)
-
-        return MerkNode(type: .kvDigest, key: key, valueHash: CryptoHash(data: valueHashData))
+        let key = try readBytes(Int(try readU8()))
+        let hash = CryptoHash(data: try readBytes(hashLength))
+        return MerkNode(type: .kvDigest, key: key, valueHash: hash)
     }
 
-    private func decodeKVRefValueHash() throws -> MerkNode {
-        guard offset < data.count else {
-            throw VerificationError("Unexpected end of data reading key length")
+    /// A KVValueHash node followed by its tree feature, which the node's hash
+    /// does not include: basic (0), summed (1, a zigzag varint), big summed
+    /// (2, 16 bytes), counted (3, a varint), or counted and summed (4, both).
+    private func decodeKVValueHashFeatureType() throws -> MerkNode {
+        let node = try decodeKVValueHash(.kvValueHashFeatureType)
+        switch try readU8() {
+        case 0:
+            break
+        case 1, 3:
+            _ = try readLEB128()
+        case 2:
+            _ = try readBytes(16)
+        case 4:
+            _ = try readLEB128()
+            _ = try readLEB128()
+        case let feature:
+            throw VerificationError("Unknown tree feature type: \(feature)")
         }
-        let keyLen = Int(data[offset])
+        return node
+    }
+
+    private func readU8() throws -> UInt8 {
+        guard offset < data.count else {
+            throw VerificationError("Unexpected end of data reading a byte")
+        }
         offset += 1
-
-        let key = try readBytes(keyLen)
-        let valueLen = try readU16()
-        let value = try readBytes(Int(valueLen))
-        let valueHashData = try readBytes(hashLength)
-
-        return MerkNode(type: .kvRefValueHash, key: key, value: value, valueHash: CryptoHash(data: valueHashData))
+        return data[offset - 1]
     }
 
     private func readU16() throws -> UInt16 {
         guard offset + 2 <= data.count else {
             throw VerificationError("Unexpected end of data reading u16")
         }
-        // Big-endian u16
         let value = UInt16(data[offset]) << 8 | UInt16(data[offset + 1])
         offset += 2
         return value
+    }
+
+    private func readLEB128() throws -> UInt64 {
+        var value: UInt64 = 0
+        var shift: UInt64 = 0
+        while true {
+            let byte = try readU8()
+            guard shift < 64 else { throw VerificationError("Varint too long") }
+            value |= UInt64(byte & 0x7F) << shift
+            if byte & 0x80 == 0 { return value }
+            shift += 7
+        }
     }
 
     private func readBytes(_ n: Int) throws -> Data {
         guard offset + n <= data.count else {
             throw VerificationError("Unexpected end of data reading \(n) bytes")
         }
-        let result = data.subdata(in: offset..<(offset + n))
+        let result = Data(data[offset..<(offset + n)])
         offset += n
         return result
     }
@@ -278,117 +234,158 @@ public struct MerkExecutionResult {
 
 // MARK: - Execute Merk Proof
 
-/// Executes a Merk proof and returns the result.
+/// Executes a Merk proof and returns the root hash it rebuilds and the
+/// key-values it carries, in order.
+///
+/// Keys must ascend across pushes (descend across inverted pushes), each child
+/// is attached once to a node that isn't a `Hash` node, and the ops must leave
+/// exactly one tree. The rebuilt tree
+/// is a partial one (collapsed siblings are single hash nodes), so it is not
+/// checked for AVL balance: as in grovedb, integrity rests on the hashes.
 public func executeMerkProof(_ proofBytes: Data) throws -> MerkExecutionResult {
     let decoder = MerkDecoder(proofBytes)
     var stack: [Tree] = []
     var resultSet: [ProvedKeyValue] = []
+    var lastKey: Data?
+    var lastInverted = false
+
+    func pop() throws -> Tree {
+        guard let tree = stack.popLast() else {
+            throw VerificationError("Stack underflow")
+        }
+        return tree
+    }
+
+    func attach(parentFirst: Bool, left: Bool) throws {
+        let first = try pop()
+        let second = try pop()
+        let parent = parentFirst ? first : second
+        let child = parentFirst ? second : first
+        // A Hash node stands for a pruned subtree: its hash already covers its
+        // children and ignores any attached, so it can't be a parent.
+        if parent.node.type == .hash {
+            throw VerificationError("A hash node can't have children")
+        }
+        if (left && parent.left != nil) || (!left && parent.right != nil) {
+            throw VerificationError(left ? "Left child already attached" : "Right child already attached")
+        }
+        parent.attachWithHeight(isLeft: left, child: child.intoHash(), height: child.height)
+        stack.append(parent)
+    }
 
     while decoder.hasMore {
         guard let op = try decoder.next() else { break }
 
         switch op.type {
         case .push, .pushInverted:
-            // Collect key-value pairs
-            if let node = op.node {
+            let node = op.node ?? MerkNode(type: .hash)
+            let inverted = op.type == .pushInverted
+            if let key = node.key, node.type != .hash, node.type != .kvHash {
+                if let last = lastKey, lastInverted == inverted {
+                    // Ascending across pushes, descending across inverted pushes.
+                    let outOfOrder = inverted
+                        ? !key.lexicographicallyPrecedes(last)
+                        : (key.lexicographicallyPrecedes(last) || key == last)
+                    if outOfOrder {
+                        throw VerificationError(inverted ? "Incorrect key ordering inverted" : "Incorrect key ordering")
+                    }
+                }
+                lastKey = key
+                lastInverted = inverted
+
                 switch node.type {
                 case .kv:
-                    if let key = node.key, let value = node.value {
-                        resultSet.append(ProvedKeyValue(
-                            key: key,
-                            value: value,
-                            proofHash: valueHash(value)
-                        ))
-                    }
-                case .kvValueHash, .kvRefValueHash, .kvValueHashFeatureType:
-                    if let key = node.key {
-                        resultSet.append(ProvedKeyValue(
-                            key: key,
-                            value: node.value,
-                            proofHash: node.valueHash
-                        ))
-                    }
+                    resultSet.append(ProvedKeyValue(key: key, value: node.value, proofHash: valueHash(node.value ?? Data()), nodeType: .kv))
                 case .kvDigest:
-                    if let key = node.key {
-                        resultSet.append(ProvedKeyValue(
-                            key: key,
-                            value: nil,
-                            proofHash: node.valueHash
-                        ))
-                    }
+                    resultSet.append(ProvedKeyValue(key: key, value: nil, proofHash: node.valueHash, nodeType: .kvDigest))
                 default:
-                    break
+                    resultSet.append(ProvedKeyValue(key: key, value: node.value, proofHash: node.valueHash, nodeType: node.type))
                 }
             }
-            stack.append(Tree(node: op.node ?? MerkNode(type: .hash)))
-
+            stack.append(Tree(node: node))
         case .parent:
-            // Pop parent and child, attach child as LEFT of parent
-            guard stack.count >= 2 else {
-                throw VerificationError("Stack underflow on Parent")
-            }
-            let parent = stack.removeLast()
-            let child = stack.removeLast()
-
-            let childHeight = child.height
-            let childHash = child.intoHash()
-            parent.attachWithHeight(isLeft: true, child: childHash, height: childHeight)
-            stack.append(parent)
-
+            try attach(parentFirst: true, left: true)
         case .child:
-            // Pop child and parent, attach child as RIGHT of parent
-            guard stack.count >= 2 else {
-                throw VerificationError("Stack underflow on Child")
-            }
-            let child = stack.removeLast()
-            let parent = stack.removeLast()
-
-            let childHeight = child.height
-            let childHash = child.intoHash()
-            parent.attachWithHeight(isLeft: false, child: childHash, height: childHeight)
-            stack.append(parent)
-
+            try attach(parentFirst: false, left: false)
         case .parentInverted:
-            // Pop parent and child, attach child as RIGHT of parent
-            guard stack.count >= 2 else {
-                throw VerificationError("Stack underflow on ParentInverted")
-            }
-            let parent = stack.removeLast()
-            let child = stack.removeLast()
-
-            let childHeight = child.height
-            let childHash = child.intoHash()
-            parent.attachWithHeight(isLeft: false, child: childHash, height: childHeight)
-            stack.append(parent)
-
+            try attach(parentFirst: true, left: false)
         case .childInverted:
-            // Pop child and parent, attach child as LEFT of parent
-            guard stack.count >= 2 else {
-                throw VerificationError("Stack underflow on ChildInverted")
-            }
-            let child = stack.removeLast()
-            let parent = stack.removeLast()
-
-            let childHeight = child.height
-            let childHash = child.intoHash()
-            parent.attachWithHeight(isLeft: true, child: childHash, height: childHeight)
-            stack.append(parent)
+            try attach(parentFirst: false, left: true)
         }
     }
 
     guard stack.count == 1 else {
         throw VerificationError("Expected proof to result in exactly one stack item, got \(stack.count)")
     }
+    return MerkExecutionResult(rootHash: stack[0].hash(), resultSet: resultSet)
+}
 
-    let tree = stack[0]
+// MARK: - Proof Envelope
 
-    // Verify AVL tree property
-    let heightDiff = abs(tree.childHeights.left - tree.childHeights.right)
-    if heightDiff > 1 {
-        throw VerificationError("Expected proof to result in a valid AVL tree")
+/// Reads the bincode 2 encoding grovedb writes a `GroveDBProof` in:
+/// big-endian varint integers (a byte up to 250 is the value; 251, 252, and
+/// 253 are followed by a 2-, 4-, or 8-byte value), length-prefixed byte
+/// vectors, and one-byte bools.
+private struct ProofReader {
+    let bytes: [UInt8]
+    var offset = 0
+
+    init(_ data: Data) {
+        bytes = [UInt8](data)
     }
 
-    return MerkExecutionResult(rootHash: tree.hash(), resultSet: resultSet)
+    var atEnd: Bool { return offset == bytes.count }
+
+    mutating func u8() throws -> UInt8 {
+        guard offset < bytes.count else { throw VerificationError("Proof truncated") }
+        offset += 1
+        return bytes[offset - 1]
+    }
+
+    mutating func bool() throws -> Bool {
+        switch try u8() {
+        case 0: return false
+        case 1: return true
+        case let tag: throw VerificationError("Invalid bool tag \(tag)")
+        }
+    }
+
+    mutating func varint() throws -> UInt64 {
+        let tag = try u8()
+        let width: Int
+        switch tag {
+        case 0...250: return UInt64(tag)
+        case 251: width = 2
+        case 252: width = 4
+        case 253: width = 8
+        default: throw VerificationError("Unsupported varint tag \(tag)")
+        }
+        guard offset + width <= bytes.count else { throw VerificationError("Proof truncated (varint)") }
+        let value = bytes[offset..<(offset + width)].reduce(UInt64(0)) { $0 << 8 | UInt64($1) }
+        offset += width
+        return value
+    }
+
+    mutating func byteVector() throws -> [UInt8] {
+        let count = try varint()
+        guard count <= UInt64(bytes.count - offset) else { throw VerificationError("Proof truncated (byte vector)") }
+        let out = Array(bytes[offset..<(offset + Int(count))])
+        offset += Int(count)
+        return out
+    }
+}
+
+/// Whether a serialized grovedb element is a tree (Tree, SumTree, BigSumTree,
+/// CountTree, or CountSumTree) and its root key.
+internal func groveTreeRootKey(_ element: Data) -> (isTree: Bool, rootKey: [UInt8]?) {
+    var reader = ProofReader(element)
+    guard let variant = try? reader.varint(), [2, 4, 5, 6, 7].contains(variant) else {
+        return (false, nil)
+    }
+    guard let tag = try? reader.u8() else { return (false, nil) }
+    if tag == 0 { return (true, nil) }
+    guard tag == 1, let key = try? reader.byteVector() else { return (false, nil) }
+    return (true, key)
 }
 
 // MARK: - GroveDB Verifier
@@ -397,6 +394,9 @@ public func executeMerkProof(_ proofBytes: Data) throws -> MerkExecutionResult {
 public class GroveDBVerifier {
     private var trustedRootHash: String?
 
+    /// Lower layers nest at most this deep; a real path is a few segments.
+    private static let maxLayerDepth = 64
+
     public init() {}
 
     /// Sets the trusted root hash.
@@ -404,7 +404,6 @@ public class GroveDBVerifier {
         guard rootHash.count == hashLength * 2 else {
             throw VerificationError("Invalid root hash length")
         }
-        // Validate hex format
         _ = try CryptoHash.fromHex(rootHash)
         trustedRootHash = rootHash
     }
@@ -417,94 +416,40 @@ public class GroveDBVerifier {
         return try GroveDBVerifier.verifyProofAgainstRoot(proofBytes: proofBytes, expectedRootHash: expectedRootHash)
     }
 
-    /// Decodes a GroveDB proof from bytes.
+    /// Decodes a GroveDB proof (only the V0 variant exists), refusing
+    /// trailing bytes.
     public static func decodeGroveDBProof(_ proofBytes: Data) throws -> GroveDBProof {
-        guard proofBytes.count >= 4 else {
-            throw VerificationError("Proof too short")
-        }
-
-        // Version is first 4 bytes (little-endian u32)
-        let version = UInt32(proofBytes[0]) |
-                      UInt32(proofBytes[1]) << 8 |
-                      UInt32(proofBytes[2]) << 16 |
-                      UInt32(proofBytes[3]) << 24
-
+        var reader = ProofReader(proofBytes)
+        let version = try reader.varint()
         guard version == 0 else {
             throw VerificationError("Unsupported proof version: \(version)")
         }
-
-        let (rootLayer, remaining) = try decodeLayerProof(proofBytes.subdata(in: 4..<proofBytes.count))
-
-        var proveOptions = ProveOptions()
-        if remaining.count >= 1 {
-            proveOptions.decreaseLimitOnEmptySubQueryResult = remaining[0] != 0
+        let rootLayer = try decodeLayerProof(&reader, depth: 0)
+        let options = ProveOptions(decreaseLimitOnEmptySubQueryResult: try reader.bool())
+        guard reader.atEnd else {
+            throw VerificationError("Proof has \(reader.bytes.count - reader.offset) trailing bytes")
         }
-
-        return GroveDBProof(
-            version: Int(version),
-            proof: GroveDBProofV0(rootLayer: rootLayer, proveOptions: proveOptions)
-        )
+        return GroveDBProof(version: 0, proof: GroveDBProofV0(rootLayer: rootLayer, proveOptions: options))
     }
 
-    private static func decodeLayerProof(_ data: Data) throws -> (LayerProof, Data) {
-        guard data.count >= 4 else {
-            throw VerificationError("Layer proof too short")
+    private static func decodeLayerProof(_ reader: inout ProofReader, depth: Int) throws -> LayerProof {
+        guard depth <= maxLayerDepth else {
+            throw VerificationError("Layer proof nesting too deep")
         }
-
-        // Merk proof length (little-endian u32)
-        let merkProofLen = Int(UInt32(data[0]) |
-                               UInt32(data[1]) << 8 |
-                               UInt32(data[2]) << 16 |
-                               UInt32(data[3]) << 24)
-        var offset = 4
-
-        guard data.count >= offset + merkProofLen else {
-            throw VerificationError("Incomplete merk proof data")
-        }
-
-        let merkProof = data.subdata(in: offset..<(offset + merkProofLen))
-        offset += merkProofLen
-
+        let merkProof = try reader.byteVector()
+        let count = try reader.varint()
         var lowerLayers: [String: LayerProof] = [:]
-
-        // Check if there are lower layers
-        if data.count >= offset + 4 {
-            let lowerLayersCount = Int(UInt32(data[offset]) |
-                                       UInt32(data[offset + 1]) << 8 |
-                                       UInt32(data[offset + 2]) << 16 |
-                                       UInt32(data[offset + 3]) << 24)
-            offset += 4
-
-            for _ in 0..<lowerLayersCount {
-                guard data.count >= offset + 4 else { break }
-
-                // Key length
-                let keyLen = Int(UInt32(data[offset]) |
-                                 UInt32(data[offset + 1]) << 8 |
-                                 UInt32(data[offset + 2]) << 16 |
-                                 UInt32(data[offset + 3]) << 24)
-                offset += 4
-
-                guard data.count >= offset + keyLen else { break }
-
-                // Key
-                let key = data.subdata(in: offset..<(offset + keyLen))
-                offset += keyLen
-
-                // Nested layer proof
-                let (nestedProof, remaining) = try decodeLayerProof(data.subdata(in: offset..<data.count))
-                offset = data.count - remaining.count
-
-                let keyHex = key.map { String(format: "%02x", $0) }.joined()
-                lowerLayers[keyHex] = nestedProof
+        for _ in 0..<count {
+            let key = try reader.byteVector()
+            let keyHex = Data(key).hexString
+            let nested = try decodeLayerProof(&reader, depth: depth + 1)
+            guard lowerLayers.updateValue(nested, forKey: keyHex) == nil else {
+                throw VerificationError("Proof repeats the lower layer \(keyHex)")
             }
         }
-
-        let layerProof = LayerProof(merkProof: merkProof, lowerLayers: lowerLayers)
-        return (layerProof, data.subdata(in: offset..<data.count))
+        return LayerProof(merkProof: Data(merkProof), lowerLayers: lowerLayers)
     }
 
-    /// Verifies a GroveDB proof and returns the verification result.
     /// The check grovedb's own verifier does not make. The verifier finds the
     /// next layer by the envelope's `lowerLayers` map KEY, which is not
     /// hash-bound: a prover who renames or drops the entry for a subtree on the
@@ -521,8 +466,7 @@ public class GroveDBVerifier {
             throw VerificationError("envelope: non-default prove_options")
         }
         for (i, seg) in expectedPath.enumerated() {
-            let keyHex = seg.map { String(format: "%02x", $0) }.joined()
-            guard let next = layer.lowerLayers[keyHex] else {
+            guard let next = layer.lowerLayers[Data(seg).hexString] else {
                 throw VerificationError(
                     "envelope: no lower layer for path segment \(i); the proof does not descend to the query path")
             }
@@ -547,57 +491,57 @@ public class GroveDBVerifier {
     /// `verifyProofAgainstRoot` plus the path descent check.
     public static func verifyProofAgainstRoot(proofBytes: Data, expectedRootHash: String, expectedPath: [[UInt8]]) throws -> GroveDBVerificationResult {
         let result = try verifyProof(proofBytes: proofBytes, expectedPath: expectedPath)
-        if result.rootHash != expectedRootHash {
+        if result.rootHash != expectedRootHash.lowercased() {
             throw VerificationError("Root hash mismatch: expected \(expectedRootHash), got \(result.rootHash)")
         }
         return result
     }
 
+    /// Verifies a GroveDB proof and returns the root hash it hashes to and the
+    /// values it proves. Use `verifyProof(proofBytes:expectedPath:)` whenever
+    /// the query path is known.
     public static func verifyProof(proofBytes: Data) throws -> GroveDBVerificationResult {
         let proof = try decodeGroveDBProof(proofBytes)
         guard proof.proof?.proveOptions.decreaseLimitOnEmptySubQueryResult ?? false else {
             throw VerificationError("envelope: non-default prove_options")
         }
-
         var results: [GroveDBQueryResult] = []
         let rootHash = try verifyLayerProof(proof.proof?.rootLayer, currentPath: [], results: &results)
-
         return GroveDBVerificationResult(rootHash: rootHash.hexString, results: results)
     }
 
+    /// Replays one layer, recursing into each lower layer the proof carries
+    /// for a proven tree element: the element's value hash must be
+    /// `combineHash(valueHash(element), lower layer's root)`. A leaf whose node
+    /// carries a value hash must carry the value that hashes to it.
     private static func verifyLayerProof(_ layer: LayerProof?, currentPath: [[UInt8]], results: inout [GroveDBQueryResult]) throws -> CryptoHash {
         guard let layer = layer else {
             throw VerificationError("Missing layer proof")
         }
-
-        // Execute the Merk proof
         let merkResult = try executeMerkProof(layer.merkProof)
 
-        // Process each proven value
         for proved in merkResult.resultSet {
-            let keyHex = proved.key.map { String(format: "%02x", $0) }.joined()
-            let lowerLayer = layer.lowerLayers[keyHex]
+            let keyHex = proved.key.hexString
+            let path = currentPath + [[UInt8](proved.key)]
 
-            if let lowerLayer = lowerLayer, let value = proved.value {
-                // This is a subtree - verify the lower layer
-                var newPath = currentPath
-                newPath.append([UInt8](proved.key))
-                let lowerHash = try verifyLayerProof(lowerLayer, currentPath: newPath, results: &results)
-
-                // Verify the combined hash
-                let elementValueHash = valueHash(value)
-                let combinedHash = combineHash(elementValueHash, lowerHash)
-
+            if let lowerLayer = layer.lowerLayers[keyHex], let value = proved.value {
+                let (isTree, rootKey) = groveTreeRootKey(value)
+                guard isTree, let root = rootKey, !root.isEmpty else {
+                    throw VerificationError("Proof has a lower layer for a non-tree element at key \(keyHex)")
+                }
+                let lowerHash = try verifyLayerProof(lowerLayer, currentPath: path, results: &results)
+                let combinedHash = combineHash(valueHash(value), lowerHash)
                 if combinedHash != proved.proofHash {
                     throw VerificationError("Lower layer hash mismatch at key \(keyHex): expected \(proved.proofHash.hexString), got \(combinedHash.hexString)")
                 }
             } else if let value = proved.value {
-                // Leaf value - add to results
-                results.append(GroveDBQueryResult(
-                    path: currentPath,
-                    key: proved.key,
-                    value: value
-                ))
+                if proved.nodeType == .kvValueHash || proved.nodeType == .kvValueHashFeatureType {
+                    let computed = valueHash(value)
+                    if computed != proved.proofHash {
+                        throw VerificationError("The value at key \(keyHex) does not hash to its committed value hash: expected \(proved.proofHash.hexString), got \(computed.hexString)")
+                    }
+                }
+                results.append(GroveDBQueryResult(path: currentPath, key: proved.key, value: value))
             }
         }
 
@@ -607,11 +551,9 @@ public class GroveDBVerifier {
     /// Verifies a proof against an expected root hash.
     public static func verifyProofAgainstRoot(proofBytes: Data, expectedRootHash: String) throws -> GroveDBVerificationResult {
         let result = try verifyProof(proofBytes: proofBytes)
-
-        if result.rootHash != expectedRootHash {
+        if result.rootHash != expectedRootHash.lowercased() {
             throw VerificationError("Root hash mismatch: expected \(expectedRootHash), got \(result.rootHash)")
         }
-
         return result
     }
 

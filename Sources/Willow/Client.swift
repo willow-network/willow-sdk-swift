@@ -44,6 +44,8 @@ public class WillowClient {
     private let decoder: JSONDecoder
 
     private var currentIdentity: Identity?
+    private let nonceLock = NSLock()
+    private var lastNonces: [String: Int] = [:]
     private var lightClient: LightClient?
     private var lightClientInitTask: Task<LightClient, Error>?
 
@@ -210,8 +212,75 @@ public class WillowClient {
     }
 
     /// Registers a DID.
+    ///
+    /// The API has no DID registration route: a DID is registered on chain by
+    /// a RegisterDid transaction, which this client doesn't build. This
+    /// throws a validation error and sends nothing.
+    @available(*, deprecated, message: "The API serves no DID registration route; a DID is registered by a RegisterDid transaction.")
     public func registerDID(_ document: DidDocument) async throws -> DidInfo {
-        return try await post(path: "/did/register", body: document)
+        throw ValidationError(
+            "The API has no DID registration route: a DID is registered by a RegisterDid transaction "
+                + "submitted to POST /tx/submit, which this client doesn't build"
+        )
+    }
+
+    // MARK: - Transactions
+
+    /// The identity that signs this client's transactions.
+    internal func transactionIdentity() throws -> Identity {
+        guard let identity = currentIdentity else {
+            throw AuthenticationError("Identity not set. Call setIdentity() first.")
+        }
+        return identity
+    }
+
+    /// The nonce for `did`'s next transaction: one above the account's nonce
+    /// (`GET /account/{did}/nonce`), or above the last one this client handed
+    /// out if that is higher, so a write sent before the previous one lands
+    /// takes the next free nonce instead of one a pending transaction holds.
+    /// Pass it back with `releaseNonce` when the transaction isn't accepted,
+    /// so a retry signs under the same nonce.
+    internal func nextNonce(did: String) async throws -> Int {
+        struct AccountNonce: Codable {
+            let nonce: UInt64
+        }
+        let response: ApiResponse<AccountNonce> = try await get(path: "/account/\(pathSegment(did))/nonce")
+        let nonce = try unwrap(response, "account nonce").nonce
+        guard let base = Int(exactly: nonce), base < Int.max else {
+            throw ValidationError("The account nonce \(nonce) is out of range")
+        }
+        return reserveNonce(did: did, above: base)
+    }
+
+    /// The next nonce above both `base` and the last one handed out for `did`, recorded as handed out.
+    private func reserveNonce(did: String, above base: Int) -> Int {
+        nonceLock.lock()
+        defer { nonceLock.unlock() }
+        let next = max(base + 1, (lastNonces[did] ?? 0) + 1)
+        lastNonces[did] = next
+        return next
+    }
+
+    /// Returns `nonce` for `did` when its transaction wasn't accepted, if no
+    /// later one has been handed out since.
+    internal func releaseNonce(_ nonce: Int, did: String) {
+        nonceLock.lock()
+        defer { nonceLock.unlock() }
+        if lastNonces[did] == nonce {
+            lastNonces[did] = nonce - 1
+        }
+    }
+
+    /// Signs and submits the transaction `build` makes under `did`'s next
+    /// nonce, releasing the nonce if it isn't accepted.
+    internal func submitUnderNextNonce(did: String, _ build: (Int) throws -> Data) async throws -> BroadcastResult {
+        let nonce = try await nextNonce(did: did)
+        do {
+            return try await submitTransaction(try build(nonce))
+        } catch {
+            releaseNonce(nonce, did: did)
+            throw error
+        }
     }
 
     // MARK: - Root Hash
@@ -302,15 +371,22 @@ public class WillowClient {
         return result
     }
 
-    /// Unwraps the API's `{ success, data, error }` envelope.
+    /// Unwraps the API's `{ success, data, error }` envelope: its `data`, or
+    /// its `error` thrown (a not-found error as `NotFoundError`).
     internal func unwrap<T: Codable>(_ response: ApiResponse<T>, _ what: String) throws -> T {
         if response.success, let data = response.data {
             return data
         }
         if let error = response.error, error.lowercased().contains("not found") {
-            throw NotFoundError(what)
+            throw WillowError(type: .notFound, message: "\(what): \(error)")
         }
         throw NetworkError(response.error ?? "The API returned no \(what)")
+    }
+
+    /// GETs `path` and unwraps the envelope the API answers with.
+    internal func getData<T: Codable>(path: String, query: [(String, String)] = [], _ what: String) async throws -> T {
+        let response: ApiResponse<T> = try await get(path: path, query: query)
+        return try unwrap(response, what)
     }
 
     private func send<T: Decodable>(method: String, base: URL, path: String, query: [(String, String)] = [], body: Data?) async throws -> T {
@@ -431,15 +507,23 @@ public class WillowClient {
     }
 
     /// Whether `method` and `target` (a path and query as the API receives
-    /// them) name one of the API's reads of subgrove data:
+    /// them) name one of the API's reads that act on the caller's DID:
     /// `GET /data/:sg/:key`, `GET /proof/:sg/:key`, `POST /query/:sg`,
-    /// `POST /sql/:sg`, and `POST /graphql/:sg`.
+    /// `POST /sql/:sg`, and `POST /graphql/:sg` (read rights), and the key
+    /// grant reads `GET /key-grants/:sg`, `GET /key-grants/:sg/:did`, and
+    /// `GET /proof/key-grant/:sg/:did`, which the API answers only for a
+    /// nonce-signed caller.
     internal static func isSubgroveReadRoute(method: String, target: String) -> Bool {
         let path = target.split(separator: "?", maxSplits: 1, omittingEmptySubsequences: false)[0]
         guard path.hasPrefix("/") else { return false }
         let segments = path.dropFirst().split(separator: "/", omittingEmptySubsequences: false)
         guard !segments.contains(where: { $0.isEmpty }) else { return false }
+        if method == "GET", segments[0] == "key-grants" {
+            return segments.count == 2 || segments.count == 3
+        }
         switch (method, segments.count) {
+        case ("GET", 4):
+            return segments[0] == "proof" && segments[1] == "key-grant"
         case ("GET", 3):
             return segments[0] == "data" || segments[0] == "proof"
         case ("POST", 2):
@@ -491,8 +575,7 @@ public class WillowClient {
                 }
 
                 guard (200...299).contains(httpResponse.statusCode) else {
-                    let message = String(data: data, encoding: .utf8) ?? "Unknown error"
-                    throw HTTPError(statusCode: httpResponse.statusCode, message: message)
+                    throw HTTPError(statusCode: httpResponse.statusCode, message: WillowClient.errorMessage(data))
                 }
 
                 return (data, httpResponse.statusCode)
@@ -510,6 +593,16 @@ public class WillowClient {
         }
 
         throw lastError ?? NetworkError("Request failed after retries")
+    }
+
+    /// The message of a refused request: the envelope's (or a bare body's)
+    /// `error` when the API sent one, else the body as text.
+    internal static func errorMessage(_ body: Data) -> String {
+        if let json = try? JSONSerialization.jsonObject(with: body) as? [String: Any],
+           let error = json["error"] as? String, !error.isEmpty {
+            return error
+        }
+        return String(data: body, encoding: .utf8) ?? "Unknown error"
     }
 
     private func shouldRetry(statusCode: Int) -> Bool {

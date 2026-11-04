@@ -317,10 +317,15 @@ final class RequestSigningTests: XCTestCase {
         XCTAssertTrue(WillowClient.isSubgroveReadRoute(method: "POST", target: "/query/sg"))
         XCTAssertTrue(WillowClient.isSubgroveReadRoute(method: "POST", target: "/sql/sg"))
         XCTAssertTrue(WillowClient.isSubgroveReadRoute(method: "POST", target: "/graphql/sg"))
+        // The key grant reads answer only a nonce-signed caller.
+        XCTAssertTrue(WillowClient.isSubgroveReadRoute(method: "GET", target: "/key-grants/sg"))
+        XCTAssertTrue(WillowClient.isSubgroveReadRoute(method: "GET", target: "/key-grants/sg/did"))
+        XCTAssertTrue(WillowClient.isSubgroveReadRoute(method: "GET", target: "/proof/key-grant/sg/did"))
 
         XCTAssertFalse(WillowClient.isSubgroveReadRoute(method: "POST", target: "/data/sg"))
         XCTAssertFalse(WillowClient.isSubgroveReadRoute(method: "PUT", target: "/data/sg/k"))
-        XCTAssertFalse(WillowClient.isSubgroveReadRoute(method: "GET", target: "/proof/key-grant/sg/did"))
+        XCTAssertFalse(WillowClient.isSubgroveReadRoute(method: "GET", target: "/key-grants/sg/did/x"))
+        XCTAssertFalse(WillowClient.isSubgroveReadRoute(method: "GET", target: "/token/info"))
         XCTAssertFalse(WillowClient.isSubgroveReadRoute(method: "GET", target: "/proof/file/sg/k"))
         XCTAssertFalse(WillowClient.isSubgroveReadRoute(method: "POST", target: "/tx/submit"))
         XCTAssertFalse(WillowClient.isSubgroveReadRoute(method: "GET", target: "/fees/schedule"))

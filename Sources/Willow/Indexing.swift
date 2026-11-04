@@ -90,42 +90,44 @@ public class IndexingOperations {
 
     // MARK: - Subgrove Operations
 
-    /// Lists all available subgroves.
+    /// Lists the blockchain-indexing subgroves (`GET /subgroves/indexed`).
     public func listSubgroves() async throws -> [SubgroveInfo] {
         guard let client = client else { throw NetworkError("Client deallocated") }
 
-        return try await client.get(path: "/subgroves")
+        return try await client.getData(path: "/subgroves/indexed", "subgroves")
     }
 
-    /// Retrieves information about a specific subgrove.
+    /// Retrieves information about a specific subgrove (`GET /subgroves/{id}`).
     public func getSubgrove(subgroveId: String) async throws -> SubgroveInfo {
         guard let client = client else { throw NetworkError("Client deallocated") }
 
-        return try await client.get(path: "/subgroves/\(pathSegment(subgroveId))")
+        return try await client.getData(path: "/subgroves/\(pathSegment(subgroveId))", "subgrove")
     }
 
     // MARK: - Indexer Operations
 
-    /// Lists all indexers.
+    /// Lists all indexers (`GET /indexers`).
     public func listIndexers() async throws -> [IndexerInfo] {
         guard let client = client else { throw NetworkError("Client deallocated") }
 
-        return try await client.get(path: "/indexers")
+        return try await client.getData(path: "/indexers", "indexers")
     }
 
-    /// Retrieves information about a specific indexer.
+    /// Retrieves information about a specific indexer (`GET /indexers/{did}`).
     public func getIndexer(indexerId: String) async throws -> IndexerInfo {
         guard let client = client else { throw NetworkError("Client deallocated") }
 
-        return try await client.get(path: "/indexers/\(pathSegment(indexerId))")
+        return try await client.getData(path: "/indexers/\(pathSegment(indexerId))", "indexer")
     }
 
     /// Retrieves the status of an indexer for a subgrove.
+    ///
+    /// The API serves no per-subgrove indexer status, so this throws a
+    /// validation error and sends nothing; `getIndexer(indexerId:)` lists the
+    /// subgroves an indexer serves.
+    @available(*, deprecated, message: "The API serves no per-subgrove indexer status; use getIndexer(indexerId:).")
     public func getIndexerStatus(indexerId: String, subgroveId: String) async throws -> IndexerInfo {
-        guard let client = client else { throw NetworkError("Client deallocated") }
-
-        let path = "/indexers/\(pathSegment(indexerId))/status/\(pathSegment(subgroveId))"
-        return try await client.get(path: path)
+        throw ValidationError("The API serves no per-subgrove indexer status; getIndexer(indexerId:) lists the subgroves an indexer serves")
     }
 
     // MARK: - Proof Verification

@@ -10,18 +10,18 @@ public class TokenOperations {
         self.client = client
     }
 
-    /// Retrieves information about the CAN token.
+    /// Retrieves information about the WILL token (`GET /token/info`).
     public func getInfo() async throws -> TokenInfo {
         guard let client = client else { throw NetworkError("Client deallocated") }
 
-        return try await client.get(path: "/token/info")
+        return try await client.getData(path: "/token/info", "token info")
     }
 
-    /// Retrieves the balance for a DID.
+    /// Retrieves the balance for a DID (`GET /token/balance/{did}`).
     public func getBalance(did: String) async throws -> BalanceInfo {
         guard let client = client else { throw NetworkError("Client deallocated") }
 
-        return try await client.get(path: "/token/balance/\(pathSegment(did))")
+        return try await client.getData(path: "/token/balance/\(pathSegment(did))", "balance")
     }
 
     /// Retrieves the balance for the authenticated user.
