@@ -49,6 +49,11 @@ struct FileListResponse: Codable {
 // MARK: - Signing Options
 
 /// Options for signing file storage transactions.
+///
+/// `nonce` is the transaction's nonce, and the signed message binds it. A
+/// write refused in its block after its signature and nonce verify still
+/// spends its nonce, so a retry needs new options with the next free nonce,
+/// which signs anew.
 public struct FileSigningOptions {
     public let ownerDid: String
     public let privateKey: Data
@@ -76,6 +81,11 @@ public class FileOperations {
     }
 
     /// Upload a file to a FileStorage subgrove.
+    ///
+    /// With `signing`, `signFunction` signs `storeFileManifestMessage` over
+    /// every field of the manifest sent and `signing.nonce`. A text field
+    /// holding a line break is refused with a validation error before anything
+    /// is signed.
     public func upload(
         subgroveId: String,
         fileKey: String,
@@ -87,13 +97,14 @@ public class FileOperations {
         let chunkSize = defaultChunkSize
         let chunks = chunkData(data, chunkSize: chunkSize)
         let chunkCount = chunks.count
+        let contentType = guessContentType(filename)
 
-        let contentHash = SHA256.hash(data: data)
-        let contentHashHex = contentHash.map { String(format: "%02x", $0) }.joined()
+        let contentHash = Data(SHA256.hash(data: data))
+        let contentHashHex = contentHash.hexString
 
         let chunkHashes = chunks.map { Data(SHA256.hash(data: $0)) }
         let merkleRoot = computeMerkleRoot(chunkHashes)
-        let merkleRootHex = merkleRoot.map { String(format: "%02x", $0) }.joined()
+        let merkleRootHex = merkleRoot.hexString
 
         // Build signature fields
         let ownerDid: String
@@ -106,7 +117,19 @@ public class FileOperations {
             publicKeyId = signing.publicKeyId
             nonce = signing.nonce
 
-            let signMessage = "store_file:\(subgroveId):\(fileKey):\(contentHashHex):\(data.count)"
+            let signMessage = try storeFileManifestMessage(
+                subgroveId: subgroveId,
+                fileKey: fileKey,
+                ownerDid: ownerDid,
+                filename: filename,
+                contentType: contentType,
+                totalSize: unsignedField("totalSize", data.count, as: UInt64.self),
+                contentHash: contentHash,
+                chunkCount: unsignedField("chunkCount", chunkCount, as: UInt32.self),
+                chunkSize: unsignedField("chunkSize", chunkSize, as: UInt32.self),
+                chunkMerkleRoot: merkleRoot,
+                nonce: unsignedField("nonce", nonce, as: UInt64.self)
+            )
             let signatureData = try signing.signFunction(Data(signMessage.utf8), signing.privateKey)
             signatureBytes = Array(signatureData).map { Int($0) }
         } else {
@@ -122,12 +145,12 @@ public class FileOperations {
             subgrove_id: subgroveId,
             file_key: fileKey,
             filename: filename,
-            content_type: guessContentType(filename),
+            content_type: contentType,
             total_size: data.count,
-            content_hash: Array(contentHash).map { Int($0) },
+            content_hash: contentHash.map { Int($0) },
             chunk_count: chunkCount,
             chunk_size: chunkSize,
-            chunk_merkle_root: Array(merkleRoot).map { Int($0) },
+            chunk_merkle_root: merkleRoot.map { Int($0) },
             owner_did: ownerDid,
             signature: signatureBytes,
             public_key_id: publicKeyId,
@@ -153,7 +176,7 @@ public class FileOperations {
         return FileManifest(
             fileKey: fileKey,
             filename: filename,
-            contentType: guessContentType(filename),
+            contentType: contentType,
             totalSize: UInt64(data.count),
             contentHash: contentHashHex,
             chunkCount: UInt32(chunkCount),
@@ -221,6 +244,11 @@ public class FileOperations {
     }
 
     /// Delete a file (submits DeleteFileManifestTx to consensus).
+    ///
+    /// With `signing`, `signFunction` signs `deleteFileManifestMessage` over
+    /// the subgrove ID, file key, owner DID, and `signing.nonce`. A text field
+    /// holding a line break is refused with a validation error before anything
+    /// is signed.
     public func delete(subgroveId: String, fileKey: String, signing: FileSigningOptions? = nil) async throws {
         guard let client = client else { throw NetworkError("Client deallocated") }
 
@@ -234,7 +262,12 @@ public class FileOperations {
             publicKeyId = signing.publicKeyId
             nonce = signing.nonce
 
-            let signMessage = "delete_file:\(subgroveId):\(fileKey)"
+            let signMessage = try deleteFileManifestMessage(
+                subgroveId: subgroveId,
+                fileKey: fileKey,
+                ownerDid: ownerDid,
+                nonce: unsignedField("nonce", nonce, as: UInt64.self)
+            )
             let signatureData = try signing.signFunction(Data(signMessage.utf8), signing.privateKey)
             signatureBytes = Array(signatureData).map { Int($0) }
         } else {
