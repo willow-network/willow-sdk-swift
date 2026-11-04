@@ -313,12 +313,18 @@ public struct GroveDBQueryResult {
 
 /// Result of proof verification.
 public struct GroveDBVerificationResult {
+    /// The root hash the proof hashes to, as lowercase hex.
     public let rootHash: String
     public let results: [GroveDBQueryResult]
+    /// True when the proof shows every element of the tree at the path it
+    /// was verified at, so `results` is that whole tree and a key missing
+    /// from it is absent. Only `verifyProof(proofBytes:expectedPath:)` sets it.
+    public let coversWholeTree: Bool
 
-    public init(rootHash: String, results: [GroveDBQueryResult]) {
+    public init(rootHash: String, results: [GroveDBQueryResult], coversWholeTree: Bool = false) {
         self.rootHash = rootHash
         self.results = results
+        self.coversWholeTree = coversWholeTree
     }
 }
 

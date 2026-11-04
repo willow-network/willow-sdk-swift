@@ -2,15 +2,29 @@ import Foundation
 
 // MARK: - Light Client
 
-/// Light client for trustless verification of Willow data.
+/// A light client that follows Willow's CometBFT headers and supplies the app
+/// hash a GroveDB proof's root is compared with.
+///
+/// It starts from a header you pin (`init(_:trustedHeader:validatorSet:)` or
+/// `init(_:trustedState:)`) or, with no pin, from the first header an
+/// endpoint serves. A later header is accepted if `verify(block:trustedState:)`
+/// passes. That check does not verify the commit's signatures, nor that the
+/// validator set the endpoint serves is the one the header commits to, so a
+/// header it accepts is only as trustworthy as the endpoints it reads.
 public class LightClient {
     private let config: LightClientConfig
-    private let session: URLSession
+    /// The session RPC requests go through (replaceable for tests).
+    internal var session: URLSession
     private let decoder: JSONDecoder
 
     private var trustedState: TrustedState?
     private var syncTask: Task<Void, Never>?
     private var isRunning = false
+
+    /// App hashes of the headers this client has accepted, by height (the
+    /// most recent `maxRememberedHeaders`).
+    private var acceptedAppHashes: [Int64: String] = [:]
+    private static let maxRememberedHeaders = 256
 
     private var latestKnownHeight: Int64 = 0
     private var lastSyncAttempt: Date?
@@ -59,6 +73,7 @@ public class LightClient {
         // Initialize with trusted state
         self.trustedState = TrustedState(header: trustedHeader, validatorSet: validatorSet)
         self.latestKnownHeight = trustedHeader.height
+        remember(height: trustedHeader.height, appHash: trustedHeader.appHash)
     }
 
     /// Creates a new light client with a complete trusted state for production use.
@@ -86,6 +101,7 @@ public class LightClient {
         // Initialize with trusted state
         self.trustedState = trustedState
         self.latestKnownHeight = trustedState.header.height
+        remember(height: trustedState.header.height, appHash: trustedState.header.appHash)
     }
 
     // MARK: - Lifecycle
@@ -166,6 +182,14 @@ public class LightClient {
             header: trustedHeader,
             validatorSet: block.validatorSet
         )
+        remember(height: trustedHeader.height, appHash: trustedHeader.appHash)
+    }
+
+    private func remember(height: Int64, appHash: String) {
+        acceptedAppHashes[height] = appHash
+        if acceptedAppHashes.count > Self.maxRememberedHeaders, let oldest = acceptedAppHashes.keys.min() {
+            acceptedAppHashes.removeValue(forKey: oldest)
+        }
     }
 
     private func verifyAndUpdate(to block: LightBlock) async throws {
@@ -194,11 +218,18 @@ public class LightClient {
             header: newHeader,
             validatorSet: block.validatorSet
         )
+        remember(height: newHeader.height, appHash: newHeader.appHash)
     }
 
     // MARK: - Verification
 
-    /// Verifies a light block against trusted state.
+    /// Checks a light block against trusted state: the chain ID, that height
+    /// and time move forward, the trusting period, clock drift, for the next
+    /// height that its validators hash is the trusted header's next
+    /// validators hash, and that commit signatures are present from
+    /// validators holding the trust threshold of the served set's voting
+    /// power. The signatures are counted by validator address, not verified,
+    /// and the served validator set is not checked against the header.
     public func verify(block: LightBlock, trustedState: TrustedState) throws -> LightClientVerificationResult {
         // Check chain ID
         guard block.header.chainId == config.chainId else {
@@ -325,7 +356,10 @@ public class LightClient {
 
     // MARK: - Root Hash
 
-    /// Gets the verified root hash (app_hash).
+    /// The app hash of the trusted header, syncing first if there is none or
+    /// it has outlived the trusting period. A header at height H carries the
+    /// app hash from after block H-1; to check a proof of the state after a
+    /// given block, use `verifiedAppHash(atHeight:)` with the next height.
     public func getVerifiedRootHash() async throws -> String {
         // Ensure we have trusted state
         if trustedState == nil {
@@ -347,6 +381,52 @@ public class LightClient {
         }
 
         return state.header.appHash
+    }
+
+    /// The app hash of the header at `height`, accepted the way `sync`
+    /// accepts a header (see `verify(block:trustedState:)`). A header at
+    /// height H carries the app hash from after block H-1, so a proof of the
+    /// state after block H is checked against the header at H+1.
+    ///
+    /// The trusted header, or one this client accepted before, is answered
+    /// from memory. A later header is fetched, waiting up to the config's
+    /// `headerWaitTimeout` for the chain to produce it, checked against the
+    /// trusted state, and becomes the trusted state. An earlier header can't
+    /// be checked (the client moves forward only), so it throws.
+    public func verifiedAppHash(atHeight height: Int64) async throws -> String {
+        if trustedState == nil {
+            try await sync()
+        }
+        guard let state = trustedState else {
+            throw LightClientError("No trusted state available")
+        }
+        guard Date().timeIntervalSince(state.header.trustedAt) <= config.trustingPeriod else {
+            throw LightClientError("The trusted header at height \(state.header.height) has outlived the trusting period")
+        }
+        if let appHash = acceptedAppHashes[height] {
+            return appHash
+        }
+        guard height > state.header.height else {
+            throw LightClientError(
+                "The header at height \(height) is below the trusted header at height \(state.header.height); the light client checks headers only forward")
+        }
+
+        let deadline = Date().addingTimeInterval(config.headerWaitTimeout)
+        while true {
+            do {
+                let block = try await fetchLightBlock(at: height)
+                guard block.header.height == height else {
+                    throw LightClientError("Asked for the header at height \(height), got one at height \(block.header.height)")
+                }
+                try await verifyAndUpdate(to: block)
+                return block.header.appHash
+            } catch let error as HeaderNotYetAvailable {
+                guard Date() < deadline else {
+                    throw LightClientError("The header at height \(height) did not appear within \(Int(config.headerWaitTimeout)) s: \(error.detail)")
+                }
+                try await Task.sleep(nanoseconds: 250_000_000)
+            }
+        }
     }
 
     // MARK: - State Management
@@ -429,6 +509,7 @@ public class LightClient {
         }
 
         let (data, _) = try await session.data(from: url)
+        try Self.throwRPCError(data)
 
         struct CommitResponse: Codable {
             let result: CommitResult
@@ -462,6 +543,7 @@ public class LightClient {
         }
 
         let (data, _) = try await session.data(from: url)
+        try Self.throwRPCError(data)
 
         struct ValidatorsResponse: Codable {
             let result: ValidatorsResult
@@ -500,4 +582,24 @@ public class LightClient {
 
         return ValidatorSet(validators: validators)
     }
+
+    /// Throws the JSON-RPC error an endpoint answered with, if any: a height
+    /// the chain hasn't reached as `HeaderNotYetAvailable`, anything else as
+    /// a light client error.
+    internal static func throwRPCError(_ data: Data) throws {
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let rpcError = object["error"] as? [String: Any] else {
+            return
+        }
+        let detail = (rpcError["data"] as? String) ?? (rpcError["message"] as? String) ?? "unknown error"
+        if detail.contains("current blockchain height") {
+            throw HeaderNotYetAvailable(detail: detail)
+        }
+        throw LightClientError("The RPC endpoint answered with an error: \(detail)")
+    }
+}
+
+/// An endpoint's answer for a height the chain hasn't reached yet.
+internal struct HeaderNotYetAvailable: Error {
+    let detail: String
 }

@@ -194,6 +194,7 @@ final class GroveDBProofTests: XCTestCase {
         XCTAssertEqual(result.results.first?.key, Data(try XCTUnwrap(single.key).utf8))
     }
 
+    @available(*, deprecated)
     func testARenamedOrDroppedLayerIsRefused() throws {
         let fixtures = try Self.fixture("envelope-real-proofs", as: [String: Envelope].self)
         for name in ["single-key", "range-all", "absent-key"] {
@@ -207,14 +208,14 @@ final class GroveDBProofTests: XCTestCase {
                 XCTAssertTrue("\(error)".contains("prove_options"), "\(name): \(error)")
             }
         }
-        // Without the path, the renamed layer hashes to the real root, its
-        // tree element read as one with no lower layer, and none of the
-        // results below it come back: what the descent check is for.
+        // Without the path, a lower layer whose key its layer doesn't prove
+        // is refused too.
         let single = try XCTUnwrap(fixtures["single-key"])
-        let renamed = try GroveDBVerifier.verifyProofAgainstRoot(
+        XCTAssertThrowsError(try GroveDBVerifier.verifyProofAgainstRoot(
             proofBytes: Self.hex(XCTUnwrap(single.proof_renamed_layer)), expectedRootHash: single.root
-        )
-        XCTAssertFalse(renamed.results.contains { $0.path == Self.path(single.path) })
+        )) { error in
+            XCTAssertTrue("\(error)".contains("prove as an element"), "\(error)")
+        }
         // A shorter or longer path is refused.
         XCTAssertThrowsError(try GroveDBVerifier.verifyProof(proofBytes: Self.hex(single.proof), expectedPath: Array(Self.path(single.path).prefix(3))))
         XCTAssertThrowsError(try GroveDBVerifier.verifyProof(proofBytes: Self.hex(single.proof), expectedPath: Self.path(single.path + ["x"])))
@@ -225,6 +226,7 @@ final class GroveDBProofTests: XCTestCase {
     /// subtree's root, so its bytes alone don't hash to it. The dropped-layer
     /// proof is byte for byte grovedb's proof of the key `Supply` itself at
     /// `subgroves/aave-v3-lending/indexed`, and verifies at that path.
+    @available(*, deprecated)
     func testATreeElementWithNoLowerLayerVerifies() throws {
         let fixtures = try Self.fixture("envelope-real-proofs", as: [String: Envelope].self)
         for name in ["single-key", "range-all", "absent-key"] {
@@ -251,6 +253,7 @@ final class GroveDBProofTests: XCTestCase {
         }
     }
 
+    @available(*, deprecated)
     func testAChangedValueDoesNotVerify() throws {
         let f = try Self.fixture("single_key_apps_data_key2", as: SingleKey.self)
         // "value-for-key2" -> "value-for-key3" inside the proof.

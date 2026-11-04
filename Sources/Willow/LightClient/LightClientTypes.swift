@@ -34,6 +34,9 @@ public struct LightClientConfig {
     public let syncInterval: TimeInterval
     public let rpcTimeout: TimeInterval
     public let maxRetries: Int
+    /// How long `LightClient.verifiedAppHash(atHeight:)` waits for a header
+    /// the chain hasn't produced yet.
+    public let headerWaitTimeout: TimeInterval
 
     public init(
         chainId: String,
@@ -45,7 +48,8 @@ public struct LightClientConfig {
         autoSync: Bool = true,
         syncInterval: TimeInterval = 5 * 60, // 5 minutes
         rpcTimeout: TimeInterval = 10,
-        maxRetries: Int = 3
+        maxRetries: Int = 3,
+        headerWaitTimeout: TimeInterval = 30
     ) {
         self.chainId = chainId
         self.validatorEndpoints = validatorEndpoints
@@ -57,6 +61,7 @@ public struct LightClientConfig {
         self.syncInterval = syncInterval
         self.rpcTimeout = rpcTimeout
         self.maxRetries = maxRetries
+        self.headerWaitTimeout = headerWaitTimeout
     }
 
     public static var `default`: LightClientConfig {

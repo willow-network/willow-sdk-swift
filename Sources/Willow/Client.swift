@@ -118,7 +118,7 @@ public class WillowClient {
         self.decoder = JSONDecoder()
     }
 
-    /// Creates a client with a light client for trustless verification.
+    /// Creates a client whose verified reads compare proofs with `lightClient`.
     public convenience init(baseURL: String, lightClient: LightClient, timeout: TimeInterval = 30) throws {
         try self.init(baseURL: baseURL, timeout: timeout, autoVerify: true)
         self.lightClient = lightClient
@@ -131,7 +131,7 @@ public class WillowClient {
         return lightClient != nil
     }
 
-    /// Sets the light client for trustless verification.
+    /// Sets the light client verified reads compare proofs with.
     public func setLightClient(_ lightClient: LightClient) {
         self.lightClient = lightClient
     }
@@ -141,11 +141,12 @@ public class WillowClient {
         return lightClient
     }
 
-    /// Gets or creates the light client for trustless verification.
+    /// Gets or creates the light client verified reads compare proofs with.
     ///
-    /// Trust-on-first-use bootstrap: the first verified header is trusted,
-    /// and every subsequent header chains from it cryptographically. Pin a
-    /// known-good checkpoint header in production deployments.
+    /// With none set, it creates one that trusts the first header the node's
+    /// RPC endpoint serves (trust on first use) and accepts later headers as
+    /// `LightClient.verify(block:trustedState:)` does, which doesn't verify
+    /// commit signatures. Set one with a header you pin (`setLightClient`).
     public func getOrCreateLightClient() async throws -> LightClient {
         // Return existing light client if available
         if let existing = lightClient {
@@ -266,8 +267,8 @@ public class WillowClient {
 
     /// Gets the node's current GroveDB root hash (`GET /state/root-hash`).
     ///
-    /// This is the serving node's own state root, unverified; for a root checked
-    /// against validator signatures use `getVerifiedRootHash()`.
+    /// This is the serving node's own state root, unverified; for the light
+    /// client's trusted app hash use `getVerifiedRootHash()`.
     public func getRootHash() async throws -> String {
         struct RootHash: Codable {
             let rootHash: String
@@ -280,7 +281,8 @@ public class WillowClient {
         return try unwrap(response, "root hash").rootHash
     }
 
-    /// Gets the verified root hash from the light client.
+    /// The app hash of the light client's trusted header (see
+    /// `LightClient.getVerifiedRootHash()`).
     public func getVerifiedRootHash() async throws -> String {
         guard let lc = lightClient else {
             throw LightClientError("No light client configured")
@@ -317,6 +319,15 @@ public class WillowClient {
     /// Posts to an explicit base URL (used for indexer routing).
     internal func postToBase<T: Decodable, B: Encodable>(base: URL, path: String, body: B) async throws -> T {
         return try await send(method: "POST", base: base, path: path, body: try encoder.encode(body))
+    }
+
+    /// Posts `body` encoded without key conversion, so keys the caller
+    /// chose (a filter's field, a GraphQL variable) go out as written. The
+    /// body's own CodingKeys spell the wire names.
+    internal func postVerbatim<T: Decodable, B: Encodable>(base: URL? = nil, path: String, body: B) async throws -> T {
+        let verbatim = JSONEncoder()
+        verbatim.outputFormatting = [.sortedKeys]
+        return try await send(method: "POST", base: base ?? config.baseURL, path: path, body: try verbatim.encode(body))
     }
 
     internal func put<T: Decodable, B: Encodable>(path: String, body: B) async throws -> T {

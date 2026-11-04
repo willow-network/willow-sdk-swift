@@ -234,6 +234,7 @@ final class BuildersTests: XCTestCase {
         XCTAssertEqual(query.filters[0].operator, "eq")
     }
 
+    @available(*, deprecated)
     func testQueryBuilderNotEquals() {
         let query = QueryBuilder()
             .notEquals("status", "deleted")
@@ -242,6 +243,7 @@ final class BuildersTests: XCTestCase {
         XCTAssertEqual(query.filters[0].operator, "ne")
     }
 
+    @available(*, deprecated)
     func testQueryBuilderGreaterThan() {
         let query = QueryBuilder()
             .greaterThan("age", 18)
@@ -250,6 +252,7 @@ final class BuildersTests: XCTestCase {
         XCTAssertEqual(query.filters[0].operator, "gt")
     }
 
+    @available(*, deprecated)
     func testQueryBuilderGreaterThanOrEqual() {
         let query = QueryBuilder()
             .greaterThanOrEqual("score", 100)
@@ -258,6 +261,7 @@ final class BuildersTests: XCTestCase {
         XCTAssertEqual(query.filters[0].operator, "gte")
     }
 
+    @available(*, deprecated)
     func testQueryBuilderLessThan() {
         let query = QueryBuilder()
             .lessThan("count", 10)
@@ -266,6 +270,7 @@ final class BuildersTests: XCTestCase {
         XCTAssertEqual(query.filters[0].operator, "lt")
     }
 
+    @available(*, deprecated)
     func testQueryBuilderLessThanOrEqual() {
         let query = QueryBuilder()
             .lessThanOrEqual("price", 99.99)
@@ -274,6 +279,7 @@ final class BuildersTests: XCTestCase {
         XCTAssertEqual(query.filters[0].operator, "lte")
     }
 
+    @available(*, deprecated)
     func testQueryBuilderContains() {
         let query = QueryBuilder()
             .contains("tags", "swift")
@@ -282,6 +288,7 @@ final class BuildersTests: XCTestCase {
         XCTAssertEqual(query.filters[0].operator, "contains")
     }
 
+    @available(*, deprecated)
     func testQueryBuilderSearch() {
         let query = QueryBuilder()
             .search(fields: ["title", "content"], query: "hello world")
@@ -335,6 +342,7 @@ final class BuildersTests: XCTestCase {
         XCTAssertTrue(query.includeProof)
     }
 
+    @available(*, deprecated)
     func testQueryBuilderComplex() {
         let query = QueryBuilder()
             .equals("status", "active")

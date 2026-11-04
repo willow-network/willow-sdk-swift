@@ -90,7 +90,7 @@ public func applyComputedFieldsToResponse(response: QueryResponse, fields: Compu
         for (key, value) in computedDict { newData[key] = AnyCodable(value) }
         return QueryResult(key: result.key, data: newData)
     }
-    return QueryResponse(results: updatedResults, totalCount: response.totalCount, hasMore: response.hasMore, proof: response.proof)
+    return QueryResponse(results: updatedResults, totalCount: response.totalCount, hasMore: response.hasMore, proof: response.proof, height: response.height)
 }
 
 // MARK: - Numeric Parsing Helper

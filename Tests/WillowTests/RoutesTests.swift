@@ -77,6 +77,7 @@ final class RoutesTests: XCTestCase {
         }
         let client = try stub.client(baseURL: "http://api.test")
         client.setIdentity(identity)
+        client.setLightClient(try VerifiedReadsTests.pinnedLightClient(height: 8, appHash: "00", stub: stub))
 
         do {
             _ = try await client.data.get(subgroveId: "sg", key: "k")
@@ -96,6 +97,7 @@ final class RoutesTests: XCTestCase {
             return (500, #"{"success":false,"data":null,"error":"Error generating proof"}"#)
         }
         let client = try stub.client(baseURL: "http://api.test")
+        client.setLightClient(try VerifiedReadsTests.pinnedLightClient(height: 8, appHash: "00", stub: stub))
 
         do {
             _ = try await client.data.get(subgroveId: "sg", key: "k")
@@ -163,6 +165,7 @@ final class RoutesTests: XCTestCase {
             return (200, #"{"success":true,"data":{"documents":[],"total":0,"offset":0,"limit":100}}"#)
         }
         let client = try stub.client(baseURL: "http://api.test")
+        client.setLightClient(try VerifiedReadsTests.pinnedLightClient(height: 8, appHash: "00", stub: stub))
 
         do {
             _ = try await client.data.query(subgroveId: "sg", query: QueryRequest())
@@ -176,6 +179,7 @@ final class RoutesTests: XCTestCase {
         let json = Data(#"{"documents":[],"total":0,"offset":0,"limit":100,"proof":"0a0b","height":9}"#.utf8)
         let response = try JSONDecoder().decode(QueryResponse.self, from: json)
         XCTAssertEqual(response.proof, Data([0x0a, 0x0b]))
+        XCTAssertEqual(response.height, 9)
     }
 
     func testGetRootHashReadsStateRootHash() async throws {

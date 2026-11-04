@@ -230,6 +230,11 @@ public class MerkDecoder {
 public struct MerkExecutionResult {
     public let rootHash: CryptoHash
     public let resultSet: [ProvedKeyValue]
+    /// Whether the proof hides any node of the tree: a `Hash` node (a pruned
+    /// subtree), a `KVHash` node (a node without its key or value), or a
+    /// `KVDigest` node (a key without its value). A proof that hides none
+    /// shows every key and value in the tree.
+    public let hidesNodes: Bool
 }
 
 // MARK: - Execute Merk Proof
@@ -248,6 +253,7 @@ public func executeMerkProof(_ proofBytes: Data) throws -> MerkExecutionResult {
     var resultSet: [ProvedKeyValue] = []
     var lastKey: Data?
     var lastInverted = false
+    var hidesNodes = false
 
     func pop() throws -> Tree {
         guard let tree = stack.popLast() else {
@@ -280,6 +286,9 @@ public func executeMerkProof(_ proofBytes: Data) throws -> MerkExecutionResult {
         case .push, .pushInverted:
             let node = op.node ?? MerkNode(type: .hash)
             let inverted = op.type == .pushInverted
+            if node.type == .hash || node.type == .kvHash || node.type == .kvDigest {
+                hidesNodes = true
+            }
             if let key = node.key, node.type != .hash, node.type != .kvHash {
                 if let last = lastKey, lastInverted == inverted {
                     // Ascending across pushes, descending across inverted pushes.
@@ -317,7 +326,7 @@ public func executeMerkProof(_ proofBytes: Data) throws -> MerkExecutionResult {
     guard stack.count == 1 else {
         throw VerificationError("Expected proof to result in exactly one stack item, got \(stack.count)")
     }
-    return MerkExecutionResult(rootHash: stack[0].hash(), resultSet: resultSet)
+    return MerkExecutionResult(rootHash: stack[0].hash(), resultSet: resultSet, hidesNodes: hidesNodes)
 }
 
 // MARK: - Proof Envelope
@@ -390,6 +399,24 @@ internal func groveTreeRootKey(_ element: Data) -> (isTree: Bool, rootKey: [UInt
 
 // MARK: - GroveDB Verifier
 
+/// The tree at a proof's query path, as the proof shows it.
+internal struct ProvenTree {
+    struct Entry {
+        let key: Data
+        /// The serialized element (for a reference, the element it points to).
+        let value: Data
+        /// The kind of Merk node that carried it.
+        let nodeType: MerkNodeType
+    }
+
+    /// The elements the proof carries at the path, in the order it carries them.
+    let entries: [Entry]
+    /// True when the proof shows every element of the tree: its layer hides
+    /// no node (see `MerkExecutionResult.hidesNodes`), or the tree is proven
+    /// empty.
+    let complete: Bool
+}
+
 /// Verifier for GroveDB proofs.
 public class GroveDBVerifier {
     private var trustedRootHash: String?
@@ -408,7 +435,18 @@ public class GroveDBVerifier {
         trustedRootHash = rootHash
     }
 
-    /// Verifies a proof against the trusted root.
+    /// Verifies a proof against the trusted root and requires that it proves
+    /// the tree at `expectedPath` (see `verifyProof(proofBytes:expectedPath:)`).
+    public func verify(proofBytes: Data, expectedPath: [[UInt8]]) throws -> GroveDBVerificationResult {
+        guard let expectedRootHash = trustedRootHash else {
+            throw VerificationError("No trusted root hash set")
+        }
+        return try GroveDBVerifier.verifyProofAgainstRoot(proofBytes: proofBytes, expectedRootHash: expectedRootHash, expectedPath: expectedPath)
+    }
+
+    /// Verifies a proof against the trusted root without a path, which proves
+    /// nothing about what the proof carries (see `verifyProof(proofBytes:)`).
+    @available(*, deprecated, message: "Proves only the root, not what the proof carries; use verify(proofBytes:expectedPath:).")
     public func verify(proofBytes: Data) throws -> GroveDBVerificationResult {
         guard let expectedRootHash = trustedRootHash else {
             throw VerificationError("No trusted root hash set")
@@ -450,15 +488,12 @@ public class GroveDBVerifier {
         return LayerProof(merkProof: Data(merkProof), lowerLayers: lowerLayers)
     }
 
-    /// The check grovedb's own verifier does not make. The verifier finds the
-    /// next layer by the envelope's `lowerLayers` map KEY, which is not
-    /// hash-bound: a prover who renames or drops the entry for a subtree on the
-    /// query path gets the same root hash with that subtree's results silently
-    /// gone. Requiring a layer for every path segment, and none below the
-    /// last, keeps the results to the layers on the query path (once a layer
-    /// is present its root is hash-bound to the parent). `proveOptions` is
-    /// prover-chosen bytes that steer limit accounting, so it is pinned to the
-    /// default the chain uses.
+    /// A shape check on the envelope alone: a lower layer for every path
+    /// segment, found by its `lowerLayers` map key, and none below the last;
+    /// `proveOptions` pinned to the default the chain uses. The map key is
+    /// not hash-bound, so this doesn't show the layers belong to the path:
+    /// `verifyProof(proofBytes:expectedPath:)` makes that check, and needs
+    /// no call to this first.
     public static func checkEnvelope(_ proof: GroveDBProof, expectedPath: [[UInt8]]) throws {
         guard proof.version == 0, let v0 = proof.proof, var layer = v0.rootLayer else {
             throw VerificationError("envelope: missing root layer")
@@ -478,19 +513,32 @@ public class GroveDBVerifier {
         }
     }
 
-    /// Verify a proof and require it descends to `expectedPath` (see
-    /// `checkEnvelope`). Every result it returns is bound to the root. The
-    /// query isn't checked, so the proof isn't shown to cover it: a result
-    /// missing from the set, or an empty set, does not prove a key absent.
+    /// Verifies a proof of the tree at `expectedPath` and returns the root
+    /// hash it hashes to and the elements it proves in that tree, and only
+    /// those.
+    ///
+    /// Each path segment must be proven, in its parent's layer, as a tree
+    /// element whose lower layer the proof carries and hashes, combined with
+    /// the element's bytes, to the value hash the parent commits. A lower
+    /// layer off the path must belong to a tree element its layer proves and
+    /// hash to it too, and its values are dropped; the tree at the path may
+    /// carry no lower layer. The last segment may instead be proven an empty
+    /// tree. So every result is bound to the root, at the path asked for, and
+    /// only results at that path come back. The query isn't checked: a
+    /// key missing from the results is not proven absent unless
+    /// `coversWholeTree` is true, which means the proof shows every element
+    /// of the tree at the path.
     public static func verifyProof(proofBytes: Data, expectedPath: [[UInt8]]) throws -> GroveDBVerificationResult {
-        let proof = try decodeGroveDBProof(proofBytes)
-        try checkEnvelope(proof, expectedPath: expectedPath)
-        var results: [GroveDBQueryResult] = []
-        let rootHash = try verifyLayerProof(proof.proof?.rootLayer, currentPath: [], results: &results)
-        return GroveDBVerificationResult(rootHash: rootHash.hexString, results: results)
+        let (rootHash, tree) = try verifyTree(proofBytes, at: expectedPath)
+        return GroveDBVerificationResult(
+            rootHash: rootHash.hexString,
+            results: tree.entries.map { GroveDBQueryResult(path: expectedPath, key: $0.key, value: $0.value) },
+            coversWholeTree: tree.complete
+        )
     }
 
-    /// `verifyProofAgainstRoot` plus the path descent check.
+    /// `verifyProof(proofBytes:expectedPath:)`, and the root it hashes to
+    /// must be `expectedRootHash` (hex, compared case-insensitively).
     public static func verifyProofAgainstRoot(proofBytes: Data, expectedRootHash: String, expectedPath: [[UInt8]]) throws -> GroveDBVerificationResult {
         let result = try verifyProof(proofBytes: proofBytes, expectedPath: expectedPath)
         if result.rootHash != expectedRootHash.lowercased() {
@@ -499,9 +547,115 @@ public class GroveDBVerifier {
         return result
     }
 
-    /// Verifies a GroveDB proof and returns the root hash it hashes to and the
-    /// values it proves. Use `verifyProof(proofBytes:expectedPath:)` whenever
-    /// the query path is known.
+    /// The root hash a proof of the tree at `path` hashes to, and that tree
+    /// as the proof shows it (see `verifyProof(proofBytes:expectedPath:)`).
+    internal static func verifyTree(_ proofBytes: Data, at path: [[UInt8]]) throws -> (rootHash: CryptoHash, tree: ProvenTree) {
+        let proof = try decodeGroveDBProof(proofBytes)
+        guard let v0 = proof.proof, let root = v0.rootLayer else {
+            throw VerificationError("envelope: missing root layer")
+        }
+        guard v0.proveOptions.decreaseLimitOnEmptySubQueryResult else {
+            throw VerificationError("envelope: non-default prove_options")
+        }
+        return try verifyLayer(root, depth: 0, path: path)
+    }
+
+    private static func verifyLayer(_ layer: LayerProof, depth: Int, path: [[UInt8]]) throws -> (CryptoHash, ProvenTree) {
+        let merk = try executeMerkProof(layer.merkProof)
+
+        // The tree at the path: its elements, and nothing below them.
+        guard depth < path.count else {
+            guard layer.lowerLayers.isEmpty else {
+                throw VerificationError("envelope: unexpected lower layers below the query path")
+            }
+            var entries: [ProvenTree.Entry] = []
+            for proved in merk.resultSet {
+                // A KVDigest node carries a key without its value.
+                guard let value = proved.value else { continue }
+                try checkLeafValue(proved, value)
+                entries.append(ProvenTree.Entry(key: proved.key, value: value, nodeType: proved.nodeType))
+            }
+            return (merk.rootHash, ProvenTree(entries: entries, complete: !merk.hidesNodes))
+        }
+
+        let segment = Data(path[depth])
+        let segmentHex = segment.hexString
+        guard let node = merk.resultSet.first(where: { $0.key == segment }), let element = node.value,
+              node.nodeType == .kvValueHash || node.nodeType == .kvValueHashFeatureType else {
+            throw VerificationError(
+                "envelope: path segment \(depth) is not proven as an element; the proof does not descend to the query path")
+        }
+        let (isTree, rootKey) = groveTreeRootKey(element)
+        guard isTree else {
+            throw VerificationError("Path segment \(depth) is not a tree")
+        }
+        guard let treeRoot = rootKey, !treeRoot.isEmpty else {
+            // An empty tree commits to the null hash as its subtree's root.
+            guard layer.lowerLayers[segmentHex] == nil, depth == path.count - 1 else {
+                throw VerificationError(
+                    "envelope: path segment \(depth) is an empty tree; the proof does not descend to the query path")
+            }
+            guard combineHash(valueHash(element), nullHash) == node.proofHash else {
+                throw VerificationError("The tree at the query path is not proven empty")
+            }
+            try checkOffPathLayers(layer, merk, except: segmentHex)
+            return (merk.rootHash, ProvenTree(entries: [], complete: true))
+        }
+        guard let lower = layer.lowerLayers[segmentHex] else {
+            throw VerificationError(
+                "envelope: no lower layer for path segment \(depth); the proof does not descend to the query path")
+        }
+        try checkOffPathLayers(layer, merk, except: segmentHex)
+        let (lowerHash, tree) = try verifyLayer(lower, depth: depth + 1, path: path)
+        let combined = combineHash(valueHash(element), lowerHash)
+        guard combined == node.proofHash else {
+            throw VerificationError("Lower layer hash mismatch at path segment \(depth): expected \(node.proofHash.hexString), got \(combined.hexString)")
+        }
+        return (merk.rootHash, tree)
+    }
+
+    /// A lower layer off the query path is checked and its values dropped:
+    /// it must belong to a tree element its layer proves, and hash, combined
+    /// with the element's bytes, to the value hash the layer commits.
+    private static func checkOffPathLayers(_ layer: LayerProof, _ merk: MerkExecutionResult, except segmentHex: String) throws {
+        for (keyHex, lower) in layer.lowerLayers where keyHex != segmentHex {
+            guard let owner = merk.resultSet.first(where: { $0.key.hexString == keyHex }), let element = owner.value,
+                  owner.nodeType == .kvValueHash || owner.nodeType == .kvValueHashFeatureType,
+                  let rootKey = groveTreeRootKey(element).rootKey, !rootKey.isEmpty else {
+                throw VerificationError("Proof has a lower layer for key \(keyHex), which its layer doesn't prove as a tree element")
+            }
+            var dropped: [GroveDBQueryResult] = []
+            let lowerHash = try verifyLayerProof(lower, currentPath: [], results: &dropped)
+            let combined = combineHash(valueHash(element), lowerHash)
+            guard combined == owner.proofHash else {
+                throw VerificationError("Lower layer hash mismatch at key \(keyHex): expected \(owner.proofHash.hexString), got \(combined.hexString)")
+            }
+        }
+    }
+
+    /// A leaf whose node carries a value hash must carry the value that
+    /// hashes to it, unless it is a tree element, whose value hash also
+    /// covers a subtree the proof doesn't carry.
+    private static func checkLeafValue(_ proved: ProvedKeyValue, _ value: Data) throws {
+        if proved.nodeType == .kvValueHash || proved.nodeType == .kvValueHashFeatureType,
+           !groveTreeRootKey(value).isTree {
+            let computed = valueHash(value)
+            if computed != proved.proofHash {
+                throw VerificationError("The value at key \(proved.key.hexString) does not hash to its committed value hash: expected \(proved.proofHash.hexString), got \(computed.hexString)")
+            }
+        }
+    }
+
+    /// Verifies a GroveDB proof without a path: returns the root hash it
+    /// hashes to and the values it carries, each with the path of tree
+    /// elements it hangs under.
+    ///
+    /// This proves the root and that each value is at the path listed with
+    /// it, but nothing about what the proof carries: it can leave out any
+    /// subtree (a single `Hash` node of the real root verifies, with no
+    /// values), so a value missing from the results proves nothing. Use
+    /// `verifyProof(proofBytes:expectedPath:)`.
+    @available(*, deprecated, message: "Proves only the root, not what the proof carries; use verifyProof(proofBytes:expectedPath:).")
     public static func verifyProof(proofBytes: Data) throws -> GroveDBVerificationResult {
         let proof = try decodeGroveDBProof(proofBytes)
         guard proof.proof?.proveOptions.decreaseLimitOnEmptySubQueryResult ?? false else {
@@ -514,8 +668,10 @@ public class GroveDBVerifier {
 
     /// Replays one layer, recursing into each lower layer the proof carries
     /// for a proven tree element: the element's value hash must be
-    /// `combineHash(valueHash(element), lower layer's root)`. A leaf item whose
-    /// node carries a value hash must carry the value that hashes to it.
+    /// `combineHash(valueHash(element), lower layer's root)`. A lower layer
+    /// for a key the layer doesn't prove with its element is refused. A leaf
+    /// item whose node carries a value hash must carry the value that hashes
+    /// to it.
     ///
     /// A tree element with no lower layer is a result too: grovedb proves one
     /// that way when the query doesn't descend into it, the tree is empty, or
@@ -528,6 +684,11 @@ public class GroveDBVerifier {
             throw VerificationError("Missing layer proof")
         }
         let merkResult = try executeMerkProof(layer.merkProof)
+
+        let provenElements = Set(merkResult.resultSet.filter { $0.value != nil }.map { $0.key.hexString })
+        if let stray = layer.lowerLayers.keys.first(where: { !provenElements.contains($0) }) {
+            throw VerificationError("Proof has a lower layer for key \(stray), which its layer doesn't prove as an element")
+        }
 
         for proved in merkResult.resultSet {
             let keyHex = proved.key.hexString
@@ -544,13 +705,7 @@ public class GroveDBVerifier {
                     throw VerificationError("Lower layer hash mismatch at key \(keyHex): expected \(proved.proofHash.hexString), got \(combinedHash.hexString)")
                 }
             } else if let value = proved.value {
-                if proved.nodeType == .kvValueHash || proved.nodeType == .kvValueHashFeatureType,
-                   !groveTreeRootKey(value).isTree {
-                    let computed = valueHash(value)
-                    if computed != proved.proofHash {
-                        throw VerificationError("The value at key \(keyHex) does not hash to its committed value hash: expected \(proved.proofHash.hexString), got \(computed.hexString)")
-                    }
-                }
+                try checkLeafValue(proved, value)
                 results.append(GroveDBQueryResult(path: currentPath, key: proved.key, value: value))
             }
         }
@@ -558,7 +713,10 @@ public class GroveDBVerifier {
         return merkResult.rootHash
     }
 
-    /// Verifies a proof against an expected root hash.
+    /// Verifies a proof against an expected root hash without a path, which
+    /// proves nothing about what the proof carries (see
+    /// `verifyProof(proofBytes:)`). The root is compared case-insensitively.
+    @available(*, deprecated, message: "Proves only the root, not what the proof carries; use verifyProofAgainstRoot(proofBytes:expectedRootHash:expectedPath:).")
     public static func verifyProofAgainstRoot(proofBytes: Data, expectedRootHash: String) throws -> GroveDBVerificationResult {
         let result = try verifyProof(proofBytes: proofBytes)
         if result.rootHash != expectedRootHash.lowercased() {
@@ -567,7 +725,9 @@ public class GroveDBVerifier {
         return result
     }
 
-    /// Quickly verifies a proof and returns just the root hash.
+    /// The root hash a proof hashes to. It proves nothing about what the
+    /// proof carries (see `verifyProof(proofBytes:)`).
+    @available(*, deprecated, message: "Proves only the root, not what the proof carries; use verifyProof(proofBytes:expectedPath:).")
     public static func quickVerify(proofBytes: Data) throws -> CryptoHash {
         let result = try verifyProof(proofBytes: proofBytes)
         return try CryptoHash.fromHex(result.rootHash)

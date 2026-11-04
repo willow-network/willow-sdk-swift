@@ -12,30 +12,24 @@ public class IndexingOperations {
 
     // MARK: - GraphQL Queries
 
-    /// Executes a GraphQL query against a subgrove.
-    /// When an indexer URL is configured, the query is routed there.
+    /// Executes a GraphQL query against a subgrove
+    /// (`POST /graphql/{subgroveId}`), routed to the indexer URL when one is
+    /// configured.
+    ///
+    /// The answer is not verified. The proof the node can attach
+    /// (`includeProof`) lists value hashes and a state root, which don't
+    /// bind the GraphQL `data`, so the SDK returns it as `proof` (JSON bytes)
+    /// without checking it, light client or not. Variables are sent with
+    /// their names as written.
     public func query(subgroveId: String, request: GraphQLRequest) async throws -> GraphQLResponse {
         guard let client = client else { throw NetworkError("Client deallocated") }
 
-        // Enable proof by default if light client is available
-        var requestWithProof = request
-        if client.hasLightClient() {
-            requestWithProof.includeProof = true
-        }
-
-        let base = client.indexerBaseURL()
         let path = "/graphql/\(pathSegment(subgroveId))"
-        let response: GraphQLResponse = try await client.postToBase(base: base, path: path, body: requestWithProof)
-
-        // Verify proof if available
-        if client.hasLightClient(), let proofData = response.proof {
-            try await verifyProof(proofData, client: client)
-        }
-
-        return response
+        return try await client.postVerbatim(base: client.indexerBaseURL(), path: path, body: request)
     }
 
-    /// Executes a GraphQL query without proof verification (faster).
+    /// Executes a GraphQL query against the API without asking for a proof
+    /// (`include_proof: false`). Like `query`, the answer is not verified.
     public func queryUnverified(subgroveId: String, request: GraphQLRequest) async throws -> GraphQLResponse {
         guard let client = client else { throw NetworkError("Client deallocated") }
 
@@ -43,7 +37,7 @@ public class IndexingOperations {
         requestNoProof.includeProof = false
 
         let path = "/graphql/\(pathSegment(subgroveId))"
-        return try await client.post(path: path, body: requestNoProof)
+        return try await client.postVerbatim(path: path, body: requestNoProof)
     }
 
     /// Convenience method for executing GraphQL queries.
@@ -129,23 +123,6 @@ public class IndexingOperations {
     public func getIndexerStatus(indexerId: String, subgroveId: String) async throws -> IndexerInfo {
         throw ValidationError("The API serves no per-subgrove indexer status; getIndexer(indexerId:) lists the subgroves an indexer serves")
     }
-
-    // MARK: - Proof Verification
-
-    private func verifyProof(_ proofData: Data, client: WillowClient) async throws {
-        guard let lc = client.getLightClient() else {
-            throw LightClientConfigError("Light client not initialized")
-        }
-
-        // Get the trusted root hash
-        let expectedRootHash = try await lc.getVerifiedRootHash()
-
-        // Verify the GroveDB proof
-        let result = try GroveDBVerifier.verifyProofAgainstRoot(proofBytes: proofData, expectedRootHash: expectedRootHash)
-        if result.rootHash != expectedRootHash {
-            throw ProofError("Root hash mismatch: expected \(expectedRootHash), got \(result.rootHash)")
-        }
-    }
 }
 
 // MARK: - GraphQL Query Builder
@@ -187,7 +164,8 @@ public class GraphQLQueryBuilder {
         return self
     }
 
-    /// Enables proof inclusion.
+    /// Asks the node to attach its proof object, which the SDK returns
+    /// unverified (see `IndexingOperations.query`).
     @discardableResult
     public func includeProof() -> GraphQLQueryBuilder {
         request.includeProof = true

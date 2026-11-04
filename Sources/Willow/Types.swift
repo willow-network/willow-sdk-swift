@@ -541,7 +541,15 @@ public struct QuerySearch: Codable {
     }
 }
 
-/// A query request.
+/// A query request for `POST /query/{subgroveId}`.
+///
+/// The node runs at most one filter, an equality (`eq`) on a field (a dotted
+/// path into the document), whose value isn't a JSON object; a sort on one
+/// field; and an offset and limit (default 100). It has no full-text search.
+/// It is sent in the node's form: `filters` as `{"<field>": <value>}`, `sort`
+/// as `{"field": "<field>", "order": "asc" | "desc"}`. `data.query` and
+/// `data.queryUnverified` refuse anything else with a validation error before
+/// sending, and encoding one throws.
 public struct QueryRequest: Codable {
     public var filters: [QueryFilter]
     public var search: QuerySearch?
@@ -559,6 +567,11 @@ public struct QueryRequest: Codable {
         case includeProof = "include_proof"
     }
 
+    private struct NodeSort: Codable {
+        let field: String
+        let order: String
+    }
+
     public init(filters: [QueryFilter] = [], search: QuerySearch? = nil, sort: QuerySort? = nil, limit: Int? = nil, offset: Int? = nil, includeProof: Bool = false) {
         self.filters = filters
         self.search = search
@@ -567,12 +580,72 @@ public struct QueryRequest: Codable {
         self.offset = offset
         self.includeProof = includeProof
     }
+
+    /// Reads a request in the node's form.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let filterObject = try container.decodeIfPresent([String: AnyCodable].self, forKey: .filters) ?? [:]
+        filters = filterObject.keys.sorted().map { QueryFilter(field: $0, operator: "eq", value: filterObject[$0]!.value) }
+        search = nil
+        sort = try container.decodeIfPresent(NodeSort.self, forKey: .sort).map { QuerySort(field: $0.field, ascending: $0.order != "desc") }
+        limit = try container.decodeIfPresent(Int.self, forKey: .limit)
+        offset = try container.decodeIfPresent(Int.self, forKey: .offset)
+        includeProof = try container.decodeIfPresent(Bool.self, forKey: .includeProof) ?? false
+    }
+
+    /// Writes the request in the node's form; throws for one the node can't
+    /// run (see `validateForNode()`).
+    public func encode(to encoder: Encoder) throws {
+        do {
+            try validateForNode()
+        } catch {
+            throw EncodingError.invalidValue(self, EncodingError.Context(codingPath: encoder.codingPath, debugDescription: "\(error.localizedDescription)"))
+        }
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        if let filter = filters.first {
+            try container.encode([filter.field: filter.value], forKey: .filters)
+        }
+        try container.encodeIfPresent(sort.map { NodeSort(field: $0.field, order: $0.ascending ? "asc" : "desc") }, forKey: .sort)
+        try container.encodeIfPresent(limit, forKey: .limit)
+        try container.encodeIfPresent(offset, forKey: .offset)
+        try container.encode(includeProof, forKey: .includeProof)
+    }
+
+    /// Throws a validation error for a request the node's query route can't
+    /// run as asked: more than one filter, a filter other than `eq` or whose
+    /// value is a JSON object (the node would drop it), a search, or a
+    /// negative or out-of-range offset or limit.
+    public func validateForNode() throws {
+        if filters.count > 1 {
+            throw ValidationError("The node's query route runs one filter; this query has \(filters.count)")
+        }
+        if let filter = filters.first {
+            guard filter.operator == "eq" else {
+                throw ValidationError("The node's query route runs only an equality (eq) filter, not \(filter.operator)")
+            }
+            guard !filter.field.isEmpty else {
+                throw ValidationError("A query filter needs a field")
+            }
+            if filter.value.value is [String: Any] {
+                throw ValidationError("The node's query route drops a filter whose value is a JSON object")
+            }
+        }
+        if search != nil {
+            throw ValidationError("The node's query route has no full-text search")
+        }
+        for (name, value) in [("limit", limit), ("offset", offset)] {
+            if let value = value, UInt32(exactly: value) == nil {
+                throw ValidationError("A query's \(name) must be 0 to \(UInt32.max), not \(value)")
+            }
+        }
+    }
 }
 
 /// A single result from a query.
 public struct QueryResult: Codable {
-    /// The document's key. `POST /query` returns documents without their keys,
-    /// so this is empty for its results.
+    /// The document's key. `POST /query` serves documents without their keys,
+    /// so this is empty in `queryUnverified`'s results; `query` takes it from
+    /// the proof.
     public let key: String
     public let data: [String: AnyCodable]
 }
@@ -585,6 +658,9 @@ public struct QueryResponse {
     public let hasMore: Bool
     /// The GroveDB proof, when one was asked for (served as hex).
     public let proof: Data?
+    /// The block the proof's state is from: the state after block `height`,
+    /// whose app hash is in the header at `height + 1`. Served with a proof.
+    public let height: Int64?
 }
 
 extension QueryResponse: Codable {
@@ -593,6 +669,7 @@ extension QueryResponse: Codable {
         case total
         case offset
         case proof
+        case height
     }
 
     public init(from decoder: Decoder) throws {
@@ -617,6 +694,7 @@ extension QueryResponse: Codable {
         } else {
             proof = nil
         }
+        height = try container.decodeIfPresent(Int64.self, forKey: .height)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -624,6 +702,7 @@ extension QueryResponse: Codable {
         try container.encode(results.map { AnyCodable($0.data.mapValues { $0.value }) }, forKey: .documents)
         try container.encode(totalCount, forKey: .total)
         try container.encodeIfPresent(proof?.hexString, forKey: .proof)
+        try container.encodeIfPresent(height, forKey: .height)
     }
 }
 
@@ -795,11 +874,50 @@ public struct GraphQLLocation: Codable {
     public let column: Int
 }
 
-/// A GraphQL query response.
+/// A GraphQL query response, as `POST /graphql/{subgroveId}` serves it:
+/// `{ data, errors, proof }`.
 public struct GraphQLResponse: Codable {
+    /// The `data` value, as JSON bytes.
     public let data: Data?
     public let errors: [GraphQLError]?
+    /// The proof object the node attached, as JSON bytes. The SDK does not
+    /// verify it: it lists value hashes and a state root, which don't bind
+    /// `data`.
     public let proof: Data?
+
+    enum CodingKeys: String, CodingKey {
+        case data
+        case errors
+        case proof
+    }
+
+    public init(data: Data?, errors: [GraphQLError]?, proof: Data?) {
+        self.data = data
+        self.errors = errors
+        self.proof = proof
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        data = try Self.json(container, .data)
+        errors = try container.decodeIfPresent([GraphQLError].self, forKey: .errors)
+        proof = try Self.json(container, .proof)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encodeIfPresent(try data.map { try JSONDecoder().decode(AnyCodable.self, from: $0) }, forKey: .data)
+        try container.encodeIfPresent(errors, forKey: .errors)
+        try container.encodeIfPresent(try proof.map { try JSONDecoder().decode(AnyCodable.self, from: $0) }, forKey: .proof)
+    }
+
+    /// The JSON value at `key` as bytes; nil when absent or null.
+    private static func json(_ container: KeyedDecodingContainer<CodingKeys>, _ key: CodingKeys) throws -> Data? {
+        guard let value = try container.decodeIfPresent(AnyCodable.self, forKey: key), !(value.value is NSNull) else {
+            return nil
+        }
+        return try JSONSerialization.data(withJSONObject: value.value, options: [.fragmentsAllowed, .sortedKeys])
+    }
 }
 
 // MARK: - SQL Query Types
