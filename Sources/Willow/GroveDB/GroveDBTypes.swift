@@ -63,7 +63,7 @@ public struct CryptoHash: Equatable, Hashable {
 
 // MARK: - Hash Functions
 
-// Merk's hash rules (grovedb-merk, `tree/hash.rs`). Every hash is BLAKE3 with
+// Merk's hash rules, as grovedb-merk hashes its trees. Every hash is BLAKE3 with
 // a 32-byte output; a length prefix is an unsigned LEB128 varint.
 
 /// BLAKE3 of `data`.

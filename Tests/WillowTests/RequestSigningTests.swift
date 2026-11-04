@@ -2,12 +2,11 @@ import XCTest
 import CryptoKit
 @testable import Willow
 
-/// Request signing against the API server's rules (crates/api-server/src/middleware.rs
-/// and crates/identity/src/did.rs), with known answers from an independent
-/// implementation of the server's verification.
+/// Request signing against the API server's request-signing rules, with known
+/// answers from an independent implementation of the server's verification.
 final class RequestSigningTests: XCTestCase {
 
-    // The api-server's test vector (read_auth_tests.rs, the_signed_message_is_eight_lines).
+    // The API server's own test vector for the eight-line signed message.
     static let vectorMessage = "willow-request-v2\ndid:willow:a\ndid:willow:a#key-1\nPOST\n/query/sg?x=1\n1700000000\n"
         + "abcdefghijklmnop\n44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
 

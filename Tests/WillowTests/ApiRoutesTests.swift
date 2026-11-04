@@ -369,7 +369,7 @@ final class ApiRoutesTests: XCTestCase {
 
     func testHealthIsTheBareHealthReport() async throws {
         let stub = StubServer { _ in
-            (200, #"{"status":"healthy","timestamp":"2026-01-01T00:00:00Z","version":"1.0.0","checks":{"storage":{"status":"healthy","message":"ok"},"system":{"uptime_seconds":5}}}"#)
+            (200, #"{"status":"healthy","timestamp":"1970-01-01T00:00:00Z","version":"1.0.0","checks":{"storage":{"status":"healthy","message":"ok"},"system":{"uptime_seconds":5}}}"#)
         }
         let client = try stub.client(baseURL: "http://api.test")
         let health = try await client.getHealth()

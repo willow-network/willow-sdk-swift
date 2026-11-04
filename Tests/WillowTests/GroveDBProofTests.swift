@@ -60,7 +60,7 @@ final class GroveDBProofTests: XCTestCase {
     // MARK: - Merk's hash rules
 
     /// Expected values computed with the BLAKE3 reference implementation's
-    /// Python bindings, following grovedb-merk's `tree/hash.rs`.
+    /// Python bindings, following grovedb-merk's tree hashing.
     func testMerkHashRules() throws {
         let a = computeHash([UInt8]([1]))
         let b = computeHash([UInt8]([2]))
