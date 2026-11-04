@@ -320,7 +320,21 @@ final class RoutesTests: XCTestCase {
             contentHash: hash.uppercased(), chunkCount: 1, chunkSize: 5, chunkMerkleRoot: hash,
             ownerDid: "did:willow:a", privateKey: Data(), publicKeyId: "did:willow:a#key-1",
             signFunction: { message, _ in
-                XCTAssertEqual(String(decoding: message, as: UTF8.self), "store_file:sg:f:\(hash):5")
+                XCTAssertEqual(String(decoding: message, as: UTF8.self), [
+                    "StoreFileManifest",
+                    "Subgrove: sg",
+                    "Key: f",
+                    "Owner: did:willow:a",
+                    "Filename: a.txt",
+                    "ContentType: text/plain",
+                    "TotalSize: 5",
+                    "ContentHash: \(hash)",
+                    "ChunkCount: 1",
+                    "ChunkSize: 5",
+                    "ChunkMerkleRoot: \(hash)",
+                    "Encryption: none",
+                    "Nonce: 1",
+                ].joined(separator: "\n"))
                 return Data([9])
             }
         )

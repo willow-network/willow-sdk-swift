@@ -285,7 +285,9 @@ public class WillowClient {
     /// The API answers HTTP 200 with a nonzero `code` when CheckTx refuses the
     /// transaction; that is thrown as a `TransactionError`. It is sent once: a
     /// 5xx can follow a transaction that reached the mempool, and resending it
-    /// would be refused as a replay.
+    /// would be refused as a replay. A data or file write refused in its block
+    /// after its signature and nonce verify still spends its nonce, so a retry
+    /// is signed again under the next free nonce.
     @discardableResult
     internal func submitTransaction(_ body: Data) async throws -> BroadcastResult {
         let (data, status) = try await sendRaw(method: "POST", base: config.baseURL, path: "/tx/submit", body: body, retry: false)

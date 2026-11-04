@@ -250,7 +250,11 @@ public struct TransferTx: Codable {
     }
 }
 
-/// Data storage transaction.
+/// Data storage transaction: the chain's `StoreData`.
+///
+/// `data` is JSON text. The transaction carries its UTF-8 bytes (`dataBytes`),
+/// encoded as the JSON array of numbers the chain's `Vec<u8>` reads, and the
+/// signed message (`storeDataMessage`) binds their SHA-256.
 public struct DataStoreTx: Codable {
     public var subgroveId: String
     public var key: String
@@ -286,6 +290,40 @@ public struct DataStoreTx: Codable {
         self.signature = signature
         self.publicKeyId = publicKeyId
         self.nonce = nonce
+    }
+
+    /// The bytes the transaction's `data` field carries: `data` as UTF-8.
+    public var dataBytes: Data {
+        return Data(data.utf8)
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        subgroveId = try container.decode(String.self, forKey: .subgroveId)
+        key = try container.decode(String.self, forKey: .key)
+        if let bytes = try? container.decode([UInt8].self, forKey: .data) {
+            guard let text = String(bytes: bytes, encoding: .utf8) else {
+                throw DecodingError.dataCorruptedError(forKey: .data, in: container, debugDescription: "data is not UTF-8")
+            }
+            data = text
+        } else {
+            data = try container.decode(String.self, forKey: .data)
+        }
+        ownerDid = try container.decode(String.self, forKey: .ownerDid)
+        signature = try container.decode([UInt8].self, forKey: .signature)
+        publicKeyId = try container.decode(String.self, forKey: .publicKeyId)
+        nonce = try container.decode(Int.self, forKey: .nonce)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(subgroveId, forKey: .subgroveId)
+        try container.encode(key, forKey: .key)
+        try container.encode([UInt8](dataBytes), forKey: .data)
+        try container.encode(ownerDid, forKey: .ownerDid)
+        try container.encode(signature, forKey: .signature)
+        try container.encode(publicKeyId, forKey: .publicKeyId)
+        try container.encode(nonce, forKey: .nonce)
     }
 }
 
@@ -445,7 +483,17 @@ public class ConsensusClient {
         return try await broadcastTransaction(txType: "Transfer", transaction: tx)
     }
 
-    /// Store data on the blockchain.
+    /// Store data on the blockchain as a `StoreData` transaction.
+    ///
+    /// `data` (a JSON object or array) is serialized once, with sorted keys;
+    /// the transaction carries that JSON text's UTF-8 bytes. `signFunction` signs
+    /// `storeDataMessage` over the subgrove ID, key, owner DID, the SHA-256 of
+    /// those bytes, and the transaction's nonce. A subgrove ID, key, or owner
+    /// DID holding a line break is refused with a validation error before
+    /// anything is signed.
+    ///
+    /// A write refused in its block after its signature and nonce verify still
+    /// spends its nonce. Calling again signs anew under the next free nonce.
     public func storeData(
         subgroveId: String,
         key: String,
@@ -455,10 +503,17 @@ public class ConsensusClient {
         publicKeyId: String,
         signFunction: (Data, Data) throws -> Data
     ) async throws -> BroadcastResult {
-        let nonce = try await getNextNonce(did: ownerDid)
+        // JSONSerialization raises an Objective-C exception, which Swift
+        // cannot catch, for anything else.
+        guard JSONSerialization.isValidJSONObject(data) else {
+            throw ValidationError("data must be a JSON object or array")
+        }
+        let jsonData = try JSONSerialization.data(withJSONObject: data, options: .sortedKeys)
+        guard let dataString = String(data: jsonData, encoding: .utf8) else {
+            throw ValidationError("data did not serialize as UTF-8")
+        }
 
-        let jsonData = try JSONSerialization.data(withJSONObject: data)
-        let dataString = String(data: jsonData, encoding: .utf8) ?? "{}"
+        let nonce = try await getNextNonce(did: ownerDid)
 
         var tx = DataStoreTx(
             subgroveId: subgroveId,
@@ -469,11 +524,17 @@ public class ConsensusClient {
             nonce: nonce
         )
 
-        let signMessage = createSignMessageForDataStore(tx: tx)
+        let signMessage = try storeDataMessage(
+            subgroveId: tx.subgroveId,
+            key: tx.key,
+            ownerDid: tx.ownerDid,
+            data: tx.dataBytes,
+            nonce: unsignedField("nonce", tx.nonce, as: UInt64.self)
+        )
         let signatureData = try signFunction(Data(signMessage.utf8), privateKey)
         tx.signature = Array(signatureData)
 
-        return try await broadcastTransaction(txType: "DataStore", transaction: tx)
+        return try await broadcastTransaction(txType: "StoreData", transaction: tx)
     }
 
     /// Deregister (delete) a subgrove. Remaining funding is refunded to the owner.
@@ -881,28 +942,17 @@ public class ConsensusClient {
         """
     }
 
-    private func createSignMessageForDataStore(tx: DataStoreTx) -> String {
-        return """
-        DataStore
-        Subgrove ID: \(tx.subgroveId)
-        Key: \(tx.key)
-        Data: \(tx.data)
-        Owner: \(tx.ownerDid)
-        Nonce: \(tx.nonce)
-        """
-    }
-
-    private func createSignMessageForStoreFile(subgroveId: String, fileKey: String, contentHash: String, totalSize: Int) -> String {
-        return "store_file:\(subgroveId):\(fileKey):\(contentHash):\(totalSize)"
-    }
-
-    private func createSignMessageForDeleteFile(subgroveId: String, fileKey: String) -> String {
-        return "delete_file:\(subgroveId):\(fileKey)"
-    }
-
     // MARK: - File Manifest Transaction Methods
 
     /// Store a file manifest on the blockchain.
+    ///
+    /// `contentHash` and `chunkMerkleRoot` are 32 bytes of hex. `signFunction`
+    /// signs `storeFileManifestMessage` over every field of the manifest sent
+    /// and its nonce. A text field holding a line break is refused with a
+    /// validation error before anything is signed.
+    ///
+    /// A write refused in its block after its signature and nonce verify still
+    /// spends its nonce. Calling again signs anew under the next free nonce.
     public func storeFileManifest(
         subgroveId: String,
         fileKey: String,
@@ -920,14 +970,23 @@ public class ConsensusClient {
     ) async throws -> BroadcastResult {
         let contentHashBytes = try hashBytes(fromHex: contentHash, field: "contentHash")
         let chunkMerkleRootBytes = try hashBytes(fromHex: chunkMerkleRoot, field: "chunkMerkleRoot")
+        let totalSizeValue = try unsignedField("totalSize", totalSize, as: UInt64.self)
+        let chunkCountValue = try unsignedField("chunkCount", chunkCount, as: UInt32.self)
+        let chunkSizeValue = try unsignedField("chunkSize", chunkSize, as: UInt32.self)
         let nonce = try await getNextNonce(did: ownerDid)
 
-        // The server signs over the lowercase hex of the content hash bytes.
-        let signMessage = createSignMessageForStoreFile(
+        let signMessage = try storeFileManifestMessage(
             subgroveId: subgroveId,
             fileKey: fileKey,
-            contentHash: contentHashBytes.map { String(format: "%02x", $0) }.joined(),
-            totalSize: totalSize
+            ownerDid: ownerDid,
+            filename: filename,
+            contentType: contentType,
+            totalSize: totalSizeValue,
+            contentHash: contentHashBytes,
+            chunkCount: chunkCountValue,
+            chunkSize: chunkSizeValue,
+            chunkMerkleRoot: chunkMerkleRootBytes,
+            nonce: unsignedField("nonce", nonce, as: UInt64.self)
         )
         let signatureData = try signFunction(Data(signMessage.utf8), privateKey)
         let signatureBytes = Array(signatureData).map { Int($0) }
@@ -938,10 +997,10 @@ public class ConsensusClient {
             filename: filename,
             content_type: contentType,
             total_size: totalSize,
-            content_hash: contentHashBytes,
+            content_hash: contentHashBytes.map { Int($0) },
             chunk_count: chunkCount,
             chunk_size: chunkSize,
-            chunk_merkle_root: chunkMerkleRootBytes,
+            chunk_merkle_root: chunkMerkleRootBytes.map { Int($0) },
             owner_did: ownerDid,
             signature: signatureBytes,
             public_key_id: publicKeyId,
@@ -952,6 +1011,13 @@ public class ConsensusClient {
     }
 
     /// Delete a file manifest from the blockchain.
+    ///
+    /// `signFunction` signs `deleteFileManifestMessage` over the subgrove ID,
+    /// file key, owner DID, and the transaction's nonce. A text field holding a
+    /// line break is refused with a validation error before anything is signed.
+    ///
+    /// A write refused in its block after its signature and nonce verify still
+    /// spends its nonce. Calling again signs anew under the next free nonce.
     public func deleteFileManifest(
         subgroveId: String,
         fileKey: String,
@@ -962,9 +1028,11 @@ public class ConsensusClient {
     ) async throws -> BroadcastResult {
         let nonce = try await getNextNonce(did: ownerDid)
 
-        let signMessage = createSignMessageForDeleteFile(
+        let signMessage = try deleteFileManifestMessage(
             subgroveId: subgroveId,
-            fileKey: fileKey
+            fileKey: fileKey,
+            ownerDid: ownerDid,
+            nonce: unsignedField("nonce", nonce, as: UInt64.self)
         )
         let signatureData = try signFunction(Data(signMessage.utf8), privateKey)
         let signatureBytes = Array(signatureData).map { Int($0) }
@@ -1020,20 +1088,21 @@ internal func parseTxSubmitResponse(data: Data, statusCode: Int) throws -> Broad
     )
 }
 
-/// A 32-byte hash given as hex, as the byte array the server's `[u8; 32]`
-/// fields take in JSON.
-internal func hashBytes(fromHex hex: String, field: String) throws -> [Int] {
+/// A 32-byte hash given as hex, as bytes. The server's `[u8; 32]` fields take
+/// them in JSON as an array of numbers.
+internal func hashBytes(fromHex hex: String, field: String) throws -> Data {
     let clean = hex.hasPrefix("0x") ? String(hex.dropFirst(2)) : hex
     guard let bytes = Data(hexString: clean), bytes.count == 32 else {
         throw ValidationError("\(field) must be 32 bytes of hex")
     }
-    return bytes.map { Int($0) }
+    return bytes
 }
 
 // MARK: - File Manifest Consensus Transaction Types
 
-// Field for field the server's `StoreFileManifestTx`: `content_hash` and
-// `chunk_merkle_root` are `[u8; 32]`, which JSON carries as arrays of numbers.
+// Field for field the server's `StoreFileManifestTx` with no `encryption`:
+// `content_hash` and `chunk_merkle_root` are `[u8; 32]`, which JSON carries as
+// arrays of numbers.
 internal struct StoreFileManifestConsensusBody: Encodable {
     let subgrove_id: String
     let file_key: String

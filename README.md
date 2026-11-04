@@ -85,6 +85,50 @@ let headers = try signRequestWithNonce(method: "POST", pathAndQuery: "/query/my-
 
 `signRequest(method:path:identity:)` makes the older `{METHOD}:{PATH}:{TIMESTAMP}` form, over the path without its query string. It proves the DID but carries none of its read rights, and it can be replayed with any body until the timestamp expires.
 
+## Signed writes
+
+StoreData (`ConsensusClient.storeData`), StoreFileManifest (`storeFileManifest`, `files.upload`), and DeleteFileManifest (`deleteFileManifest`, `files.delete`) transactions are signed over a message that binds the transaction's nonce and every field it writes. It is the kind on the first line, then one `Label: value` line per field, the nonce last, joined by `\n` (the byte 0x0A) with no trailing newline, as UTF-8. Text fields go in verbatim, with no escaping or normalization. Hex is lowercase, and numbers are unsigned decimal.
+
+```
+StoreData
+Subgrove: <subgrove id>
+Key: <key>
+Owner: <owner DID>
+DataHash: <hex SHA-256 of the data bytes sent>
+Nonce: <nonce>
+```
+
+```
+StoreFileManifest
+Subgrove: <subgrove id>
+Key: <file key>
+Owner: <owner DID>
+Filename: <filename>
+ContentType: <content type>
+TotalSize: <total size>
+ContentHash: <hex content hash>
+ChunkCount: <chunk count>
+ChunkSize: <chunk size>
+ChunkMerkleRoot: <hex chunk Merkle root>
+Encryption: none
+Nonce: <nonce>
+```
+
+```
+DeleteFileManifest
+Subgrove: <subgrove id>
+Key: <file key>
+Owner: <owner DID>
+Nonce: <nonce>
+```
+
+- StoreData carries its value as the UTF-8 bytes of its JSON text, and `DataHash` is over those bytes.
+- `Encryption` is `none` for a manifest with no encryption, else `<key epoch>:<hex 24-byte nonce>`.
+- A subgrove ID, key, owner DID, filename, or content type holding a line break (the byte 0x0A, including in `\r\n`) is refused with a validation error before anything is signed.
+- `storeDataMessage`, `storeFileManifestMessage`, and `deleteFileManifestMessage` return the exact message, and the SDK's own transactions are built with them.
+- Ed25519 signs the message's UTF-8 bytes; secp256k1 signs their Keccak-256.
+- The message is built after the nonce is chosen. A write that lands in a block and is refused there after its signature and nonce verify still spends its nonce, so a retry is signed again under the next free nonce. The `ConsensusClient` methods fetch the next nonce on each call; for `files`, pass new `FileSigningOptions` with the next free nonce.
+
 ## What's in the box
 
 - `Auth` — DID generation, signing
