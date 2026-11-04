@@ -878,7 +878,9 @@ public class ConsensusClient {
     /// nonce back, unless the refusal says the nonce is held by a pending
     /// transaction, already used, or spent. A submission whose fate is unknown
     /// (a network error or a 5xx) may still land, so its nonce stays held for
-    /// 120 s.
+    /// 120 s (the node holds a pending transaction's nonce for 3 blocks or
+    /// 120 s, whichever ends first). A body the API refuses in plain text (a
+    /// 4xx) never reached CheckTx, so its nonce is given back.
     internal func submitUnderNextNonce(did: String, _ build: (Int) throws -> Data) async throws -> BroadcastResult {
         let submitURL = try txSubmitURL()
         let account = NonceAccount(did: did, api: config.apiUrl ?? "")
@@ -915,7 +917,8 @@ public class ConsensusClient {
 
     /// Submits a `/tx/submit` body already encoded as JSON through the API
     /// server, which bincode-encodes it (the chain's on-the-wire format) and
-    /// forwards it to CometBFT. Returns the answer and its HTTP status.
+    /// forwards it to CometBFT. Returns the answer and its HTTP status; a
+    /// non-2xx answer in plain text is thrown as an `HTTPError`.
     private func broadcastBody(_ body: Data, to url: URL) async throws -> (BroadcastResult, Int) {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
@@ -1226,8 +1229,17 @@ internal func signedRegisterSubgroveBody(_ tx: RegisterSubgroveTx, sign: (Data) 
 /// Reads a `POST /tx/submit` answer: `{ success, data: { tx_hash, code, log }, error }`.
 /// CheckTx refuses a transaction with HTTP 200 and a nonzero `code`, which is
 /// reported as `success: false`.
+///
+/// A non-2xx answer whose body isn't a JSON object (the API refuses a body it
+/// can't read, with a 400, 415, or 422, in plain text) is thrown as an
+/// `HTTPError` carrying the status and the body's text, so the status decides
+/// what becomes of the nonce.
 internal func parseTxSubmitResponse(data: Data, statusCode: Int) throws -> BroadcastResult {
-    guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+    guard let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
+        guard (200...299).contains(statusCode) else {
+            let text = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+            throw HTTPError(statusCode: statusCode, message: text.isEmpty ? "HTTP \(statusCode)" : text)
+        }
         throw ConsensusClientError("Invalid JSON in /tx/submit response")
     }
 

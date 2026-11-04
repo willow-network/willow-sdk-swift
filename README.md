@@ -185,14 +185,16 @@ RevokeSubgroveKey is signed over `RevokeSubgroveKey:<subgrove id>:<revokee DID>:
 - `storeDataMessage`, `storeFileManifestMessage`, `deleteFileManifestMessage`, `registerSubgroveMessage`, `grantSubgroveKeyMessage`, `rotateSubgroveKeyMessage`, `revokeSubgroveKeyMessage`, and `unregisterStorageNodeMessage` return the exact message, and the SDK's own transactions are built with them.
 - Ed25519 signs the message's UTF-8 bytes; secp256k1 signs their Keccak-256.
 - The message is built after the nonce is chosen. A transaction refused in its block after its signature and nonce verify still spends its nonce; one that never landed spends nothing, and a retry of it should sign under the same nonce, so that at most one of the two can run.
+- A write refused as "already used" may be one whose earlier attempt landed. Read what it wrote before signing it again under a fresh nonce, or it can run twice.
 
 ### Nonces
 
 The node accepts a nonce in the 24 above the account's base that it hasn't used, and the base advances only over used nonces with no gap, so a nonce handed out and never used blocks the window until something uses it. The client's writes and the `ConsensusClient` methods take their nonces from one allocator per process, kept per DID and API URL:
 
 - Each write takes the lowest nonce above the base that isn't used and isn't held by another write in flight, so writes sent together take distinct nonces. The base comes from `GET /account/{did}/nonce`. `ConsensusClient` also reads which nonces above the base are used, from the ABCI query `/store/account_nonce_state/{did}` on its CometBFT RPC.
-- A nonce is held from when it is handed out until the chain shows it used, or for 120 s (the node's admission hold) if it never lands.
-- A write refused at CheckTx gives its nonce back, unless the refusal says the nonce is held by a pending transaction, already used, or spent; then it is treated as taken. A submission that failed in transit (a network error or a 5xx) may still land, so its nonce stays held: check whether the write landed before sending it again.
+- A nonce is held from when it is handed out until the chain shows it used, or for 120 s if it never lands. The node holds a pending transaction's nonce for 3 blocks or 120 s, whichever ends first, so 120 s is the longest it can be held.
+- A write whose nonce another write takes while it is being built (signing took longer than 120 s) is signed again under a new nonce before it is sent. A write only ever changes the hold on its own nonce.
+- A write refused at CheckTx, or by the API before it (a 4xx, in JSON or plain text), gives its nonce back, unless the refusal says the nonce is held by a pending transaction, already used, or spent; then it is treated as taken. A submission that failed in transit (a network error or a 5xx) may still land, so its nonce stays held: check whether the write landed before sending it again.
 - With every nonce in the window held or used, a write fails with a "nonce window is full" error instead of signing one the node refuses. More than 24 writes from one identity have to wait for earlier ones to land.
 - For `files`, pass new `FileSigningOptions` with the nonce to sign under.
 

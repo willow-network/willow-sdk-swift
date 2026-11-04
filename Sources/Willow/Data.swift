@@ -195,8 +195,10 @@ public class DataOperations {
     /// write refused in its block after its signature and nonce verify spends
     /// its nonce, so calling again signs under another. One whose submission
     /// failed in transit (a network error or a 5xx) may still land, so its
-    /// nonce stays held for 120 s: check whether it landed before storing it
-    /// again.
+    /// nonce stays held for 120 s: read the key to see whether it landed
+    /// before storing it again. Read it too after a refusal that says the
+    /// nonce is already used: an earlier attempt may have landed under that
+    /// nonce, and storing again under a fresh one would write twice.
     @discardableResult
     public func store(subgroveId: String, key: String, data: [String: Any]) async throws -> BroadcastResult {
         guard let client = client else { throw NetworkError("Client deallocated") }

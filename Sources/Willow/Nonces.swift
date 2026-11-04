@@ -132,6 +132,14 @@ internal struct NonceAccount: Hashable {
     }
 }
 
+/// A nonce handed out by `NonceAllocator.reserve`: the account, the nonce,
+/// and a token that tells this lease from a later one on the same nonce.
+internal struct NonceReservation: Equatable {
+    let account: NonceAccount
+    let nonce: UInt64
+    fileprivate let token: UInt64
+}
+
 /// Hands out transaction nonces so that no two writes in flight from one
 /// account share one.
 ///
@@ -141,9 +149,15 @@ internal struct NonceAccount: Hashable {
 /// write takes the lowest nonce in the window that the chain doesn't show
 /// used and that no write in flight holds. A nonce is held from when it is
 /// handed out until the chain shows it used, a refusal gives it back, or 120
-/// s (the node's admission hold) pass; a refusal that says it is used or
-/// spent marks it used. With all 24 held, a write fails rather than sign a
-/// nonce above the window.
+/// s pass (the node holds a pending transaction's nonce for 3 blocks or 120
+/// s, whichever ends first, so 120 s is the longest it can be held); a
+/// refusal that says it is used or spent marks it used. With all 24 held, a
+/// write fails rather than sign a nonce above the window.
+///
+/// Each lease carries the token of the reservation that took it. A
+/// reservation that outlives its lease may find the nonce handed to a later
+/// write: `confirm` tells it so before it is sent, and `settle` changes only
+/// a lease whose token is its own.
 ///
 /// Every client in the process shares `shared`, so writes to one API from
 /// `WillowClient` and `ConsensusClient` take distinct nonces.
@@ -152,22 +166,38 @@ internal final class NonceAllocator {
     static let window: UInt64 = 24
     /// How long a handed-out nonce that hasn't landed stays held, in seconds.
     static let lease: TimeInterval = 120
+    /// How many times a write takes a new nonce after losing its lease while
+    /// it was built before it gives up.
+    static let attempts = 3
 
     /// The process's allocator.
     static let shared = NonceAllocator()
+
+    private struct Lease {
+        /// When it began or was last renewed.
+        var since: TimeInterval
+        /// The reservation holding it.
+        let token: UInt64
+    }
 
     private struct Account {
         /// The highest base the chain has reported.
         var base: UInt64 = 0
         /// Nonces above the base seen used: in the chain's bitmap, or named by a refusal.
         var used: Set<UInt64> = []
-        /// Each nonce handed out that hasn't been seen used, and when its lease began.
-        var leases: [UInt64: TimeInterval] = [:]
+        /// Each nonce handed out that hasn't been seen used, and its lease.
+        var leases: [UInt64: Lease] = [:]
+
+        /// Whether `nonce` is above the base, unused, and leased to no one.
+        func isFree(_ nonce: UInt64) -> Bool {
+            return nonce > base && !used.contains(nonce) && leases[nonce] == nil
+        }
     }
 
     private let lock = NSLock()
     private let now: () -> TimeInterval
     private var accounts: [NonceAccount: Account] = [:]
+    private var lastToken: UInt64 = 0
 
     /// `now` is a monotonic clock in seconds.
     init(now: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }) {
@@ -178,7 +208,7 @@ internal final class NonceAllocator {
     /// now held. A base lower than one reported before (a slower answer) hands
     /// out none of the nonces that one showed used. Throws when every nonce in
     /// the window is held or used.
-    func reserve(_ account: NonceAccount, chain: ChainNonces) throws -> UInt64 {
+    func reserve(_ account: NonceAccount, chain: ChainNonces) throws -> NonceReservation {
         lock.lock()
         defer { lock.unlock() }
         let at = now()
@@ -188,75 +218,112 @@ internal final class NonceAllocator {
         let base = state.base
         let used = state.used.filter { $0 > base }
         state.used = used
-        state.leases = state.leases.filter { nonce, since in
-            nonce > base && !used.contains(nonce) && at - since < Self.lease
+        state.leases = state.leases.filter { nonce, lease in
+            nonce > base && !used.contains(nonce) && at - lease.since < Self.lease
         }
         defer { accounts[account] = state }
-        let leases = state.leases
-        guard let free = (base + 1...base + Self.window).first(where: { !used.contains($0) && leases[$0] == nil }) else {
+        guard let free = (base + 1...base + Self.window).first(where: { state.isFree($0) }) else {
             throw WillowError(
                 type: .transaction,
                 message: "The nonce window is full: every nonce the node accepts for \(account.did) "
                     + "(\(base + 1) to \(base + Self.window)) is in flight or used. Wait for earlier writes to land."
             )
         }
-        state.leases[free] = at
-        return free
+        lastToken += 1
+        state.leases[free] = Lease(since: at, token: lastToken)
+        return NonceReservation(account: account, nonce: free, token: lastToken)
     }
 
-    /// Records how the submission signed under `nonce` ended.
-    func settle(_ account: NonceAccount, nonce: UInt64, _ outcome: NonceOutcome) {
+    /// Whether `reservation` still holds its nonce, just before the
+    /// transaction signed under it is sent; if so its lease is renewed from
+    /// now. A lease that lapsed with no other write taking the nonce is taken
+    /// again. False when another write holds the nonce or the chain shows it
+    /// used: the transaction must be signed again under another.
+    func confirm(_ reservation: NonceReservation) -> Bool {
         lock.lock()
         defer { lock.unlock() }
-        guard var state = accounts[account] else { return }
+        guard var state = accounts[reservation.account] else { return false }
+        let nonce = reservation.nonce
+        let holder = state.leases[nonce]?.token ?? reservation.token
+        guard holder == reservation.token, nonce > state.base, !state.used.contains(nonce) else {
+            return false
+        }
+        state.leases[nonce] = Lease(since: now(), token: reservation.token)
+        accounts[reservation.account] = state
+        return true
+    }
+
+    /// Records how the submission signed under `reservation` ended. A lease
+    /// that another reservation now holds is left as it is.
+    func settle(_ reservation: NonceReservation, _ outcome: NonceOutcome) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard var state = accounts[reservation.account] else { return }
+        let nonce = reservation.nonce
+        let owned = state.leases[nonce]?.token == reservation.token
         switch outcome {
-        case .accepted, .unknown:
-            // Its lease runs from when it reached the node, as the node's hold does.
-            if state.leases[nonce] != nil {
-                state.leases[nonce] = now()
-            }
-        case .held:
-            if nonce > state.base {
-                state.leases[nonce] = now()
+        case .accepted, .unknown, .held:
+            // It may be pending: held for a lease from when it reached the
+            // node, as the node's hold runs.
+            if owned || state.isFree(nonce) {
+                state.leases[nonce] = Lease(since: now(), token: reservation.token)
             }
         case .givenBack:
-            state.leases[nonce] = nil
+            if owned {
+                state.leases[nonce] = nil
+            }
         case .used:
-            state.leases[nonce] = nil
+            if owned {
+                state.leases[nonce] = nil
+            }
             if nonce > state.base {
                 state.used.insert(nonce)
             }
         }
-        accounts[account] = state
+        accounts[reservation.account] = state
     }
 
     /// Hands out a nonce for `account` against `chain`, builds the
     /// transaction under it with `build`, and submits it with `submit`, which
     /// returns the outcome for the nonce with the result. A transaction that
-    /// can't be built gives its nonce back.
+    /// can't be built gives its nonce back. One whose lease another write took
+    /// while it was built (building took over 120 s) is built again under a
+    /// new nonce, up to `attempts` times.
     func submit<T>(
         _ account: NonceAccount,
         chain: ChainNonces,
         build: (Int) throws -> Data,
         submit: (Data) async throws -> (T, NonceOutcome)
     ) async throws -> T {
-        let nonce = try reserve(account, chain: chain)
-        let body: Data
-        do {
-            body = try build(Int(nonce))
-        } catch {
-            settle(account, nonce: nonce, .givenBack)
-            throw error
-        }
+        var attempt = 0
+        var reservation: NonceReservation
+        var body: Data
+        repeat {
+            if attempt == Self.attempts {
+                throw WillowError(
+                    type: .transaction,
+                    message: "Building the transaction took longer than the \(Int(Self.lease)) s a nonce is held, "
+                        + "\(Self.attempts) times: each time another write took its nonce"
+                )
+            }
+            attempt += 1
+            reservation = try reserve(account, chain: chain)
+            do {
+                body = try build(Int(reservation.nonce))
+            } catch {
+                settle(reservation, .givenBack)
+                throw error
+            }
+        } while !confirm(reservation)
         let result: T
         let outcome: NonceOutcome
         do {
             (result, outcome) = try await submit(body)
         } catch {
-            settle(account, nonce: nonce, NonceOutcome.submission(error: error))
+            settle(reservation, NonceOutcome.submission(error: error))
             throw error
         }
-        settle(account, nonce: nonce, outcome)
+        settle(reservation, outcome)
         return result
     }
 }

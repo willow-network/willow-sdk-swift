@@ -56,6 +56,7 @@ final class NonceTests: XCTestCase {
         private var base: UInt64
         private var usedAbove: Set<UInt64>
         private var refusals: [UInt64: String] = [:]
+        private var plainAnswers: [UInt64: (Int, String)] = [:]
         private var submitted: [UInt64] = []
         var pending = false
         /// Whether the RPC answers `/store/account_nonce_state` (else only the API's base is read).
@@ -77,6 +78,15 @@ final class NonceTests: XCTestCase {
         func refuseOnce(_ nonce: UInt64, _ log: String) {
             lock.lock()
             refusals[nonce] = log
+            lock.unlock()
+        }
+
+        /// Answers the next transaction under `nonce` with HTTP `status` and
+        /// the plain text `text`, as the API answers a body it can't read
+        /// before CheckTx.
+        func refuseBodyOnce(_ nonce: UInt64, status: Int, _ text: String) {
+            lock.lock()
+            plainAnswers[nonce] = (status, text)
             lock.unlock()
         }
 
@@ -111,6 +121,9 @@ final class NonceTests: XCTestCase {
             }
             let nonce = NonceTests.nonce(of: request)
             submitted.append(nonce)
+            if let answer = plainAnswers.removeValue(forKey: nonce) {
+                return answer
+            }
             let refusal: String?
             if let log = refusals.removeValue(forKey: nonce) {
                 refusal = log
@@ -157,63 +170,72 @@ final class NonceTests: XCTestCase {
 
     // MARK: - The allocator
 
+    /// The nonce `nonces` hands out for `account` against `chain`.
+    static func take(_ nonces: NonceAllocator, _ chain: ChainNonces, _ account: NonceAccount = account) throws -> UInt64 {
+        return try nonces.reserve(account, chain: chain).nonce
+    }
+
     func testWritesInFlightTakeTheLowestFreeNonces() throws {
         let nonces = NonceAllocator()
-        XCTAssertEqual(try (0..<3).map { _ in try nonces.reserve(Self.account, chain: Self.chain(5)) }, [6, 7, 8])
+        XCTAssertEqual(try (0..<3).map { _ in try Self.take(nonces, Self.chain(5)) }, [6, 7, 8])
 
         // A nonce the chain shows used is skipped; once the base passes a
         // held nonce, its hold ends.
         let other = NonceAllocator()
-        XCTAssertEqual(try other.reserve(Self.account, chain: Self.chain(5, used: [7])), 6)
-        XCTAssertEqual(try other.reserve(Self.account, chain: Self.chain(5, used: [7])), 8)
-        XCTAssertEqual(try other.reserve(Self.account, chain: Self.chain(7)), 9)
-        XCTAssertEqual(try other.reserve(Self.account, chain: Self.chain(9)), 10)
+        XCTAssertEqual(try Self.take(other, Self.chain(5, used: [7])), 6)
+        XCTAssertEqual(try Self.take(other, Self.chain(5, used: [7])), 8)
+        XCTAssertEqual(try Self.take(other, Self.chain(7)), 9)
+        XCTAssertEqual(try Self.take(other, Self.chain(9)), 10)
     }
 
     func testARefusedNonceIsGivenBack() throws {
         let nonces = NonceAllocator()
-        XCTAssertEqual(try nonces.reserve(Self.account, chain: Self.chain(5)), 6)
-        XCTAssertEqual(try nonces.reserve(Self.account, chain: Self.chain(5)), 7)
-        nonces.settle(Self.account, nonce: 6, .givenBack)
-        XCTAssertEqual(try nonces.reserve(Self.account, chain: Self.chain(5)), 6)
-        XCTAssertEqual(try nonces.reserve(Self.account, chain: Self.chain(5)), 8)
+        let six = try nonces.reserve(Self.account, chain: Self.chain(5))
+        XCTAssertEqual(six.nonce, 6)
+        XCTAssertEqual(try Self.take(nonces, Self.chain(5)), 7)
+        nonces.settle(six, .givenBack)
+        XCTAssertEqual(try Self.take(nonces, Self.chain(5)), 6)
+        XCTAssertEqual(try Self.take(nonces, Self.chain(5)), 8)
     }
 
     func testANonceAnotherTransactionHoldsOrUsedIsNotGivenBack() throws {
         let clock = Clock()
         let nonces = NonceAllocator(now: { clock.now })
-        XCTAssertEqual(try nonces.reserve(Self.account, chain: Self.chain(5)), 6)
-        nonces.settle(Self.account, nonce: 6, .held)
-        XCTAssertEqual(try nonces.reserve(Self.account, chain: Self.chain(5)), 7)
-        nonces.settle(Self.account, nonce: 7, .used)
-        XCTAssertEqual(try nonces.reserve(Self.account, chain: Self.chain(5)), 8)
-        nonces.settle(Self.account, nonce: 8, .givenBack)
+        let six = try nonces.reserve(Self.account, chain: Self.chain(5))
+        nonces.settle(six, .held)
+        let seven = try nonces.reserve(Self.account, chain: Self.chain(5))
+        XCTAssertEqual(seven.nonce, 7)
+        nonces.settle(seven, .used)
+        let eight = try nonces.reserve(Self.account, chain: Self.chain(5))
+        XCTAssertEqual(eight.nonce, 8)
+        nonces.settle(eight, .givenBack)
         // The hold lapses; a used nonce stays used until the base passes it.
         clock.advance(NonceAllocator.lease)
-        XCTAssertEqual(try (0..<3).map { _ in try nonces.reserve(Self.account, chain: Self.chain(5)) }, [6, 8, 9])
+        XCTAssertEqual(try (0..<3).map { _ in try Self.take(nonces, Self.chain(5)) }, [6, 8, 9])
     }
 
     func testANonceThatNeverLandsIsFreeAfterItsLease() throws {
         let clock = Clock()
         let nonces = NonceAllocator(now: { clock.now })
-        XCTAssertEqual(try nonces.reserve(Self.account, chain: Self.chain(5)), 6)
-        nonces.settle(Self.account, nonce: 6, .accepted)
+        let six = try nonces.reserve(Self.account, chain: Self.chain(5))
+        nonces.settle(six, .accepted)
         clock.advance(NonceAllocator.lease - 1)
-        XCTAssertEqual(try nonces.reserve(Self.account, chain: Self.chain(5)), 7)
+        XCTAssertEqual(try Self.take(nonces, Self.chain(5)), 7)
         clock.advance(1)
-        XCTAssertEqual(try nonces.reserve(Self.account, chain: Self.chain(5)), 6)
-        XCTAssertEqual(try nonces.reserve(Self.account, chain: Self.chain(5)), 8)
+        XCTAssertEqual(try Self.take(nonces, Self.chain(5)), 6)
+        XCTAssertEqual(try Self.take(nonces, Self.chain(5)), 8)
     }
 
     func testTheWindowIsNeverExceeded() throws {
         let nonces = NonceAllocator()
-        XCTAssertEqual(try (0..<24).map { _ in try nonces.reserve(Self.account, chain: Self.chain(0)) }, Array(1...24))
+        let reservations = try (0..<24).map { _ in try nonces.reserve(Self.account, chain: Self.chain(0)) }
+        XCTAssertEqual(reservations.map { $0.nonce }, Array(1...24))
         XCTAssertThrowsError(try nonces.reserve(Self.account, chain: Self.chain(0))) { error in
             XCTAssertEqual((error as? WillowError)?.type, .transaction)
             XCTAssertTrue("\(error)".contains("window is full"), "\(error)")
         }
-        nonces.settle(Self.account, nonce: 17, .givenBack)
-        XCTAssertEqual(try nonces.reserve(Self.account, chain: Self.chain(0)), 17)
+        nonces.settle(reservations[16], .givenBack)
+        XCTAssertEqual(try Self.take(nonces, Self.chain(0)), 17)
         // Nonces the chain shows used fill the window too.
         let other = NonceAllocator()
         XCTAssertThrowsError(try other.reserve(Self.account, chain: Self.chain(0, used: Set(1...24))))
@@ -221,10 +243,10 @@ final class NonceTests: XCTestCase {
 
     func testAnOlderAnswerHandsOutNoUsedNonce() throws {
         let nonces = NonceAllocator()
-        XCTAssertEqual(try nonces.reserve(Self.account, chain: Self.chain(5)), 6)
+        XCTAssertEqual(try Self.take(nonces, Self.chain(5)), 6)
         // 6 landed, and 8; then a slower answer from before both arrives.
-        XCTAssertEqual(try nonces.reserve(Self.account, chain: Self.chain(6, used: [8])), 7)
-        XCTAssertEqual(try nonces.reserve(Self.account, chain: Self.chain(5)), 9)
+        XCTAssertEqual(try Self.take(nonces, Self.chain(6, used: [8])), 7)
+        XCTAssertEqual(try Self.take(nonces, Self.chain(5)), 9)
     }
 
     func testAccountsAreOneDIDAtOneAPI() throws {
@@ -234,11 +256,135 @@ final class NonceTests: XCTestCase {
         XCTAssertNotEqual(NonceAccount(did: "did:willow:b", api: "http://api.test"), Self.account)
         // Two accounts keep separate nonces.
         let nonces = NonceAllocator()
-        XCTAssertEqual(try nonces.reserve(Self.account, chain: Self.chain(5)), 6)
-        XCTAssertEqual(try nonces.reserve(NonceAccount(did: "did:willow:a", api: "http://other.test"), chain: Self.chain(5)), 6)
+        XCTAssertEqual(try Self.take(nonces, Self.chain(5)), 6)
+        XCTAssertEqual(try Self.take(nonces, Self.chain(5), NonceAccount(did: "did:willow:a", api: "http://other.test")), 6)
     }
 
-    func testOutcomesAreReadFromTheAnswer() {
+    /// A reservation that outlives its 120 s lease may find its nonce handed
+    /// to a later write. Settling it then changes nothing of the later
+    /// write's lease, and `confirm` tells it the nonce is no longer its own.
+    func testAReservationThatOutlivesItsLeaseTouchesOnlyItsOwn() throws {
+        let clock = Clock()
+        let nonces = NonceAllocator(now: { clock.now })
+        let stale = try nonces.reserve(Self.account, chain: Self.chain(5))
+        XCTAssertEqual(stale.nonce, 6)
+        clock.advance(NonceAllocator.lease)
+        let later = try nonces.reserve(Self.account, chain: Self.chain(5))
+        XCTAssertEqual(later.nonce, 6)
+        XCTAssertNotEqual(stale, later)
+
+        XCTAssertFalse(nonces.confirm(stale))
+        XCTAssertTrue(nonces.confirm(later))
+        for outcome in [NonceOutcome.givenBack, .accepted, .unknown, .held] {
+            nonces.settle(stale, outcome)
+        }
+        // 6 is still the later write's: not handed out again, and its lease
+        // runs from its own confirmation, not from the stale settles.
+        XCTAssertEqual(try Self.take(nonces, Self.chain(5)), 7)
+        clock.advance(NonceAllocator.lease - 1)
+        XCTAssertEqual(try Self.take(nonces, Self.chain(5)), 8)
+        clock.advance(1)
+        XCTAssertEqual(try Self.take(nonces, Self.chain(5)), 6)
+
+        // A stale reservation still records what the chain says of its nonce.
+        let used = NonceAllocator(now: { clock.now })
+        let first = try used.reserve(Self.account, chain: Self.chain(5))
+        clock.advance(NonceAllocator.lease)
+        let second = try used.reserve(Self.account, chain: Self.chain(5))
+        XCTAssertEqual(second.nonce, first.nonce)
+        used.settle(first, .used)
+        XCTAssertFalse(used.confirm(second))
+        clock.advance(NonceAllocator.lease)
+        XCTAssertEqual(try Self.take(used, Self.chain(5)), 7)
+    }
+
+    /// A reservation whose lease lapsed and was dropped with no other write
+    /// taking the nonce takes it again when confirmed, for a fresh lease; one
+    /// the chain shows used can't be confirmed.
+    func testALapsedLeaseNoOneTookIsTakenAgain() throws {
+        let clock = Clock()
+        let nonces = NonceAllocator(now: { clock.now })
+        let six = try nonces.reserve(Self.account, chain: Self.chain(5))
+        let seven = try nonces.reserve(Self.account, chain: Self.chain(5))
+        nonces.settle(six, .givenBack)
+        clock.advance(NonceAllocator.lease)
+        // Another write drops 7's lapsed lease and takes 6.
+        XCTAssertEqual(try Self.take(nonces, Self.chain(5)), 6)
+        XCTAssertTrue(nonces.confirm(seven))
+        XCTAssertEqual(try Self.take(nonces, Self.chain(5)), 8)
+
+        let nine = try nonces.reserve(Self.account, chain: Self.chain(5))
+        XCTAssertEqual(nine.nonce, 9)
+        XCTAssertEqual(try Self.take(nonces, Self.chain(5, used: [9])), 10)
+        XCTAssertFalse(nonces.confirm(nine))
+    }
+
+    /// A write whose lease another write takes while it is being built (the
+    /// signer took longer than 120 s) is built and signed again under a new
+    /// nonce before anything is sent, and the other write keeps its nonce.
+    func testAWriteThatOutlivesItsLeaseWhileBuildingIsSignedAgain() async throws {
+        let clock = Clock()
+        let nonces = NonceAllocator(now: { clock.now })
+        var built: [Int] = []
+        var other: NonceReservation?
+        var sent: [Data] = []
+        let result: Int = try await nonces.submit(Self.account, chain: try Self.chain(5), build: { nonce in
+            built.append(nonce)
+            if other == nil {
+                clock.advance(NonceAllocator.lease)
+                other = try nonces.reserve(Self.account, chain: Self.chain(5))
+            }
+            return Data("\(nonce)".utf8)
+        }, submit: { body in
+            sent.append(body)
+            return (sent.count, .accepted)
+        })
+        XCTAssertEqual(result, 1)
+        XCTAssertEqual(built, [6, 7])
+        XCTAssertEqual(sent, [Data("7".utf8)])
+        XCTAssertEqual(other?.nonce, 6)
+        XCTAssertTrue(nonces.confirm(try XCTUnwrap(other)))
+        XCTAssertEqual(try Self.take(nonces, Self.chain(5)), 8)
+
+        // A lease that lapsed while building with no one taking the nonce is
+        // kept: the transaction is sent as built.
+        let alone = NonceAllocator(now: { clock.now })
+        built = []
+        sent = []
+        _ = try await alone.submit(Self.account, chain: try Self.chain(5), build: { nonce in
+            built.append(nonce)
+            clock.advance(NonceAllocator.lease + 1)
+            return Data("\(nonce)".utf8)
+        }, submit: { body in
+            sent.append(body)
+            return (0, .accepted)
+        })
+        XCTAssertEqual(built, [6])
+        XCTAssertEqual(sent, [Data("6".utf8)])
+        XCTAssertEqual(try Self.take(alone, Self.chain(5)), 7)
+
+        // A signer slower than the lease every time gives up rather than loop.
+        let slow = NonceAllocator(now: { clock.now })
+        built = []
+        do {
+            let _: Int = try await slow.submit(Self.account, chain: try Self.chain(5), build: { nonce in
+                built.append(nonce)
+                clock.advance(NonceAllocator.lease)
+                // Other writes take every nonce up to this one.
+                while try slow.reserve(Self.account, chain: Self.chain(5)).nonce < UInt64(nonce) {}
+                return Data()
+            }, submit: { _ in
+                XCTFail("nothing is sent")
+                return (0, .accepted)
+            })
+            XCTFail("must give up")
+        } catch let error as WillowError {
+            XCTAssertEqual(error.type, .transaction)
+        }
+        XCTAssertEqual(built.count, NonceAllocator.attempts)
+    }
+
+    func testOutcomesAreReadFromTheAnswer() throws {
         XCTAssertEqual(NonceOutcome.refusal("Nonce 7 of did:willow:a is held by a pending transaction; sign this one with another nonce"), .held)
         XCTAssertEqual(NonceOutcome.refusal("Invalid nonce: 7 already used (replay)"), .used)
         XCTAssertEqual(NonceOutcome.refusal("Subgrove not found (nonce 7 spent)"), .used)
@@ -260,6 +406,30 @@ final class NonceTests: XCTestCase {
         XCTAssertEqual(NonceOutcome.submission(error: HTTPError(statusCode: 429, message: "slow down")), .givenBack)
         XCTAssertEqual(NonceOutcome.submission(error: HTTPError(statusCode: 503, message: "unavailable")), .unknown)
         XCTAssertEqual(NonceOutcome.submission(error: URLError(.timedOut)), .unknown)
+
+        // A non-2xx answer in plain text is an HTTP error with its status and
+        // text; the status decides the outcome.
+        func plainTextError(_ status: Int, _ text: String) -> Error? {
+            do {
+                _ = try parseTxSubmitResponse(data: Data(text.utf8), statusCode: status)
+                return nil
+            } catch {
+                return error
+            }
+        }
+        for status in [400, 415, 422] {
+            let error = plainTextError(status, "Failed to deserialize the JSON body into the target type\n")
+            XCTAssertEqual((error as? HTTPError)?.statusCode, status)
+            XCTAssertEqual((error as? HTTPError)?.message, "Failed to deserialize the JSON body into the target type")
+            XCTAssertEqual(NonceOutcome.submission(error: try XCTUnwrap(error)), .givenBack)
+        }
+        XCTAssertEqual((plainTextError(502, "") as? HTTPError)?.message, "HTTP 502")
+        XCTAssertEqual(NonceOutcome.submission(error: try XCTUnwrap(plainTextError(502, "Bad Gateway"))), .unknown)
+        XCTAssertEqual(NonceOutcome.submission(error: try XCTUnwrap(plainTextError(408, "timeout"))), .unknown)
+        // A 2xx answer that isn't JSON leaves the transaction's fate unknown.
+        let unreadable = try XCTUnwrap(plainTextError(200, "OK"))
+        XCTAssertFalse(unreadable is HTTPError)
+        XCTAssertEqual(NonceOutcome.submission(error: unreadable), .unknown)
     }
 
     func testTheNodesNonceStateIsRead() throws {
@@ -409,6 +579,35 @@ final class NonceTests: XCTestCase {
                 XCTAssertEqual(results, [true, false, true])
             }
         }
+    }
+
+    /// The API refuses a body it can't read with a 4xx in plain text, before
+    /// CheckTx. The consensus client throws that as an `HTTPError` with the
+    /// status and text, and gives the nonce back, so the corrected write
+    /// takes it rather than the next one.
+    func testABodyRefusedInPlainTextGivesItsNonceBack() async throws {
+        let keyPair = try SignedMessagesTests.keyPair(.ed25519)
+        let chain = FakeChain(base: 0)
+        chain.pending = true
+        chain.refuseBodyOnce(1, status: 422, "Failed to deserialize the JSON body into the target type: missing field `id`")
+        let stub = Self.stub(chain)
+        let consensus = Self.consensus(stub, NonceAllocator())
+        let sign: (Data, Data) throws -> Data = { message, _ in try keyPair.sign(message) }
+
+        do {
+            _ = try await consensus.registerDid(
+                didDocument: ["id": "did:willow:a"], privateKey: Data(), publicKeyId: "did:willow:a#key-1", signFunction: sign
+            )
+            XCTFail("the body must be refused")
+        } catch let error as HTTPError {
+            XCTAssertEqual(error.statusCode, 422)
+            XCTAssertTrue(error.message.contains("missing field"), error.message)
+        }
+        let result = try await consensus.registerDid(
+            didDocument: ["id": "did:willow:a", "created": 1], privateKey: Data(), publicKeyId: "did:willow:a#key-1", signFunction: sign
+        )
+        XCTAssertTrue(result.success)
+        XCTAssertEqual(chain.sent, [1, 1])
     }
 
     /// The client's writes, the consensus client's, and key grants take

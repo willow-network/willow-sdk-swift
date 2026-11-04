@@ -253,7 +253,8 @@ public class WillowClient {
     /// nonce back, unless the refusal says the nonce is held by a pending
     /// transaction, already used, or spent. A submission whose fate is unknown
     /// (a network error or a 5xx) may still land, so its nonce stays held for
-    /// 120 s.
+    /// 120 s (the node holds a pending transaction's nonce for 3 blocks or
+    /// 120 s, whichever ends first).
     internal func submitUnderNextNonce(did: String, _ build: (Int) throws -> Data) async throws -> BroadcastResult {
         let account = NonceAccount(did: did, api: config.baseURL.absoluteString)
         return try await nonces.submit(account, chain: try await accountNonces(did: did), build: build) { body in
