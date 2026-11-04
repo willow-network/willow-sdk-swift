@@ -149,7 +149,12 @@ Nonce: <nonce>
 
 `Config` hashes the bincode (bincode 1.x's default encoding: fixed-width little-endian integers, u64 lengths) of the `RegisterSubgroveTx` the node decodes from the JSON sent, so it binds every field but the signature. The SDK sends every field explicitly and hashes exactly what it sends; `registerSubgroveUnsignedBincode` returns those bytes. u128 amounts (`U128`) are written as exact JSON numbers. A BlockchainIndexing registration needs fields `SubgroveBlockchainIndexing` doesn't carry, so the SDK refuses to sign one.
 
-The node refuses a DataStorage or FileStorage registration whose subgrove ID isn't 1 to 64 ASCII letters, digits, `-`, or `_` starting with a letter or digit, or whose schema declares indexes. The SDK refuses both before signing.
+The node refuses a DataStorage or FileStorage registration that breaks one of these rules, and the SDK refuses it before signing:
+
+- The subgrove ID is 1 to 64 ASCII letters, digits, `-`, or `_`, starting with a letter or digit.
+- Admins, writers, and free readers are Willow DIDs: `did:willow:` then one or more ASCII letters, digits, `-`, or `_`, at most 128 bytes.
+- The schema reads as the node's schema definition, `{"version": 1, "fields": {"<name>": "string" | "number" | "boolean" | "array" | "object" | "bytes"}, "indexes": [], "required_fields": ["<name>"]}` (each key optional, other keys ignored), and declares no indexes.
+- A private DataStorage subgrove's initial key grant, if it has one, is key epoch 0 to the owner.
 
 GrantSubgroveKey (`PrivacyOperations.grantSubgroveKey`):
 
@@ -178,6 +183,8 @@ Nonce: <nonce>
 ```
 
 RevokeSubgroveKey is signed over `RevokeSubgroveKey:<subgrove id>:<revokee DID>:<sender DID>:<nonce>`, which already binds every field.
+
+A grantee in a grant or rotation, and a revokee, must be a Willow DID, and a revoked subgrove's ID can't hold `:`, so the revoke message reads one way. The SDK refuses anything else before signing.
 
 ### Rules for every message
 

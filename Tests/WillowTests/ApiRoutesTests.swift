@@ -201,6 +201,9 @@ final class ApiRoutesTests: XCTestCase {
             RegisterSubgroveRequest(subgroveId: "sg.1", name: "n"),
             RegisterSubgroveRequest(subgroveId: String(repeating: "a", count: 65), name: "n"),
             RegisterSubgroveRequest(subgroveId: "notes-1", name: "n", schema: SchemaBuilder(name: "notes").stringField("title").hashIndex("by_title", fields: ["title"]).build()),
+            // ... or whose writers or readers aren't DIDs.
+            RegisterSubgroveRequest(subgroveId: "sg", name: "n", writers: ["alice"]),
+            RegisterSubgroveRequest(subgroveId: "sg", name: "n", readers: ["did:willow:"]),
         ]
         for request in refused {
             do {

@@ -378,8 +378,8 @@ public class PrivacyOperations {
     /// Broadcasts a `GrantSubgroveKey` transaction via consensus.
     /// `signFunction` signs `grantSubgroveKeyMessage` over the subgrove ID, the
     /// sender DID, every field of the grant, and the transaction's nonce. A
-    /// text field holding a line break is refused with a validation error
-    /// before anything is signed.
+    /// text field holding a line break, or a grantee that isn't a Willow DID,
+    /// is refused with a validation error before anything is signed.
     ///
     /// - Parameters:
     ///   - subgroveId: The subgrove ID.
@@ -401,7 +401,7 @@ public class PrivacyOperations {
             throw AuthenticationError("Identity not set")
         }
 
-        // Refuse a line break before spending a request on the nonce.
+        // Refuse what can't be signed before spending a request on the nonce.
         _ = try grantSubgroveKeyMessage(subgroveId: subgroveId, senderDid: identity.did, grant: grant, nonce: 0)
 
         return try await consensus.submitUnderNextNonce(did: identity.did) { nonce in
@@ -426,7 +426,9 @@ public class PrivacyOperations {
     /// Revokes a DID's access to a subgrove's encryption key.
     ///
     /// Broadcasts a `RevokeSubgroveKey` transaction via consensus, signed over
-    /// `revokeSubgroveKeyMessage`.
+    /// `revokeSubgroveKeyMessage`. A subgrove ID holding `:`, or a revokee
+    /// that isn't a Willow DID, is refused with a validation error before
+    /// anything is signed.
     ///
     /// - Parameters:
     ///   - subgroveId: The subgrove ID.
@@ -448,6 +450,9 @@ public class PrivacyOperations {
             throw AuthenticationError("Identity not set")
         }
 
+        // Refuse what can't be signed before spending a request on the nonce.
+        _ = try revokeSubgroveKeyMessage(subgroveId: subgroveId, revokeeDid: revokeeDid, senderDid: identity.did, nonce: 0)
+
         return try await consensus.submitUnderNextNonce(did: identity.did) { nonce in
             var tx = RevokeSubgroveKeyTx(
                 subgroveId: subgroveId,
@@ -456,7 +461,7 @@ public class PrivacyOperations {
                 publicKeyId: identity.publicKeyId,
                 nonce: nonce
             )
-            let signMessage = revokeSubgroveKeyMessage(
+            let signMessage = try revokeSubgroveKeyMessage(
                 subgroveId: tx.subgroveId,
                 revokeeDid: tx.revokeeDid,
                 senderDid: tx.senderDid,
@@ -474,8 +479,8 @@ public class PrivacyOperations {
     /// specified DIDs with the new key material. `signFunction` signs
     /// `rotateSubgroveKeyMessage` over the subgrove ID, the sender DID, the new
     /// epoch, every field of every grant in order, and the transaction's nonce.
-    /// A text field holding a line break is refused with a validation error
-    /// before anything is signed.
+    /// A text field holding a line break, or a grantee that isn't a Willow
+    /// DID, is refused with a validation error before anything is signed.
     ///
     /// - Parameters:
     ///   - subgroveId: The subgrove ID.
@@ -499,7 +504,7 @@ public class PrivacyOperations {
             throw AuthenticationError("Identity not set")
         }
 
-        // Refuse a line break before spending a request on the nonce.
+        // Refuse what can't be signed before spending a request on the nonce.
         _ = try rotateSubgroveKeyMessage(subgroveId: subgroveId, senderDid: identity.did, newEpoch: newEpoch, newGrants: newGrants, nonce: 0)
 
         return try await consensus.submitUnderNextNonce(did: identity.did) { nonce in

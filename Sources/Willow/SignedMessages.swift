@@ -26,7 +26,9 @@ import CryptoKit
 // is refused there after its signature and nonce verify still spends its
 // nonce; to retry it, sign again under a fresh nonce. One that never landed
 // spends nothing: retry it under that attempt's own nonce, so that at most one
-// of the two can run.
+// of the two can run. A write refused as "already used" may be one whose
+// earlier attempt landed: read what it wrote before signing it again under a
+// fresh nonce, or it can run twice.
 //
 // Ed25519 signs the message's UTF-8 bytes; secp256k1 signs their Keccak-256
 // (see `KeyPair.sign`).
@@ -193,7 +195,10 @@ public func registerSubgroveUnsignedBincode(_ tx: RegisterSubgroveTx) throws -> 
 /// a mode the SDK can't build (BlockchainIndexing), a negative nonce, or a
 /// DataStorage or FileStorage registration the node refuses: a subgrove ID
 /// that isn't 1 to 64 ASCII letters, digits, `-`, or `_` starting with a
-/// letter or digit, or a schema that declares indexes.
+/// letter or digit; an admin, writer, or free reader that isn't a Willow DID;
+/// a schema the node can't read as its schema definition, or one that
+/// declares indexes; or a private DataStorage subgrove whose initial key
+/// grant isn't key epoch 0 to the owner.
 public func registerSubgroveMessage(_ tx: RegisterSubgroveTx) throws -> String {
     try tx.checkStorageRules()
     var unsigned = tx
@@ -234,7 +239,9 @@ internal func registerSubgroveMessage(json tx: WireJSON) throws -> String {
 /// Nonce: <nonce>
 /// ```
 ///
-/// Throws a validation error when a text field holds a line break.
+/// Throws a validation error when a text field holds a line break or the
+/// grantee isn't a Willow DID (`did:willow:` then one or more ASCII letters,
+/// digits, `-`, or `_`, at most 128 bytes), which the node refuses.
 public func grantSubgroveKeyMessage(
     subgroveId: String,
     senderDid: String,
@@ -262,7 +269,8 @@ public func grantSubgroveKeyMessage(
 /// Nonce: <nonce>
 /// ```
 ///
-/// Throws a validation error when a text field holds a line break.
+/// Throws a validation error when a text field holds a line break or a
+/// grantee isn't a Willow DID, which the node refuses.
 public func rotateSubgroveKeyMessage(
     subgroveId: String,
     senderDid: String,
@@ -286,7 +294,16 @@ public func rotateSubgroveKeyMessage(
 
 /// The message a RevokeSubgroveKey transaction is signed over, which already
 /// binds every field: `RevokeSubgroveKey:<subgroveId>:<revokeeDid>:<senderDid>:<nonce>`.
-public func revokeSubgroveKeyMessage(subgroveId: String, revokeeDid: String, senderDid: String, nonce: UInt64) -> String {
+///
+/// Throws a validation error when the subgrove ID holds a `:` or the revokee
+/// or sender isn't a Willow DID: the node refuses those, so the message
+/// splits one way.
+public func revokeSubgroveKeyMessage(subgroveId: String, revokeeDid: String, senderDid: String, nonce: UInt64) throws -> String {
+    if subgroveId.utf8.contains(UInt8(ascii: ":")) {
+        throw ValidationError("A revoked subgrove's ID can't hold ':': \(subgroveId)")
+    }
+    try checkWillowDID(revokeeDid, "The revokee")
+    try checkWillowDID(senderDid, "The sender")
     return "RevokeSubgroveKey:\(subgroveId):\(revokeeDid):\(senderDid):\(nonce)"
 }
 
@@ -309,9 +326,12 @@ public func unregisterStorageNodeMessage(nodeDid: String, nonce: UInt64) throws 
 
 /// One key grant's lines: `Grantee`, `GranteeKey`, `KeyEpoch`, `EphemeralKey`
 /// and `EncryptedKey` (lowercase hex of the exact bytes), `GrantedBy`, `GrantedAt`.
+/// The grantee must be a Willow DID, so that a revoke can name it.
 private func grantLines(_ grant: EncryptedKeyGrant) throws -> [String] {
+    let grantee = try signedTextField("Grantee", grant.granteeDid)
+    try checkWillowDID(grant.granteeDid, "A grantee")
     return [
-        try signedTextField("Grantee", grant.granteeDid),
+        grantee,
         try signedTextField("GranteeKey", grant.granteePublicKeyId),
         "KeyEpoch: \(grant.keyEpoch)",
         "EphemeralKey: \(Data(grant.ephemeralPublicKey).hexString)",
@@ -331,6 +351,36 @@ private func signedTextField(_ label: String, _ value: String) throws -> String 
         throw ValidationError("\(label) holds a line break, which a signed field can't")
     }
     return "\(label): \(value)"
+}
+
+/// Whether `byte` is an ASCII letter or digit.
+internal func isASCIILetterOrDigit(_ byte: UInt8) -> Bool {
+    switch byte {
+    case UInt8(ascii: "0")...UInt8(ascii: "9"), UInt8(ascii: "A")...UInt8(ascii: "Z"), UInt8(ascii: "a")...UInt8(ascii: "z"):
+        return true
+    default:
+        return false
+    }
+}
+
+/// Whether `byte` is an ASCII letter or digit, `-`, or `_`.
+internal func isIdentifierByte(_ byte: UInt8) -> Bool {
+    return isASCIILetterOrDigit(byte) || byte == UInt8(ascii: "-") || byte == UInt8(ascii: "_")
+}
+
+/// Refuses `did` unless it is a Willow DID as the node reads one:
+/// `did:willow:` then one or more ASCII letters, digits, `-`, or `_`, at most
+/// 128 bytes in all. `who` names it in the error.
+internal func checkWillowDID(_ did: String, _ who: String) throws {
+    let prefix = Array("did:willow:".utf8)
+    let bytes = Array(did.utf8)
+    guard bytes.starts(with: prefix), bytes.count > prefix.count, bytes.count <= 128,
+          bytes[prefix.count...].allSatisfy(isIdentifierByte)
+    else {
+        throw ValidationError(
+            "\(who) must be a Willow DID (did:willow: then 1 or more ASCII letters, digits, '-', or '_', at most 128 bytes): \(did)"
+        )
+    }
 }
 
 private func fixedLengthHex(_ label: String, _ bytes: Data, count: Int) throws -> String {

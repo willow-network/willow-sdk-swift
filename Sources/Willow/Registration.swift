@@ -23,10 +23,10 @@ public class RegistrationOperations {
     /// Refused with a validation error before anything is signed: an owner DID
     /// other than the identity's, a reward rate or retention window (they
     /// belong to BlockchainIndexing, which this SDK can't register), a schema
-    /// type the node has no match for, a schema with indexes or a subgrove ID
-    /// that isn't 1 to 64 ASCII letters, digits, `-`, or `_` starting with a
-    /// letter or digit (the node refuses both), or an owner holding a line
-    /// break.
+    /// type the node has no match for, an owner holding a line break, and
+    /// what the node refuses: a schema with indexes, a subgrove ID that isn't
+    /// 1 to 64 ASCII letters, digits, `-`, or `_` starting with a letter or
+    /// digit, or a writer or reader that isn't a Willow DID.
     @discardableResult
     public func registerSubgrove(_ request: RegisterSubgroveRequest) async throws -> BroadcastResult {
         guard let client = client else { throw NetworkError("Client deallocated") }

@@ -471,6 +471,143 @@ final class SecondSetTests: XCTestCase {
         }
     }
 
+    /// The node also refuses a DataStorage or FileStorage registration whose
+    /// admins, writers, or free readers aren't Willow DIDs, or whose schema it
+    /// can't read as its schema definition, and a private DataStorage
+    /// registration whose initial key grant isn't key epoch 0 to the owner.
+    /// The builder refuses each before anything is signed.
+    func testRegistrationDIDsSchemaAndInitialGrantFollowTheNodesRules() throws {
+        func registration(
+            admins: [String] = [], writers: [String] = [], readers: [String] = [], schema: String = "{}",
+            file: Bool = false, privacy: PrivacyConfig? = nil, grant: EncryptedKeyGrant? = nil
+        ) -> RegisterSubgroveTx {
+            let mode: SubgroveMode = file
+                ? .fileStorage(SubgroveFileStorage(name: "f", maxFileSize: 1024, replicationFactor: 1, writers: writers, freeReaders: readers))
+                : .dataStorage(SubgroveDataStorage(writers: writers, freeReaders: readers))
+            return RegisterSubgroveTx(
+                subgroveId: "sg", schema: schema, ownerDid: "did:willow:a", admins: admins, mode: mode,
+                privacy: privacy, initialOwnerKeyGrant: grant, publicKeyId: "did:willow:a#key-1", nonce: 1
+            )
+        }
+        func assertRefused(_ tx: RegisterSubgroveTx, _ what: String, line: UInt = #line) {
+            XCTAssertThrowsError(try registerSubgroveMessage(tx), what, line: line) { error in
+                XCTAssertEqual((error as? WillowError)?.type, .validation, what, line: line)
+            }
+        }
+
+        let longest: String = "did:willow:" + String(repeating: "x", count: 117) // 128 bytes
+        let tooLong: String = longest + "x"
+        let dids: [String] = ["did:willow:a", "did:willow:zAbc-_9", longest]
+        let notDIDs: [String] = [
+            "", "did:willow:", "alice", "did:key:z6Mk", "DID:willow:a", " did:willow:a", "did:willow:a b",
+            "did:willow:a:b", "did:willow:a,b", "did:willow:a#key-1", "did:willow:caf\u{E9}", tooLong,
+        ]
+        for file in [false, true] {
+            for did in dids {
+                XCTAssertNoThrow(try registerSubgroveMessage(registration(admins: [did], writers: [did], readers: [did], file: file)), did)
+            }
+            for did in notDIDs {
+                assertRefused(registration(admins: [did], file: file), "admin \(did)")
+                assertRefused(registration(writers: ["did:willow:a", did], file: file), "writer \(did)")
+                assertRefused(registration(readers: [did], file: file), "free reader \(did)")
+            }
+        }
+
+        let readable: [String] = [
+            "{}", " { } ", #"{"version":1,"fields":{},"indexes":[],"required_fields":[]}"#,
+            #"{"version":4294967295,"fields":{"a":"string","b":"number","c":"boolean","d":"array","e":"object","f":"bytes","g":{"string":null}},"required_fields":["a"]}"#,
+            #"{"version":0,"other":{"x":[1,2]},"note":"keys the node doesn't know are ignored"}"#,
+        ]
+        let unreadable: [String] = [
+            "", "null", "[]", "not json", "{} x", #"{"version":1.0}"#, #"{"version":-1}"#, #"{"version":4294967296}"#,
+            #"{"version":"1"}"#, #"{"version":null}"#, #"{"version":1,"version":1}"#, #"{"fields":[]}"#,
+            #"{"fields":{"a":"String"}}"#, #"{"fields":{"a":"int"}}"#, #"{"fields":{"a":{"string":1}}}"#,
+            #"{"indexes":null}"#, #"{"indexes":{}}"#, #"{"required_fields":"a"}"#, #"{"required_fields":[1]}"#,
+        ]
+        for file in [false, true] {
+            for schema in readable {
+                XCTAssertNoThrow(try registerSubgroveMessage(registration(schema: schema, file: file)), schema)
+            }
+            for schema in unreadable {
+                assertRefused(registration(schema: schema, file: file), "schema \(schema)")
+            }
+        }
+
+        let privacy = PrivacyConfig(commitmentFrequency: .everyUpdate)
+        func grant(to grantee: String = "did:willow:a", epoch: UInt32 = 0) -> EncryptedKeyGrant {
+            return EncryptedKeyGrant(
+                granteeDid: grantee, keyEpoch: epoch, granteePublicKeyId: "\(grantee)#key-1",
+                ephemeralPublicKey: Array(repeating: 1, count: 32), encryptedKey: [2], grantedBy: "did:willow:a", grantedAt: 1
+            )
+        }
+        XCTAssertNoThrow(try registerSubgroveMessage(registration(privacy: privacy, grant: grant())))
+        XCTAssertNoThrow(try registerSubgroveMessage(registration(privacy: privacy)))
+        assertRefused(registration(privacy: privacy, grant: grant(epoch: 1)), "a grant of epoch 1")
+        assertRefused(registration(privacy: privacy, grant: grant(to: "did:willow:b")), "a grant to another DID")
+        // The node checks the grant of a private DataStorage registration only.
+        XCTAssertNoThrow(try registerSubgroveMessage(registration(grant: grant(epoch: 1))))
+        XCTAssertNoThrow(try registerSubgroveMessage(registration(file: true, privacy: privacy, grant: grant(to: "did:willow:b"))))
+    }
+
+    /// A grantee in a grant or rotation, and a revokee or sender in a revoke,
+    /// must be a Willow DID, and a revoked subgrove's ID can't hold ':'. The
+    /// builders refuse anything else, and the flows sign and send nothing.
+    func testAGranteeOrRevokeeThatIsntADIDIsRefused() async throws {
+        func grant(_ grantee: String) -> EncryptedKeyGrant {
+            return EncryptedKeyGrant(
+                granteeDid: grantee, keyEpoch: 1, granteePublicKeyId: "did:willow:b#key-1",
+                ephemeralPublicKey: Array(repeating: 1, count: 32), encryptedKey: [2], grantedBy: "did:willow:a", grantedAt: 1
+            )
+        }
+        let good = grant("did:willow:b")
+        XCTAssertNoThrow(try grantSubgroveKeyMessage(subgroveId: "sg", senderDid: "did:willow:a", grant: good, nonce: 1))
+        XCTAssertNoThrow(try rotateSubgroveKeyMessage(subgroveId: "sg", senderDid: "did:willow:a", newEpoch: 1, newGrants: [good], nonce: 1))
+        XCTAssertNoThrow(try revokeSubgroveKeyMessage(subgroveId: "sg", revokeeDid: "did:willow:b", senderDid: "did:willow:a", nonce: 1))
+        let tooLong: String = "did:willow:" + String(repeating: "b", count: 118)
+        let notDIDs: [String] = ["b", "did:willow:", "did:key:b", "did:willow:b:c", "did:willow:b,c", tooLong]
+        for bad in notDIDs {
+            let attempts: [(String, () throws -> Void)] = [
+                ("grant", { _ = try grantSubgroveKeyMessage(subgroveId: "sg", senderDid: "did:willow:a", grant: grant(bad), nonce: 1) }),
+                ("rotate", {
+                    _ = try rotateSubgroveKeyMessage(subgroveId: "sg", senderDid: "did:willow:a", newEpoch: 1, newGrants: [good, grant(bad)], nonce: 1)
+                }),
+                ("revokee", { _ = try revokeSubgroveKeyMessage(subgroveId: "sg", revokeeDid: bad, senderDid: "did:willow:a", nonce: 1) }),
+                ("revoke sender", { _ = try revokeSubgroveKeyMessage(subgroveId: "sg", revokeeDid: "did:willow:b", senderDid: bad, nonce: 1) }),
+            ]
+            for (name, attempt) in attempts {
+                XCTAssertThrowsError(try attempt(), "\(name) \(bad)") { error in
+                    XCTAssertEqual((error as? WillowError)?.type, .validation, "\(name) \(bad)")
+                }
+            }
+        }
+        XCTAssertThrowsError(try revokeSubgroveKeyMessage(subgroveId: "s:g", revokeeDid: "did:willow:b", senderDid: "did:willow:a", nonce: 1))
+
+        let keyPair = try SignedMessagesTests.keyPair(.ed25519)
+        let stub = Self.nonceStub(next: 1)
+        let (client, privacy) = try Self.privacy(stub, keyPair)
+        defer { withExtendedLifetime(client) {} }
+        var signed = false
+        let sign: (Data, Data) throws -> Data = { _, _ in signed = true; return Data() }
+        let flows: [(String, () async throws -> Void)] = [
+            ("grant", { _ = try await privacy.grantSubgroveKey(subgroveId: "sg", grant: grant("bob"), privateKey: Data(), signFunction: sign) }),
+            ("rotate", {
+                _ = try await privacy.rotateSubgroveKey(subgroveId: "sg", newEpoch: 1, newGrants: [good, grant("bob")], privateKey: Data(), signFunction: sign)
+            }),
+            ("revokee", { _ = try await privacy.revokeSubgroveKey(subgroveId: "sg", revokeeDid: "bob", privateKey: Data(), signFunction: sign) }),
+            ("revoke subgrove", { _ = try await privacy.revokeSubgroveKey(subgroveId: "s:g", revokeeDid: "did:willow:b", privateKey: Data(), signFunction: sign) }),
+        ]
+        for (name, flow) in flows {
+            do {
+                try await flow()
+                XCTFail("\(name) must be refused")
+            } catch let error as WillowError {
+                XCTAssertEqual(error.type, .validation, name)
+            }
+        }
+        XCTAssertFalse(signed)
+        XCTAssertTrue(stub.requests.isEmpty)
+    }
+
     /// A client whose identity is the fixture's `did:willow:a#key-1` and a
     /// consensus client, both answered by `stub`. `PrivacyOperations` holds
     /// its client weakly, so the client is returned too, to be kept alive.
@@ -547,7 +684,7 @@ final class SecondSetTests: XCTestCase {
                 privateKey: keyPair.privateKey, signFunction: { message, _ in try keyPair.sign(message) }
             )
             let revoke = try Self.decode(RevokeSubgroveKeyTx.self, try Self.submitted("RevokeSubgroveKey", from: try XCTUnwrap(stub.requests.last)))
-            let revokeMessage = revokeSubgroveKeyMessage(
+            let revokeMessage = try revokeSubgroveKeyMessage(
                 subgroveId: revoke.subgroveId, revokeeDid: revoke.revokeeDid, senderDid: revoke.senderDid, nonce: UInt64(revoke.nonce)
             )
             XCTAssertEqual(revokeMessage, "RevokeSubgroveKey:private-1:did:willow:b:did:willow:a:21")

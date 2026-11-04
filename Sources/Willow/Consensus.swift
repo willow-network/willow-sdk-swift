@@ -547,8 +547,10 @@ public class ConsensusClient {
     /// Refused with a validation error before anything is signed: a
     /// BlockchainIndexing mode, a subgrove ID or owner DID holding a line
     /// break, and a DataStorage or FileStorage registration the node refuses
-    /// (a subgrove ID that isn't 1 to 64 ASCII letters, digits, `-`, or `_`
-    /// starting with a letter or digit, or a schema that declares indexes).
+    /// (see `registerSubgroveMessage`): a subgrove ID out of the node's form;
+    /// an admin, writer, or free reader that isn't a Willow DID; a schema the
+    /// node can't read or that declares indexes; or a private subgrove's
+    /// initial key grant that isn't key epoch 0 to the owner.
     public func registerSubgrove(
         _ registration: RegisterSubgroveTx,
         privateKey: Data,

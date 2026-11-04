@@ -233,6 +233,43 @@ private func writeSubgroveMode(_ w: inout BincodeWriter, _ value: WireJSON, _ wh
     }
 }
 
+// MARK: - Schema
+
+/// The field types the node's schema definition names.
+private let schemaFieldTypes: Set<String> = ["string", "number", "boolean", "array", "object", "bytes"]
+
+/// Refuses a data or file subgrove's `schema` unless the node reads it as its
+/// schema definition with no indexes: a JSON object whose `version` (if
+/// present) is a u32, whose `fields` (if present) maps each name to
+/// "string", "number", "boolean", "array", "object", or "bytes", whose
+/// `indexes` (if present) is empty, and whose `required_fields` (if present)
+/// is a list of strings. Other keys are ignored, as the node ignores them.
+internal func checkSubgroveSchema(_ schema: String) throws {
+    let value: WireJSON
+    do {
+        value = try WireJSON.parse(Data(schema.utf8))
+    } catch let error as WillowError {
+        throw ValidationError("The schema isn't JSON the node can read: \(error.message)")
+    }
+    let s = try WireJSONObject(value, "The schema")
+    _ = try s.value("version", default: .number("1")).unsigned(s.label("version"), as: UInt32.self)
+    guard case .object(let fields) = s.value("fields", default: .object([])) else {
+        throw ValidationError("\(s.label("fields")) must be a JSON object")
+    }
+    for field in fields {
+        let (type, payload) = try field.value.variant(s.label("fields.\(field.key)"))
+        guard payload == nil, schemaFieldTypes.contains(type) else {
+            throw ValidationError(
+                "Schema field \(field.key) must be \"string\", \"number\", \"boolean\", \"array\", \"object\", or \"bytes\""
+            )
+        }
+    }
+    guard try s.value("indexes", default: .array([])).array(s.label("indexes")).isEmpty else {
+        throw ValidationError("The node refuses a data or file subgrove whose schema declares indexes")
+    }
+    _ = try s.value("required_fields", default: .array([])).strings(s.label("required_fields"))
+}
+
 // MARK: - RegisterSubgroveTx as JSON
 
 extension RegisterSubgroveTx {
@@ -262,38 +299,54 @@ extension RegisterSubgroveTx {
         ])
     }
 
-    /// The node's rules for a DataStorage or FileStorage registration: a
-    /// subgrove ID of 1 to 64 ASCII letters, digits, `-`, or `_`, starting
-    /// with a letter or digit, and a schema that declares no indexes. The node
-    /// refuses a registration that breaks one (in its block, spending the
-    /// nonce), so the SDK refuses it before signing.
+    /// The node's rules for a DataStorage or FileStorage registration. The
+    /// node refuses a registration that breaks one (in its block, spending
+    /// the nonce), so the SDK refuses it before signing:
+    /// - a subgrove ID of 1 to 64 ASCII letters, digits, `-`, or `_`, starting
+    ///   with a letter or digit;
+    /// - admins, writers, and free readers that are Willow DIDs (`did:willow:`
+    ///   then one or more ASCII letters, digits, `-`, or `_`, at most 128
+    ///   bytes);
+    /// - a schema that reads as the node's schema definition and declares no
+    ///   indexes (`checkSubgroveSchema`);
+    /// - for a private DataStorage subgrove, an initial key grant (if any) of
+    ///   key epoch 0 to the owner.
     internal func checkStorageRules() throws {
+        let writers: [String]
+        let freeReaders: [String]
         switch mode {
-        case .dataStorage, .fileStorage:
-            break
+        case .dataStorage(let storage):
+            (writers, freeReaders) = (storage.writers, storage.freeReaders)
+            if privacy != nil, let grant = initialOwnerKeyGrant {
+                guard grant.keyEpoch == 0 else {
+                    throw ValidationError("A private subgrove's initial key grant must be key epoch 0, not \(grant.keyEpoch)")
+                }
+                guard grant.granteeDid == ownerDid else {
+                    throw ValidationError("A private subgrove's initial key grant must be to its owner \(ownerDid), not \(grant.granteeDid)")
+                }
+                try checkWillowDID(grant.granteeDid, "The initial key grant's grantee")
+            }
+        case .fileStorage(let storage):
+            (writers, freeReaders) = (storage.writers, storage.freeReaders)
         case .blockchainIndexing:
             return
         }
         let id = Array(subgroveId.utf8)
-        func letterOrDigit(_ byte: UInt8) -> Bool {
-            switch byte {
-            case UInt8(ascii: "0")...UInt8(ascii: "9"), UInt8(ascii: "A")...UInt8(ascii: "Z"), UInt8(ascii: "a")...UInt8(ascii: "z"):
-                return true
-            default:
-                return false
-            }
-        }
-        guard (1...64).contains(id.count), letterOrDigit(id[0]),
-              id.allSatisfy({ letterOrDigit($0) || $0 == UInt8(ascii: "-") || $0 == UInt8(ascii: "_") })
-        else {
+        guard (1...64).contains(id.count), isASCIILetterOrDigit(id[0]), id.allSatisfy(isIdentifierByte) else {
             throw ValidationError(
                 "A subgrove ID must be 1 to 64 ASCII letters, digits, '-', or '_', starting with a letter or digit: \(subgroveId)"
             )
         }
-        if let object = try? JSONSerialization.jsonObject(with: Data(schema.utf8)) as? [String: Any],
-           let indexes = object["indexes"] as? [Any], !indexes.isEmpty {
-            throw ValidationError("The node refuses a data or file subgrove whose schema declares indexes")
+        for admin in admins {
+            try checkWillowDID(admin, "An admin")
         }
+        for writer in writers {
+            try checkWillowDID(writer, "A writer")
+        }
+        for reader in freeReaders {
+            try checkWillowDID(reader, "A free reader")
+        }
+        try checkSubgroveSchema(schema)
     }
 
     /// The `/tx/submit` body: `{"RegisterSubgrove": ...}`.
