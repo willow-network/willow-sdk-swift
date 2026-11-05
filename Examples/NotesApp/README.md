@@ -89,7 +89,7 @@ SwiftUI views with:
 | DID Generation | `newIdentity(algorithm: .ed25519)` |
 | Request and transaction signing | `client.setIdentity(identity)` |
 | Subgrove Registration | `client.registration.registerSubgrove(request)` |
-| Schema Definition | `SchemaDefinition` with fields and indexes |
+| Schema Definition | `SchemaDefinition` with fields (no indexes: the node refuses a schema that declares them) |
 | Data Storage | `client.data.store(...)` (a StoreData transaction) |
 | Data Queries | `client.data.query(...)` (proof-checked), `client.data.queryUnverified(...)` (labeled unverified) |
 | Token Balance | `client.token.getBalance(did:)` |

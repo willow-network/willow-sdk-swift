@@ -47,11 +47,22 @@ let client = try WillowClient(baseURL: "http://localhost:3031")
 let identity = try newIdentity(algorithm: .ed25519)
 client.setIdentity(identity)
 
-// A write is a StoreData transaction, signed by the identity.
+// A write is a StoreData transaction, signed by the identity. It returns once
+// the node's CheckTx admits the transaction, before the transaction is in a
+// block.
 try await client.data.store(subgroveId: "knowledge-base", key: "article-42", data: ["title": "Hello"])
 
-// A read is checked against a GroveDB proof (see Verification).
-let item = try await client.data.get(subgroveId: "knowledge-base", key: "article-42")
+// The item is readable once its block is committed; until then a read throws
+// NotFoundError. A read is checked against a GroveDB proof (see Verification).
+var item: DataResponse?
+for _ in 0..<10 {
+    do {
+        item = try await client.data.get(subgroveId: "knowledge-base", key: "article-42")
+        break
+    } catch let error as WillowError where error.type == .notFound {
+        try await Task.sleep(nanoseconds: 1_000_000_000)
+    }
+}
 ```
 
 ## Verification
@@ -102,6 +113,9 @@ The API serves no REST write route: every write is a consensus transaction, sent
 - `data.store` — StoreData
 - `registration.registerSubgrove` — RegisterSubgrove, a DataStorage subgrove the identity owns, its schema in the node's form (`SubgroveSchema`)
 - `registration.deleteSubgrove` — DeregisterSubgrove
+- `files.upload` and `files.delete` — StoreFileManifest and DeleteFileManifest (without `FileSigningOptions`; with no identity they throw and send nothing)
+
+`store` and the other writes return once the node's CheckTx admits the transaction, before it is in a block: what a write stores is readable once its block is committed.
 
 `ConsensusClient` builds the same transactions with a sign function you pass, along with file manifests and key grants. Writes the SDK has no transaction for throw a validation error and send nothing: `data.update`, `data.delete`, `data.batchStore`, `registration.updateSubgrove`, `registration.grantPermission`, `registration.revokePermission`, and `registerDID`.
 
@@ -212,13 +226,13 @@ A grantee in a grant or rotation, and a revokee, must be a Willow DID, and a rev
 
 The node accepts a nonce in the 24 above the account's base that it hasn't used, and the base advances only over used nonces with no gap, so a nonce handed out and never used blocks the window until something uses it. The client's writes and the `ConsensusClient` methods take their nonces from one allocator per process, kept per DID and API URL:
 
-- Each write takes the lowest nonce above the base that isn't used and isn't held by another write in flight, so writes sent together take distinct nonces. The base comes from `GET /account/{did}/nonce`. `ConsensusClient` also reads which nonces above the base are used, from the ABCI query `/store/account_nonce_state/{did}` on its CometBFT RPC.
+- Each write takes the lowest nonce above the base that isn't used and isn't held by another write in flight from this process, so writes it sends together take distinct nonces. For the client's writes, the base comes from the API's `GET /account/{did}/nonce`. `ConsensusClient` reads the base, and which nonces above it are used, from the ABCI query `/store/account_nonce_state/{did}` on its CometBFT RPC, and falls back to the API's base when the RPC can't answer that query. Writes from other processes or devices aren't coordinated with these: a nonce one of them takes shows up as used, or as a refusal that says so.
 - A nonce is held from when it is handed out until the chain shows it used, or for 120 s if it never lands. The node holds a pending transaction's nonce for 3 blocks or 120 s, whichever ends first, so 120 s is the longest it can be held.
 - A write whose nonce another write takes while it is being built (signing took longer than 120 s) is signed again under a new nonce before it is sent. A write only ever changes the hold on its own nonce.
 - A write refused at CheckTx, or by the API before it (a 4xx, in JSON or plain text), gives its nonce back, unless the refusal says the nonce is held by a pending transaction, already used, or spent; then it is treated as taken.
 - A write whose outcome is unknown (its submission failed in transit, or the API answered a 5xx or a 408) may have reached the node and may still land, so its nonce stays held and it throws `TransactionSubmitError`, which carries the signed transaction (`submission`: its DID, nonce, and the exact body sent). Retry it only with `client.resubmit(error.submission)` (or `ConsensusClient.resubmit`), which sends that same body under the same nonce: whichever copy lands first spends the nonce and the other is refused, so the write runs at most once. Calling `store` or `transfer` again would sign the write under a fresh nonce, and both could run. A `BroadcastResult` and a CheckTx refusal (`TransactionError`) carry `submission` too. When the node already holds the identical transaction, `resubmit` returns success with no transaction hash.
 - With every nonce in the window held or used, a write fails with a "nonce window is full" error instead of signing one the node refuses. More than 24 writes from one identity have to wait for earlier ones to land.
-- For `files`, pass new `FileSigningOptions` with the nonce to sign under.
+- `files.upload` and `files.delete` without signing options sign with the identity under a nonce from the allocator. With `FileSigningOptions` (a key the identity doesn't hold), they, and `files.unregisterStorageNode`, sign under the nonce the options give, outside the allocator: pick one no other write of that DID holds.
 
 ## What's in the box
 

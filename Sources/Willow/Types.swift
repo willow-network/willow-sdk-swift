@@ -686,8 +686,12 @@ public struct QueryResponse {
     public let hasMore: Bool
     /// The GroveDB proof, when one was asked for (served as hex).
     public let proof: Data?
-    /// The block the proof's state is from: the state after block `height`,
-    /// whose app hash is in the header at `height + 1`. Served with a proof.
+    /// The height the API served with the proof: the block whose state it
+    /// says the proof is of (the state after block `height`). It is the
+    /// API's claim and isn't checked on its own; a verified query's proof is
+    /// bound to `header`, which carries the state after block
+    /// `header.height - 1`. Use `header` for the state the answer is proven
+    /// at.
     public let height: Int64?
     /// For a verified query (`data.query`), the header whose app hash the
     /// proof's root matched: the answer is the node's as of that header's
@@ -1187,7 +1191,9 @@ public struct DataProof: Codable {
     /// The root the proof hashes to, as lowercase hex.
     public let rootHash: String
     /// The height the API served with the proof: the block whose state it
-    /// says the proof is of.
+    /// says the proof is of. It is the API's claim and isn't checked on its
+    /// own; the proof is bound to `header`. Use `header` for the state the
+    /// value is proven at.
     public let height: Int64
     /// When the SDK verified it (Unix seconds, this device's clock).
     public let verifiedAt: Int64
