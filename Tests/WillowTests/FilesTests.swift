@@ -167,4 +167,64 @@ final class FilesTests: XCTestCase {
             algorithm: identity.keyPair.algorithm, publicKey: identity.keyPair.publicKey,
             message: Data(deleteMessage.utf8), signature: Data(deletion.signature)))
     }
+
+    /// The storage node refuses a chunk until the manifest is on chain, which
+    /// is after the submission returns: the chunk is posted again until taken.
+    func testAnUploadPostsAChunkAgainUntilTheManifestLands() async throws {
+        let chain = NonceTests.FakeChain(base: 5)
+        var refusals = 2
+        let stub = StubServer { request in
+            if request.url.host == "storage.test" {
+                if refusals > 0 { refusals -= 1; return (403, #"{"error":"No on-chain manifest found."}"#) }
+                return (200, "{}")
+            }
+            return chain.answer(request)
+        }
+        let client = try stub.client(baseURL: "http://api.test")
+        client.setIdentity(try NonceTests.identity())
+        let manifest = try await client.files.upload(
+            subgroveId: "sg", fileKey: "f", filename: "a.txt", data: Data("hello".utf8),
+            storageNodeEndpoint: "http://storage.test", pollInterval: 0.01)
+        XCTAssertEqual(manifest.fileKey, "f")
+        XCTAssertEqual(stub.requests.filter { $0.url.host == "storage.test" }.count, 3)
+    }
+
+    /// A manifest whose outcome is unknown that did land: its chunks go up, so
+    /// the file isn't left without them.
+    func testAnUploadWhoseManifestAnswerWasLostStillPostsItsChunks() async throws {
+        let chain = NonceTests.FakeChain(base: 5)
+        let stub = StubServer { request in
+            if request.url.host == "storage.test" { return (200, "{}") }
+            if request.path == "/tx/submit" { return (502, #"{"success":false,"error":"Failed to reach CometBFT RPC"}"#) }
+            return chain.answer(request)
+        }
+        let client = try stub.client(baseURL: "http://api.test")
+        client.setIdentity(try NonceTests.identity())
+        let manifest = try await client.files.upload(
+            subgroveId: "sg", fileKey: "f", filename: "a.txt", data: Data("hello".utf8),
+            storageNodeEndpoint: "http://storage.test", pollInterval: 0.01)
+        XCTAssertEqual(manifest.fileKey, "f")
+        XCTAssertEqual(stub.requests.filter { $0.url.host == "storage.test" }.count, 1)
+    }
+
+    /// One that didn't land: the chunks are never taken, and the submission's
+    /// error comes back with what `resubmit` needs.
+    func testAnUploadWhoseManifestNeverLandsThrowsItsSubmission() async throws {
+        let chain = NonceTests.FakeChain(base: 5)
+        let stub = StubServer { request in
+            if request.url.host == "storage.test" { return (403, "{}") }
+            if request.path == "/tx/submit" { return (502, #"{"success":false,"error":"Failed to reach CometBFT RPC"}"#) }
+            return chain.answer(request)
+        }
+        let client = try stub.client(baseURL: "http://api.test")
+        client.setIdentity(try NonceTests.identity())
+        do {
+            _ = try await client.files.upload(
+                subgroveId: "sg", fileKey: "f", filename: "a.txt", data: Data("hello".utf8),
+                storageNodeEndpoint: "http://storage.test", landingTimeout: 0.05, pollInterval: 0.01)
+            XCTFail("uploaded a file whose manifest never landed")
+        } catch let error as TransactionSubmitError {
+            XCTAssertEqual(error.submission.nonce, 6)
+        }
+    }
 }

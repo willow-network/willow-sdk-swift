@@ -136,13 +136,25 @@ public class FileOperations {
     /// throws an authentication error and sends nothing (the node refuses an
     /// unsigned manifest). A text field holding a line break is refused with
     /// a validation error before anything is signed.
+    ///
+    /// The storage node takes a chunk only once the manifest is on chain, so
+    /// each chunk is posted again every `pollInterval` seconds until it is
+    /// taken or `landingTimeout` seconds pass. A manifest whose outcome is
+    /// unknown doesn't stop that: if the chunks are taken, the manifest landed
+    /// and `upload` returns. If they aren't, it throws what the submission
+    /// failed with. `resubmit` that (or, with `signing`, send it again under
+    /// the same nonce), then call `upload` again to get the chunks up; once the
+    /// first manifest is on chain, the second is refused in its block, which
+    /// spends its nonce and changes nothing.
     public func upload(
         subgroveId: String,
         fileKey: String,
         filename: String,
         data: Data,
         storageNodeEndpoint: String,
-        signing: FileSigningOptions? = nil
+        signing: FileSigningOptions? = nil,
+        landingTimeout: TimeInterval = 60,
+        pollInterval: TimeInterval = 1
     ) async throws -> FileManifest {
         guard let client = client else { throw NetworkError("Client deallocated") }
         let chunkSize = defaultChunkSize
@@ -196,34 +208,60 @@ public class FileOperations {
         }
 
         // Submit StoreFileManifestTx to consensus through the API's /tx/submit.
+        // A submission whose outcome is unknown doesn't stop the upload: if the
+        // manifest landed, the chunks go up; if they don't, it is thrown.
+        var unknownOutcome: Error?
         let ownerDid: String
         if let signing = signing {
             ownerDid = signing.ownerDid
             let body = try manifest(owner: signing.ownerDid, publicKeyId: signing.publicKeyId, nonce: signing.nonce) {
                 try signing.signFunction($0, signing.privateKey)
             }
-            try await client.submitTransaction(body)
+            do {
+                try await client.submitTransaction(body)
+            } catch let refused as TransactionError {
+                throw refused
+            } catch {
+                unknownOutcome = error
+            }
         } else {
             let identity = try client.transactionIdentity()
             ownerDid = identity.did
             // Refuse what can't be signed before spending a request on the nonce.
             _ = try manifest(owner: identity.did, publicKeyId: identity.publicKeyId, nonce: 1) { _ in Data() }
-            _ = try await client.submitUnderNextNonce(did: identity.did) { nonce in
-                try manifest(owner: identity.did, publicKeyId: identity.publicKeyId, nonce: nonce, sign: identity.sign)
+            do {
+                _ = try await client.submitUnderNextNonce(did: identity.did) { nonce in
+                    try manifest(owner: identity.did, publicKeyId: identity.publicKeyId, nonce: nonce, sign: identity.sign)
+                }
+            } catch let unknown as TransactionSubmitError {
+                unknownOutcome = unknown
             }
         }
 
-        // Upload chunks to storage node
+        // Upload chunks to the storage node, which takes one only once the
+        // manifest is on chain: it answers 403 until then, and 503 while it
+        // can't read the chain.
+        let deadline = Date().addingTimeInterval(landingTimeout)
         for (i, chunk) in chunks.enumerated() {
             var request = URLRequest(url: chunkURLs[i])
             request.httpMethod = "POST"
             request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
             request.httpBody = chunk
 
-            let (_, response) = try await HTTPBody.read(client.storageSession, request, limit: ResponseLimit.small, json: false)
-            guard let httpResponse = response as? HTTPURLResponse,
-                  (200...299).contains(httpResponse.statusCode) else {
-                throw NetworkError("Failed to upload chunk \(i)")
+            while true {
+                var status: Int?
+                do {
+                    let (_, response) = try await HTTPBody.read(client.storageSession, request, limit: ResponseLimit.small, json: false)
+                    status = (response as? HTTPURLResponse)?.statusCode
+                } catch is URLError {
+                    status = nil
+                }
+                if let status = status, (200...299).contains(status) { break }
+                guard status == nil || status == 403 || status == 503, Date() < deadline else {
+                    if let unknownOutcome = unknownOutcome { throw unknownOutcome }
+                    throw NetworkError("Failed to upload chunk \(i)")
+                }
+                try await Task.sleep(nanoseconds: UInt64(max(0, pollInterval) * 1_000_000_000))
             }
         }
 

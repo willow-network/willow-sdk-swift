@@ -605,6 +605,11 @@ final class NonceTests: XCTestCase {
     /// CheckTx. The consensus client throws that as an `HTTPError` with the
     /// status and text, and gives the nonce back, so the corrected write
     /// takes it rather than the next one.
+    static let didDocument: [String: Any] = [
+        "id": "did:willow:a", "public_keys": [Any](), "authentication": [String](), "service": [Any](),
+        "created": 1, "updated": 1,
+    ]
+
     func testABodyRefusedInPlainTextGivesItsNonceBack() async throws {
         let keyPair = try SignedMessagesTests.keyPair(.ed25519)
         let chain = FakeChain(base: 0)
@@ -616,7 +621,7 @@ final class NonceTests: XCTestCase {
 
         do {
             _ = try await consensus.registerDid(
-                didDocument: ["id": "did:willow:a"], privateKey: Data(), publicKeyId: "did:willow:a#key-1", signFunction: sign
+                didDocument: Self.didDocument, privateKey: Data(), publicKeyId: "did:willow:a#key-1", signFunction: sign
             )
             XCTFail("the body must be refused")
         } catch let error as HTTPError {
@@ -624,7 +629,7 @@ final class NonceTests: XCTestCase {
             XCTAssertTrue(error.message.contains("missing field"), error.message)
         }
         let result = try await consensus.registerDid(
-            didDocument: ["id": "did:willow:a", "created": 1], privateKey: Data(), publicKeyId: "did:willow:a#key-1", signFunction: sign
+            didDocument: Self.didDocument, privateKey: Data(), publicKeyId: "did:willow:a#key-1", signFunction: sign
         )
         XCTAssertTrue(result.success)
         XCTAssertEqual(chain.sent, [1, 1])
