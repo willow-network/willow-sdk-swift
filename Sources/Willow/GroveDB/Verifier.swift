@@ -27,6 +27,27 @@ private let opChild: UInt8 = 0x11
 private let opParentInverted: UInt8 = 0x12
 private let opChildInverted: UInt8 = 0x13
 
+// Large-value op codes: the same layout as the op they mirror, but the value
+// length is a big-endian u32. The Willow GroveDB fork (willow-network/grovedb,
+// branch willow/v3.1.0-proof-fixes; upstream dashpay/grovedb 86562f65) writes
+// them for any value of 64 KiB or more, which grovedb 3.1.0's u16 length
+// cannot express.
+private let opPushKVLarge: UInt8 = 0x20
+private let opPushKVValueHashLarge: UInt8 = 0x21
+private let opPushKVRefValueHashLarge: UInt8 = 0x22
+private let opPushKVValueHashFeatureTypeLarge: UInt8 = 0x23
+private let opPushInvertedKVLarge: UInt8 = 0x28
+private let opPushInvertedKVValueHashLarge: UInt8 = 0x29
+private let opPushInvertedKVRefValueHashLarge: UInt8 = 0x2a
+private let opPushInvertedKVValueHashFeatureTypeLarge: UInt8 = 0x2b
+
+/// The shortest value a large-value op carries; a shorter value has exactly
+/// one encoding, the 3.1.0 op with a u16 length.
+public let merkLargeValueThreshold = 65536
+/// The longest value a large-value op may declare (64 MiB, as the prover's
+/// decoder).
+public let merkMaxValueLength = 64 * 1024 * 1024
+
 // MARK: - Tree
 
 /// A node in the Merk AVL tree, as a proof rebuilds it.
@@ -91,8 +112,8 @@ public class Tree {
 
 /// Decodes Merk proof operations from bytes: a one-byte op code, then for a
 /// push the node (a key with a one-byte length, a value with a big-endian
-/// two-byte length, 32-byte hashes, and for a feature-type node its tree
-/// feature).
+/// two-byte length, or four-byte under a large-value op code, 32-byte hashes,
+/// and for a feature-type node its tree feature).
 public class MerkDecoder {
     private let data: [UInt8]
     private var offset: Int = 0
@@ -128,6 +149,14 @@ public class MerkDecoder {
         case opPushInvertedKVDigest: return MerkOp(type: .pushInverted, node: try decodeKVDigest())
         case opPushInvertedKVRefValueHash: return MerkOp(type: .pushInverted, node: try decodeKVValueHash(.kvRefValueHash))
         case opPushInvertedKVValueHashFeatureType: return MerkOp(type: .pushInverted, node: try decodeKVValueHashFeatureType())
+        case opPushKVLarge: return MerkOp(type: .push, node: try decodeKV(large: true))
+        case opPushKVValueHashLarge: return MerkOp(type: .push, node: try decodeKVValueHash(.kvValueHash, large: true))
+        case opPushKVRefValueHashLarge: return MerkOp(type: .push, node: try decodeKVValueHash(.kvRefValueHash, large: true))
+        case opPushKVValueHashFeatureTypeLarge: return MerkOp(type: .push, node: try decodeKVValueHashFeatureType(large: true))
+        case opPushInvertedKVLarge: return MerkOp(type: .pushInverted, node: try decodeKV(large: true))
+        case opPushInvertedKVValueHashLarge: return MerkOp(type: .pushInverted, node: try decodeKVValueHash(.kvValueHash, large: true))
+        case opPushInvertedKVRefValueHashLarge: return MerkOp(type: .pushInverted, node: try decodeKVValueHash(.kvRefValueHash, large: true))
+        case opPushInvertedKVValueHashFeatureTypeLarge: return MerkOp(type: .pushInverted, node: try decodeKVValueHashFeatureType(large: true))
         case opParent: return MerkOp(type: .parent)
         case opChild: return MerkOp(type: .child)
         case opParentInverted: return MerkOp(type: .parentInverted)
@@ -145,15 +174,15 @@ public class MerkDecoder {
         return MerkNode.kvHashNode(CryptoHash(data: try readBytes(hashLength)))
     }
 
-    private func decodeKV() throws -> MerkNode {
+    private func decodeKV(large: Bool = false) throws -> MerkNode {
         let key = try readBytes(Int(try readU8()))
-        let value = try readBytes(Int(try readU16()))
+        let value = try readBytes(try readValueLength(large: large))
         return MerkNode.kvNode(key: key, value: value)
     }
 
-    private func decodeKVValueHash(_ type: MerkNodeType) throws -> MerkNode {
+    private func decodeKVValueHash(_ type: MerkNodeType, large: Bool = false) throws -> MerkNode {
         let key = try readBytes(Int(try readU8()))
-        let value = try readBytes(Int(try readU16()))
+        let value = try readBytes(try readValueLength(large: large))
         let hash = CryptoHash(data: try readBytes(hashLength))
         return MerkNode(type: type, key: key, value: value, valueHash: hash)
     }
@@ -167,8 +196,8 @@ public class MerkDecoder {
     /// A KVValueHash node followed by its tree feature, which the node's hash
     /// does not include: basic (0), summed (1, a zigzag varint), big summed
     /// (2, 16 bytes), counted (3, a varint), or counted and summed (4, both).
-    private func decodeKVValueHashFeatureType() throws -> MerkNode {
-        let node = try decodeKVValueHash(.kvValueHashFeatureType)
+    private func decodeKVValueHashFeatureType(large: Bool = false) throws -> MerkNode {
+        let node = try decodeKVValueHash(.kvValueHashFeatureType, large: large)
         switch try readU8() {
         case 0:
             break
@@ -200,6 +229,26 @@ public class MerkDecoder {
         let value = UInt16(data[offset]) << 8 | UInt16(data[offset + 1])
         offset += 2
         return value
+    }
+
+    /// A value length: a big-endian u16 under a 3.1.0 op code, a big-endian
+    /// u32 under a large-value one, which must carry at least
+    /// `merkLargeValueThreshold` and at most `merkMaxValueLength` bytes.
+    private func readValueLength(large: Bool) throws -> Int {
+        guard large else { return Int(try readU16()) }
+        guard offset + 4 <= data.count else {
+            throw VerificationError("Unexpected end of data reading u32")
+        }
+        let length = Int(data[offset]) << 24 | Int(data[offset + 1]) << 16
+            | Int(data[offset + 2]) << 8 | Int(data[offset + 3])
+        offset += 4
+        guard length >= merkLargeValueThreshold else {
+            throw VerificationError("Large-value op with a \(length)-byte value (must be at least \(merkLargeValueThreshold))")
+        }
+        guard length <= merkMaxValueLength else {
+            throw VerificationError("Large-value op with a \(length)-byte value (limit \(merkMaxValueLength))")
+        }
+        return length
     }
 
     private func readLEB128() throws -> UInt64 {
