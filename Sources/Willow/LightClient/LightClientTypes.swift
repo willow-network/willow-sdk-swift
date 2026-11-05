@@ -444,8 +444,10 @@ public struct VerifiedHeader: Codable, Equatable {
 
 // MARK: - Verification Result
 
-/// Result of header verification.
+/// Result of `LightClient.verify(block:trustedState:)`.
 public struct LightClientVerificationResult {
+    /// Whether the block passed the light client's consistency checks. It
+    /// doesn't mean the commit's signatures verify: they aren't checked.
     public let verified: Bool
     public let height: Int64
     public let appHash: String

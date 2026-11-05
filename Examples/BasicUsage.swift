@@ -21,6 +21,8 @@ struct BasicUsageExample {
         do {
             // 1. Create client
             print("1. Creating client...")
+            // Verified reads take headers from this node's RPC (port 26657);
+            // for a remote API, pass consensusRpcURL.
             let client = try WillowClient(baseURL: "http://localhost:3031")
             print("   Connected to Willow node")
             print()

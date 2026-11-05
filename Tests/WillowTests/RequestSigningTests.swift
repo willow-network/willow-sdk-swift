@@ -404,13 +404,18 @@ final class StubServer {
         return URLSession(configuration: configuration)
     }
 
-    func client(baseURL: String, indexerURL: String? = nil, nonces: NonceAllocator = NonceAllocator()) throws -> WillowClient {
+    /// A client of the API at `baseURL` whose requests, and whose default
+    /// light client's requests to the consensus RPC, this server answers.
+    func client(
+        baseURL: String, indexerURL: String? = nil, nonces: NonceAllocator = NonceAllocator(), consensusRpcURL: String? = nil
+    ) throws -> WillowClient {
         let config = ClientConfig(
             baseURL: URL(string: baseURL)!,
             indexerURL: indexerURL.flatMap { URL(string: $0) },
-            retryConfig: RetryConfig(maxRetries: 2, initialBackoff: 0.001, maxBackoff: 0.001, backoffFactor: 1)
+            retryConfig: RetryConfig(maxRetries: 2, initialBackoff: 0.001, maxBackoff: 0.001, backoffFactor: 1),
+            consensusRpcURL: consensusRpcURL.flatMap { URL(string: $0) }
         )
-        return WillowClient(config: config, session: session, nonces: nonces)
+        return WillowClient(config: config, session: session, nonces: nonces, rpcSession: session)
     }
 
     fileprivate func answer(_ request: URLRequest) -> (Int, Data) {

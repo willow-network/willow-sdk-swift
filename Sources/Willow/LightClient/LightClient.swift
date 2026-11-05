@@ -2,17 +2,23 @@ import Foundation
 
 // MARK: - Light Client
 
-/// A light client that follows Willow's CometBFT headers and supplies the app
-/// hash a GroveDB proof's root is compared with.
+/// Follows Willow's CometBFT headers from the consensus RPC endpoints you
+/// configure, and supplies the app hash a GroveDB proof's root is compared
+/// with.
+///
+/// It trusts those endpoints, as a client trusts its own node: it doesn't
+/// verify validator signatures, so a header it holds is only as trustworthy
+/// as the nodes it reads. Point it at a consensus node you run or trust,
+/// never at the API whose proofs it checks.
 ///
 /// It starts from a header you pin (`init(_:trustedHeader:validatorSet:)` or
-/// `init(_:trustedState:)`) or, with no pin, from the first header an
-/// endpoint serves. Another header is accepted if `verify(block:trustedState:)`
-/// passes against the highest header already accepted below it, and if it is
-/// earlier than the next accepted header above it. That check does not
-/// verify the commit's signatures, nor that the validator set the endpoint
-/// serves is the one the header commits to, so a header it accepts is only as
-/// trustworthy as the endpoints it reads.
+/// `init(_:trustedState:)`) or, with no pin, from the latest header an
+/// endpoint serves, taken as served. Another header is accepted if
+/// `verify(block:trustedState:)`'s consistency checks pass against the
+/// highest header already accepted below it, and if it is earlier than the
+/// next accepted header above it. Those checks don't verify the commit's
+/// signatures, nor that the validator set an endpoint serves is the one the
+/// header commits to.
 ///
 /// It reads CometBFT's RPC answers (`/commit`, `/validators`, and
 /// `/status`). It is safe to use from several tasks at once.
@@ -245,17 +251,19 @@ public final class LightClient: @unchecked Sendable {
 
     // MARK: - Verification
 
-    /// Checks a light block against trusted state: the chain ID, that height
-    /// and time move forward, that the trusted header is within the trusting
-    /// period (from its block time, or from when it was trusted if its block
-    /// time isn't known), that the header's time is
-    /// less than `maxClockDrift` ahead of this clock (a header may be any age:
-    /// the header after a proof's block may be read long after it was made),
-    /// for the next height that its validators hash is the trusted header's
-    /// next validators hash, and that commit signatures are present from
-    /// validators holding the trust threshold of the served set's voting
-    /// power. The signatures are counted by validator address, not verified,
-    /// and the served validator set is not checked against the header.
+    /// Checks that a light block an endpoint serves is consistent with a
+    /// trusted header: the chain ID, that height and time move forward, that
+    /// the trusted header is within the trusting period (from its block time,
+    /// or from when it was trusted if its block time isn't known), that the
+    /// header's time is less than `maxClockDrift` ahead of this clock (a
+    /// header may be any age: the header after a proof's block may be read
+    /// long after it was made), for the next height that its validators hash
+    /// is the trusted header's next validators hash, and that the commit
+    /// names validators holding the trust threshold of the served set's
+    /// voting power. The signatures are counted by validator address (each
+    /// validator once), not verified, and the served validator set is not
+    /// checked against the header, so a result that passes says the endpoint
+    /// served a consistent block, not that the chain's validators signed it.
     public func verify(block: LightBlock, trustedState: TrustedState) throws -> LightClientVerificationResult {
         // Check chain ID
         guard block.header.chainId == config.chainId else {

@@ -47,8 +47,14 @@ public class DataOperations {
     /// `0.12345678901234567890` or `18446744073709551615`) throws
     /// `NotVerifiableError` (store such numbers as strings).
     ///
-    /// The app hash is only as trustworthy as the light client's header: see
-    /// `LightClient`, whose header check does not verify commit signatures.
+    /// The app hash comes from the consensus RPC the client is configured
+    /// with (`consensusRpcURL`, the local node's for an API on this machine,
+    /// or a light client you set; see `WillowClient.getOrCreateLightClient()`).
+    /// The SDK trusts that node, as a client trusts its own node: it doesn't
+    /// verify validator signatures, so a dishonest consensus node can make a
+    /// forged value verify, but a forged value or proof from the API can't.
+    /// With no consensus RPC configured this throws a config error before
+    /// sending anything.
     ///
     /// A key the API reports missing throws `NotFoundError` (type
     /// `.notFound`). That answer comes without a proof, so it does not prove
@@ -234,9 +240,11 @@ public class DataOperations {
     /// Unicode canonical equivalents. `queryUnverified` returns the node's
     /// answer to such a query, unchecked.
     ///
-    /// The app hash is only as trustworthy as the light client's header: see
-    /// `LightClient`. A request the node can't run (see `QueryRequest`) is
-    /// refused with a validation error before anything is sent.
+    /// The app hash comes from the configured consensus RPC, which the SDK
+    /// trusts without verifying validator signatures, as for `get`; with none
+    /// configured this throws a config error before sending anything. A
+    /// request the node can't run (see `QueryRequest`) is refused with a
+    /// validation error before anything is sent.
     public func query(subgroveId: String, query: QueryRequest) async throws -> QueryResponse {
         guard let client = client else { throw NetworkError("Client deallocated") }
         try query.validateForNode()

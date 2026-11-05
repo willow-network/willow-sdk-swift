@@ -16,6 +16,16 @@ public struct ClientConfig {
     /// https://dashboard.willow.tech/account. Required for queries and
     /// writes against managed `api.willow.tech` / `indexer.willow.tech`.
     public let apiKey: String?
+    /// The CometBFT RPC (typically port 26657) of a consensus node you run or
+    /// trust. Verified reads (`data.get`, `data.query`) compare a proof's
+    /// root with the app hash this node's headers carry, and trust it as a
+    /// client trusts its own node: the SDK doesn't verify validator
+    /// signatures. Without it, verified reads work only against an API on
+    /// this machine (whose node's RPC is taken to be at port 26657) or with a
+    /// light client you set (`WillowClient.setLightClient`); otherwise they
+    /// throw before sending anything. Never point it at the API: a header
+    /// the API serves can't vouch for a proof the API serves.
+    public let consensusRpcURL: URL?
 
     public init(
         baseURL: URL,
@@ -23,7 +33,8 @@ public struct ClientConfig {
         timeout: TimeInterval = 30,
         retryConfig: RetryConfig = .default,
         autoVerify: Bool = true,
-        apiKey: String? = nil
+        apiKey: String? = nil,
+        consensusRpcURL: URL? = nil
     ) {
         self.baseURL = baseURL
         self.indexerURL = indexerURL
@@ -31,6 +42,7 @@ public struct ClientConfig {
         self.retryConfig = retryConfig
         self.autoVerify = autoVerify
         self.apiKey = apiKey
+        self.consensusRpcURL = consensusRpcURL
     }
 }
 
@@ -47,6 +59,9 @@ public class WillowClient {
     private let nonces: NonceAllocator
     private var lightClient: LightClient?
     private var lightClientInitTask: Task<LightClient, Error>?
+    /// The session the default light client reads the consensus RPC
+    /// through, when given (tests); else its own.
+    private let rpcSession: URLSession?
 
     /// Data operations.
     public private(set) lazy var data: DataOperations = DataOperations(client: self)
@@ -75,7 +90,14 @@ public class WillowClient {
     ///   - indexerURL: Optional indexer node URL for routing GraphQL/SQL queries.
     ///   - timeout: Request timeout in seconds.
     ///   - autoVerify: Whether to automatically verify proofs.
-    public convenience init(baseURL: String, indexerURL: String? = nil, timeout: TimeInterval = 30, autoVerify: Bool = true, apiKey: String? = nil) throws {
+    ///   - apiKey: Managed-tier API key (see `ClientConfig.apiKey`).
+    ///   - consensusRpcURL: The CometBFT RPC of a consensus node you run or
+    ///     trust, which verified reads take their headers from (see
+    ///     `ClientConfig.consensusRpcURL`).
+    public convenience init(
+        baseURL: String, indexerURL: String? = nil, timeout: TimeInterval = 30, autoVerify: Bool = true, apiKey: String? = nil,
+        consensusRpcURL: String? = nil
+    ) throws {
         guard let url = URL(string: baseURL) else {
             throw ConfigError("Invalid base URL: \(baseURL)")
         }
@@ -90,7 +112,20 @@ public class WillowClient {
             parsedIndexerURL = nil
         }
 
-        let config = ClientConfig(baseURL: url, indexerURL: parsedIndexerURL, timeout: timeout, autoVerify: autoVerify, apiKey: apiKey)
+        let parsedRpcURL: URL?
+        if let rpc = consensusRpcURL {
+            guard let rpcURL = URL(string: rpc), rpcURL.scheme != nil, rpcURL.host != nil else {
+                throw ConfigError("Invalid consensus RPC URL: \(rpc)")
+            }
+            parsedRpcURL = rpcURL
+        } else {
+            parsedRpcURL = nil
+        }
+
+        let config = ClientConfig(
+            baseURL: url, indexerURL: parsedIndexerURL, timeout: timeout, autoVerify: autoVerify, apiKey: apiKey,
+            consensusRpcURL: parsedRpcURL
+        )
 
         let sessionConfig = URLSessionConfiguration.default
         sessionConfig.timeoutIntervalForRequest = timeout
@@ -102,12 +137,14 @@ public class WillowClient {
     }
 
     /// Testing seam: supply the configuration, a `URLSession` (e.g. backed by
-    /// a stub `URLProtocol`), and the nonce allocator (a fresh one unless
-    /// given; the public initializers use the process's shared one).
-    internal init(config: ClientConfig, session: URLSession, nonces: NonceAllocator = NonceAllocator()) {
+    /// a stub `URLProtocol`), the nonce allocator (a fresh one unless given;
+    /// the public initializers use the process's shared one), and the session
+    /// the default light client reads the consensus RPC through.
+    internal init(config: ClientConfig, session: URLSession, nonces: NonceAllocator = NonceAllocator(), rpcSession: URLSession? = nil) {
         self.config = config
         self.session = session
         self.nonces = nonces
+        self.rpcSession = rpcSession
 
         self.encoder = JSONEncoder()
         self.encoder.keyEncodingStrategy = .convertToSnakeCase
@@ -143,10 +180,15 @@ public class WillowClient {
 
     /// Gets or creates the light client verified reads compare proofs with.
     ///
-    /// With none set, it creates one that trusts the first header the node's
-    /// RPC endpoint serves (trust on first use) and accepts later headers as
-    /// `LightClient.verify(block:trustedState:)` does, which doesn't verify
-    /// commit signatures. Set one with a header you pin (`setLightClient`).
+    /// With none set, it creates one that reads headers from the consensus
+    /// RPC: `consensusRpcURL`, or, for an API on this machine (`localhost`,
+    /// `127.0.0.1`, or `::1` at port 3031), that node's RPC at port 26657.
+    /// It trusts that node, as a client trusts its own node: it takes the
+    /// first header the node serves as served, and checks later ones only as
+    /// `LightClient.verify(block:trustedState:)` does, without verifying
+    /// validator signatures. With neither, it throws a config error before
+    /// sending anything: a header the API serves can't vouch for a proof the
+    /// API serves.
     public func getOrCreateLightClient() async throws -> LightClient {
         // Return existing light client if available
         if let existing = lightClient {
@@ -158,11 +200,19 @@ public class WillowClient {
             return try await task.value
         }
 
+        guard let rpc = consensusRPC() else {
+            throw ConfigError(
+                "Verified reads have no trusted header source: set consensusRpcURL to the CometBFT RPC of a consensus node "
+                    + "you run or trust (or set a light client with setLightClient). The SDK doesn't take headers from the API "
+                    + "(\(config.baseURL.absoluteString)): a header the API serves can't vouch for a proof the API serves.")
+        }
+
         // Start initialization
+        let rpcSession = self.rpcSession
         let task = Task<LightClient, Error> {
             let lightClientConfig = LightClientConfig(
                 chainId: "willow-chain",
-                validatorEndpoints: [config.baseURL.absoluteString.replacingOccurrences(of: ":3031", with: ":26657")],
+                validatorEndpoints: [rpc],
                 trustThreshold: TrustThreshold(numerator: 2, denominator: 3),
                 trustingPeriod: 86400, // 24 hours
                 maxClockDrift: 30,     // 30 seconds
@@ -170,8 +220,11 @@ public class WillowClient {
             )
 
             let lc = try LightClient(lightClientConfig)
+            if let rpcSession = rpcSession {
+                lc.session = rpcSession
+            }
 
-            // Sync to get initial trusted state (trust-on-first-use)
+            // Take the consensus node's latest header as served.
             try await lc.sync()
 
             return lc
@@ -182,6 +235,41 @@ public class WillowClient {
         self.lightClient = lc
         lightClientInitTask = nil
         return lc
+    }
+
+    /// The consensus RPC verified reads take headers from, without a trailing
+    /// slash: `consensusRpcURL`, else the local node's for a local API; nil
+    /// when there is neither.
+    internal func consensusRPC() -> String? {
+        guard let url = config.consensusRpcURL ?? WillowClient.localConsensusRPC(forAPI: config.baseURL) else {
+            return nil
+        }
+        var text = url.absoluteString
+        while text.hasSuffix("/") {
+            text.removeLast()
+        }
+        return text
+    }
+
+    /// For an API on this machine (host `localhost`, `127.0.0.1`, or `::1`,
+    /// port 3031, the API's default), its node's CometBFT RPC: the same
+    /// scheme and host at port 26657. Nil for any other API URL: the SDK
+    /// doesn't guess where a remote API's consensus node is.
+    internal static func localConsensusRPC(forAPI api: URL) -> URL? {
+        guard var components = URLComponents(url: api, resolvingAgainstBaseURL: false),
+              let host = components.host?.lowercased(),
+              ["localhost", "127.0.0.1", "::1", "[::1]"].contains(host),
+              components.port == 3031
+        else {
+            return nil
+        }
+        components.port = 26657
+        components.percentEncodedPath = ""
+        components.percentEncodedQuery = nil
+        components.fragment = nil
+        components.user = nil
+        components.password = nil
+        return components.url
     }
 
     // MARK: - Identity Management
