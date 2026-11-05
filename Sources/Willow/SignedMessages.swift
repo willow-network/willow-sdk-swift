@@ -397,3 +397,97 @@ internal func unsignedField<T: FixedWidthInteger & UnsignedInteger>(_ label: Str
     }
     return unsigned
 }
+
+// MARK: - RegisterDid
+
+/// The message a RegisterDid transaction is signed over: the node's compact
+/// JSON of the DID document (`serde_json::to_vec` of its `DidDocument`), as
+/// `didDocumentBody` writes it. The node signs no other text: its fields in
+/// its order (`id`, `public_keys`, `authentication`, `service`, `created`,
+/// `updated`, `proof`; a key's `id`, `type`, `controller`,
+/// `public_key_base58`, `public_key_hex`; a service's `id`, `type`,
+/// `service_endpoint`; a proof's `type`, `created`, `verification_method`,
+/// `proof_purpose`, `jws`), an absent option as `null`, no whitespace, and
+/// strings escaped as serde_json escapes them (`"` and `\`, and the control
+/// characters below 0x20; not `/` or any other text).
+///
+/// - Throws: A validation error for a document the node can't read (see
+///   `didDocumentBody`).
+public func registerDidMessage(_ didDocument: [String: Any]) throws -> String {
+    return String(decoding: try didDocumentBody(didDocument).serialized, as: UTF8.self)
+}
+
+/// A DID document as the node decodes it, in its field order, from a
+/// document in its JSON form: `id`; `public_keys`, each with `id`, `type`
+/// (or `key_type`), `controller`, and optionally `public_key_base58` and
+/// `public_key_hex`; `authentication`, the key IDs that sign for the DID;
+/// `service`, each with `id`, `type` (or `service_type`), and
+/// `service_endpoint` (or `endpoint`), empty when absent; `created` and
+/// `updated`, integers from 0 to 2^64 - 1; and optionally `proof`, with
+/// `type` (or `proof_type`), `created`, `verification_method`,
+/// `proof_purpose`, and `jws`. Fields the node doesn't read are dropped:
+/// send this document, so the node serializes back exactly what was signed.
+///
+/// Refuses, with a validation error, a document missing a field the node
+/// requires or holding one of the wrong type (a number that isn't an
+/// unsigned integer, such as `1.5` or `-1`, or a value that isn't JSON).
+internal func didDocumentBody(_ didDocument: [String: Any]) throws -> WireJSON {
+    let d = try WireJSONObject(try WireJSON.foundation(didDocument), "didDocument")
+
+    /// The string at `key` (or, when absent, at `alias`), required.
+    func text(_ object: WireJSONObject, _ key: String, or alias: String? = nil) throws -> WireJSON {
+        let value = try object.optional(key) ?? alias.flatMap { object.optional($0) } ?? object.required(key)
+        return .string(try value.string(object.label(key)))
+    }
+    /// The string at `key`, or null when absent or null.
+    func optionalText(_ object: WireJSONObject, _ key: String) throws -> WireJSON {
+        return try object.optionalValue(key) { .string(try $0.string(object.label(key))) } ?? .null
+    }
+    func u64(_ object: WireJSONObject, _ key: String) throws -> WireJSON {
+        return .unsigned(try object.required(key).unsigned(object.label(key), as: UInt64.self))
+    }
+    /// The array at `key` (empty when absent or null, if `optional`), each
+    /// element read with `read`.
+    func list(_ key: String, optional: Bool = false, _ read: (WireJSONObject) throws -> WireJSON) throws -> WireJSON {
+        let value = optional ? (d.optionalValue(key) { $0 } ?? .array([])) : try d.required(key)
+        return .array(try value.array(d.label(key)).enumerated().map { index, element in
+            try read(try WireJSONObject(element, "\(d.label(key))[\(index)]"))
+        })
+    }
+
+    let publicKeys = try list("public_keys") { k in
+        .object([
+            .init("id", try text(k, "id")),
+            .init("type", try text(k, "type", or: "key_type")),
+            .init("controller", try text(k, "controller")),
+            .init("public_key_base58", try optionalText(k, "public_key_base58")),
+            .init("public_key_hex", try optionalText(k, "public_key_hex")),
+        ])
+    }
+    let services = try list("service", optional: true) { s in
+        .object([
+            .init("id", try text(s, "id")),
+            .init("type", try text(s, "type", or: "service_type")),
+            .init("service_endpoint", try text(s, "service_endpoint", or: "endpoint")),
+        ])
+    }
+    let proof = try d.optionalValue("proof") { value -> WireJSON in
+        let p = try WireJSONObject(value, d.label("proof"))
+        return .object([
+            .init("type", try text(p, "type", or: "proof_type")),
+            .init("created", try u64(p, "created")),
+            .init("verification_method", try text(p, "verification_method")),
+            .init("proof_purpose", try text(p, "proof_purpose")),
+            .init("jws", try text(p, "jws")),
+        ])
+    } ?? .null
+    return .object([
+        .init("id", try text(d, "id")),
+        .init("public_keys", publicKeys),
+        .init("authentication", .strings(try d.required("authentication").strings(d.label("authentication")))),
+        .init("service", services),
+        .init("created", try u64(d, "created")),
+        .init("updated", try u64(d, "updated")),
+        .init("proof", proof),
+    ])
+}

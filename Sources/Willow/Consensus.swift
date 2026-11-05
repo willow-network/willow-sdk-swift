@@ -556,26 +556,49 @@ public class ConsensusClient {
     ///
     /// Calling `registerDid` before the derived id is funded fails on-chain with
     /// insufficient funds.
+    ///
+    /// `didDocument` is the document in its JSON form (see `didDocumentBody`
+    /// for its fields), for example, for an `Identity`:
+    ///
+    ///     [
+    ///         "id": identity.did,
+    ///         "public_keys": [[
+    ///             "id": identity.publicKeyId,
+    ///             "type": identity.keyPair.algorithm.keyType,
+    ///             "controller": identity.did,
+    ///             "public_key_hex": identity.keyPair.publicKeyHex,
+    ///         ]],
+    ///         "authentication": [identity.publicKeyId],
+    ///         "created": now,
+    ///         "updated": now,
+    ///     ]
+    ///
+    /// `publicKeyId` must be one of `authentication`, and the key's
+    /// `public_key_hex` the key the DID is derived from. `signFunction` signs
+    /// `registerDidMessage(didDocument)`, the document as the node serializes
+    /// it, and the SDK sends that same document, so the node reads back
+    /// exactly what was signed; fields the node doesn't read are dropped. A
+    /// document the node can't read is refused with a validation error before
+    /// anything is signed. The node takes a registration only under nonce 1:
+    /// the DID's first.
     public func registerDid(
         didDocument: [String: Any],
         privateKey: Data,
         publicKeyId: String,
         signFunction: (Data, Data) throws -> Data
     ) async throws -> BroadcastResult {
-        let did = (didDocument["id"] as? String) ?? ""
-
-        // Convert to AnyCodable for encoding
-        let codableDocument = didDocument.mapValues { AnyCodable($0) }
-        let signMessage = createSignMessage(txType: "RegisterDid", didDocument: didDocument)
+        let document = try didDocumentBody(didDocument)
+        let did = try WireJSONObject(document, "didDocument").required("id").string("didDocument.id")
+        let message = document.serialized
 
         return try await submitUnderNextNonce(did: did) { nonce in
-            var tx = RegisterDidTx(
-                didDocument: codableDocument,
-                publicKeyId: publicKeyId,
-                nonce: nonce
-            )
-            tx.signature = Array(try signFunction(Data(signMessage.utf8), privateKey))
-            return try encodeTransaction(txType: "RegisterDid", transaction: tx)
+            let signature = try signFunction(message, privateKey)
+            return WireJSON.variant("RegisterDid", .object([
+                .init("did_document", document),
+                .init("signature", .bytes(signature)),
+                .init("public_key_id", .string(publicKeyId)),
+                .init("nonce", .unsigned(try unsignedField("nonce", nonce, as: UInt64.self))),
+            ])).serialized
         }
     }
 
@@ -1141,14 +1164,6 @@ public class ConsensusClient {
     }
 
     // MARK: - Sign Message Creation
-
-    private func createSignMessage(txType: String, didDocument: [String: Any]) -> String {
-        if let jsonData = try? JSONSerialization.data(withJSONObject: didDocument, options: .sortedKeys),
-           let jsonString = String(data: jsonData, encoding: .utf8) {
-            return jsonString
-        }
-        return "{}"
-    }
 
     private func createSignMessageForTransfer(tx: TransferTx) -> String {
         return """
