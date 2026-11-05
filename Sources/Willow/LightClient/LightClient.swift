@@ -12,8 +12,11 @@ import Foundation
 /// never at the API whose proofs it checks.
 ///
 /// It starts from a header you pin (`init(_:trustedHeader:validatorSet:)` or
-/// `init(_:trustedState:)`) or, with no pin, from the latest header an
-/// endpoint serves, taken as served. Another header is accepted if
+/// `init(_:trustedState:)`; one whose block time is older than the trusting
+/// period is refused) or, with no pin, from the latest header an endpoint
+/// serves, taken as served. When the highest header it has accepted
+/// outlives the trusting period, it takes the latest header the same way,
+/// in place of the ones accepted so far. Another header is accepted if
 /// `verify(block:trustedState:)`'s consistency checks pass against the
 /// highest header already accepted below it, and if it is earlier than the
 /// next accepted header above it. Those checks don't verify the commit's
@@ -165,8 +168,10 @@ public final class LightClient: @unchecked Sendable {
     // MARK: - Synchronization
 
     /// Synchronizes with the network: fetches the latest header and accepts
-    /// it (with no trusted header yet, trusts it). A latest header this
-    /// client has already accepted is not an error.
+    /// it. With no trusted header yet, or one that has outlived the trusting
+    /// period, it takes that header as served (the light client trusts its
+    /// endpoints), in place of the headers accepted so far. A latest header
+    /// this client has already accepted is not an error.
     public func sync() async throws {
         locked {
             lastSyncAttempt = Date()
@@ -176,7 +181,8 @@ public final class LightClient: @unchecked Sendable {
         let lightBlock = try await fetchLightBlock(at: nil)
         try locked {
             latestKnownHeight = max(latestKnownHeight, lightBlock.header.height)
-            if trustedState == nil {
+            let expired = trustedState.map { Date().timeIntervalSince($0.header.trustingPeriodStart) > config.trustingPeriod } ?? true
+            if expired {
                 // The first header is taken as the endpoint serves it: the
                 // light client trusts the endpoints it reads. It must be of
                 // the configured chain.
@@ -184,6 +190,8 @@ public final class LightClient: @unchecked Sendable {
                     throw LightClientError(
                         "The RPC endpoint serves the chain \(lightBlock.header.chainId), not \(config.chainId), the chain this light client is configured for")
                 }
+                accepted = [:]
+                trustedState = nil
                 rememberLocked(LightClient.trustedState(of: lightBlock))
             } else {
                 try acceptLocked(lightBlock)
@@ -416,11 +424,13 @@ public final class LightClient: @unchecked Sendable {
 
     // MARK: - Root Hash
 
-    /// The trusted header's state, syncing first if there is none. Verified
-    /// reads call it before fetching a proof, so that the first header this
-    /// client takes is no later than the proof's state.
+    /// The trusted header's state, syncing first if there is none or it has
+    /// outlived the trusting period. Verified reads call it before fetching a
+    /// proof, so that the header this client takes is no later than the
+    /// proof's state.
     internal func currentTrustedState() async throws -> TrustedState {
-        if let state = locked({ trustedState }) {
+        if let state = locked({ trustedState }),
+           Date().timeIntervalSince(state.header.trustingPeriodStart) <= config.trustingPeriod {
             return state
         }
         try await sync()

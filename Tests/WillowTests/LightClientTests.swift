@@ -496,18 +496,23 @@ final class LightClientTests: XCTestCase {
         XCTAssertTrue(try lc.verify(block: next, trustedState: recent).verified)
 
         // A header accepted within the period is used until its block's
-        // time, not the time it was accepted, is past it.
+        // time, not the time it was accepted, is past it; then the light
+        // client takes the RPC's latest header in its place.
         let short = LightClientConfig(chainId: "c", validatorEndpoints: ["http://rpc.test"], trustingPeriod: 2, autoSync: false)
         let pinned = try LightClient(short, trustedState: TrustedState(
             header: TrustedHeader(height: 50, appHash: "aa", trustedAt: Date(), headerTime: Date().addingTimeInterval(-1.5)),
             validatorSet: ValidatorSet(validators: [])))
+        let chain = StubChain(chainId: "c", headers: [60: ("cc", Date())])
+        let stub = StubServer { chain.answer($0) }
+        pinned.session = stub.session
         try await Task.sleep(nanoseconds: 800_000_000)
         do {
             _ = try await pinned.verifiedAppHash(atHeight: 50)
             XCTFail("the trusted header's block is older than the trusting period")
         } catch let error as WillowError {
-            XCTAssertTrue(error.message.contains("trusting period"), error.message)
+            XCTAssertTrue(error.message.contains("below every header"), error.message)
         }
+        XCTAssertEqual(pinned.getSyncStatus().latestTrustedHeight, 60)
     }
 
     func testHeadersAreAcceptedOutOfOrderAndAgainAtTheSameHeight() async throws {
@@ -657,6 +662,32 @@ final class LightClientTests: XCTestCase {
         let signed = try XCTUnwrap(decoded.commit.signatures?.first?.timestamp)
         XCTAssertEqual(signed.timeIntervalSince1970, time.timeIntervalSince1970 + 1, accuracy: 1e-6)
         XCTAssertNotNil(decoded.commit.signatures?.last?.timestamp, "CometBFT's zero time is RFC 3339 text")
+    }
+
+    /// A long-lived client whose trusted header outlives the trusting period
+    /// with no newer header accepted takes the RPC's latest header again,
+    /// rather than failing every verified read from then on.
+    func testATrustedHeaderPastTheTrustingPeriodIsReplacedByTheLatest() async throws {
+        let f = try GroveDBProofTests.fixture("nested_single_key_user_bob", as: GroveDBProofTests.SingleKey.self)
+        let now = Date()
+        let chain = StubChain(headers: [42: (f.expected_root_hex, now.addingTimeInterval(-0.1))])
+        let stub = try VerifiedReadsTests.bobServer(height: 41, rpc: chain.answer)
+        let client = try stub.client(baseURL: "http://api.test")
+        let config = LightClientConfig(
+            chainId: "willow-chain", validatorEndpoints: ["http://rpc.test"], trustingPeriod: 2, autoSync: false, headerWaitTimeout: 0.3)
+        let lc = try LightClient(config, trustedState: TrustedState(
+            header: TrustedHeader(height: 30, appHash: String(repeating: "30", count: 32), headerTime: now.addingTimeInterval(-1.5)),
+            validatorSet: ValidatorSet(validators: [])))
+        lc.session = stub.session
+        client.setLightClient(lc)
+        try await Task.sleep(nanoseconds: 700_000_000)
+
+        let response = try await client.data.get(subgroveId: "my-sub", key: "user:bob")
+        XCTAssertEqual(response.data["balance"]?.value as? Int, 250)
+        XCTAssertEqual(response.proof?.header.height, 42)
+        XCTAssertEqual(lc.getSyncStatus().latestTrustedHeight, 42)
+        let rpc = stub.requests.filter { $0.url.host == "rpc.test" }.map { $0.target }
+        XCTAssertEqual(rpc.first, "/commit", "the latest header is taken before the proof is checked")
     }
 }
 
