@@ -13,6 +13,9 @@ public enum WillowErrorType: String {
     case serialization = "serialization"
     case crypto = "crypto"
     case proof = "proof"
+    /// A verified read the SDK can't check as asked, though nothing shows the
+    /// API's answer is wrong (see `NotVerifiableError`).
+    case notVerifiable = "not_verifiable"
     case lightClient = "light_client"
     case config = "config"
     case consensus = "consensus"
@@ -147,6 +150,15 @@ public func CryptoError(_ message: String, cause: Error? = nil) -> WillowError {
 /// Creates a proof verification error.
 public func ProofError(_ message: String) -> WillowError {
     return WillowError(type: .proof, message: message)
+}
+
+/// Creates the error for a verified read the SDK can't check as asked: the
+/// proof may be genuine, but the SDK can't reproduce the node's answer from it
+/// or can't return the proven value exactly. The unverified read
+/// (`getUnverified`, `queryUnverified`) returns the node's answer, unchecked.
+/// A proof that doesn't check out is a `ProofError` instead.
+public func NotVerifiableError(_ message: String) -> WillowError {
+    return WillowError(type: .notVerifiable, message: message)
 }
 
 /// Creates a light client error.

@@ -495,9 +495,10 @@ final class VerifiedReadsTests: XCTestCase {
         let sorted = try DataOperations.answer(QueryBuilder().sortAsc("n").limit(2).offset(1).build(), proof: root.proof, path: path)
         XCTAssertEqual(sorted.results.map { $0.key }, ["a", "c"])
         XCTAssertEqual(sorted.total, 3)
-        // Returned, it can't be a Double, so the query isn't verified.
+        // Returned, it can't be a Double, so the query isn't verified: its
+        // own error, not a proof error.
         XCTAssertThrowsError(try DataOperations.answer(QueryRequest(), proof: root.proof, path: path)) { error in
-            XCTAssertEqual((error as? WillowError)?.type, .proof)
+            XCTAssertEqual((error as? WillowError)?.type, .notVerifiable)
             XCTAssertTrue((error as? WillowError)?.message.contains("can't be verified") ?? false, "\(error)")
         }
     }
@@ -507,7 +508,7 @@ final class VerifiedReadsTests: XCTestCase {
         let path = DataOperations.dataPath("sg")
         for request in [QueryBuilder().sortAsc("r").build(), QueryBuilder().equals("t", "x").sortDesc("r").build()] {
             XCTAssertThrowsError(try DataOperations.answer(request, proof: root.proof, path: path)) { error in
-                XCTAssertEqual((error as? WillowError)?.type, .proof)
+                XCTAssertEqual((error as? WillowError)?.type, .notVerifiable)
                 XCTAssertTrue((error as? WillowError)?.message.contains("can't be verified") ?? false, "\(error)")
             }
         }

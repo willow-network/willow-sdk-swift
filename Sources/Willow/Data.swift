@@ -187,12 +187,13 @@ public class DataOperations {
     /// filter. Numbers in the results are `Int` when they are integers that
     /// fit, else `Double`. Any failure throws.
     ///
-    /// Where the node's answer can't be reproduced, the query isn't verified:
-    /// it throws a proof error when the sort field holds, across the matching
-    /// items, numbers or strings that differ alongside values of another kind
-    /// (or no value), which the node's sort doesn't put in one order; and when
-    /// a result holds a number outside `Double`'s range or an object two of
-    /// whose keys differ only as Unicode canonical equivalents.
+    /// Where the node's answer can't be reproduced, the query isn't verified.
+    /// It throws `NotVerifiableError` (type `.notVerifiable`, not `.proof`:
+    /// nothing shows the answer is wrong) when the sort field holds, across
+    /// the matching items, numbers or strings that differ alongside values of
+    /// another kind (or no value), which the node's sort doesn't put in one
+    /// order; and when a result holds a number outside `Double`'s range or an
+    /// object two of whose keys differ only as Unicode canonical equivalents.
     /// `queryUnverified` returns the node's answer to such a query, unchecked.
     ///
     /// The app hash is only as trustworthy as the light client's header: see
@@ -310,7 +311,7 @@ public class DataOperations {
 
     /// The error for a query whose answer the SDK can't reproduce.
     private static func unverifiable(_ why: String) -> WillowError {
-        return ProofError("This query can't be verified: \(why). queryUnverified returns the node's answer, unchecked")
+        return NotVerifiableError("This query can't be verified: \(why). queryUnverified returns the node's answer, unchecked")
     }
 
     /// A sort field's value as the node's comparator sees it: a number as

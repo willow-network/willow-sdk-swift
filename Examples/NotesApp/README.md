@@ -15,7 +15,7 @@ A complete SwiftUI notes application demonstrating the Willow Swift SDK.
 
 - **Notes Management**
   - Create and list notes. A note is written once: editing, pinning, or deleting one would be an UpdateData or DeleteData transaction, which the SDK doesn't build, so the app offers none of them.
-  - The list comes from `client.data.query`, checked against a GroveDB proof of the whole notes tree and the light client's header. When it can't be checked (the query throws), the app lists the notes with `client.data.queryUnverified` and labels the list "Not verified", with the reason.
+  - The list comes from `client.data.query`, checked against a GroveDB proof of the whole notes tree and the light client's header. When the SDK can't check the query's answer (it throws `NotVerifiableError`, type `.notVerifiable`), the app lists the notes with `client.data.queryUnverified` and labels the list "Not verified", with the reason. Any other failure, such as a proof that doesn't check out, is shown as an error, not listed.
   - Categories (Personal, Work, Ideas, Archive)
   - Tags support
   - Search across title, content, and tags

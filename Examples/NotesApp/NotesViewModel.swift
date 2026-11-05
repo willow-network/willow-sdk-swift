@@ -76,11 +76,14 @@ class NotesViewModel: ObservableObject {
                 response = try await client.data.query(subgroveId: appState.collectionId, query: request)
                 listVerified = true
                 verificationNote = nil
-            } catch {
-                // Listed without a proof, and labeled as such.
+            } catch let error as WillowError where error.type == .notVerifiable {
+                // The SDK can't check this query's answer, though nothing
+                // shows it is wrong: list without a proof, labeled as such.
+                // Any other failure (a proof that doesn't check out, a stale
+                // answer, a network error) is shown as an error instead.
                 response = try await client.data.queryUnverified(subgroveId: appState.collectionId, query: request)
                 listVerified = false
-                verificationNote = "Not verified: \(error.localizedDescription)"
+                verificationNote = "Not verified: \(error.message)"
             }
 
             var loadedNotes: [Note] = []
