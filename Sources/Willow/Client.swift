@@ -68,6 +68,9 @@ public class WillowClient {
     /// The session the default light client reads the consensus RPC
     /// through, when given (tests); else its own.
     private let rpcSession: URLSession?
+    /// The session for storage node requests (`files`): no API key goes to a
+    /// storage node, and each request times out as the client's do.
+    internal let storageSession: URLSession
 
     /// Data operations.
     public private(set) lazy var data: DataOperations = DataOperations(client: self)
@@ -135,24 +138,35 @@ public class WillowClient {
             consensusRpcURL: parsedRpcURL, chainId: chainId
         )
 
+        self.init(config: config, session: WillowClient.makeSession(timeout: timeout, apiKey: apiKey), nonces: .shared)
+    }
+
+    /// A session whose requests wait at most `timeout` for data and
+    /// `timeout * 2` in all, sending `X-API-Key: apiKey` when given.
+    internal static func makeSession(timeout: TimeInterval, apiKey: String? = nil) -> URLSession {
         let sessionConfig = URLSessionConfiguration.default
         sessionConfig.timeoutIntervalForRequest = timeout
         sessionConfig.timeoutIntervalForResource = timeout * 2
         if let apiKey = apiKey {
             sessionConfig.httpAdditionalHeaders = ["X-API-Key": apiKey]
         }
-        self.init(config: config, session: URLSession(configuration: sessionConfig), nonces: .shared)
+        return URLSession(configuration: sessionConfig)
     }
 
     /// Testing seam: supply the configuration, a `URLSession` (e.g. backed by
     /// a stub `URLProtocol`), the nonce allocator (a fresh one unless given;
-    /// the public initializers use the process's shared one), and the session
-    /// the default light client reads the consensus RPC through.
-    internal init(config: ClientConfig, session: URLSession, nonces: NonceAllocator = NonceAllocator(), rpcSession: URLSession? = nil) {
+    /// the public initializers use the process's shared one), and the
+    /// sessions the default light client reads the consensus RPC through and
+    /// `files` reach storage nodes through.
+    internal init(
+        config: ClientConfig, session: URLSession, nonces: NonceAllocator = NonceAllocator(), rpcSession: URLSession? = nil,
+        storageSession: URLSession? = nil
+    ) {
         self.config = config
         self.session = session
         self.nonces = nonces
         self.rpcSession = rpcSession
+        self.storageSession = storageSession ?? WillowClient.makeSession(timeout: config.timeout)
 
         self.encoder = JSONEncoder()
         self.encoder.keyEncodingStrategy = .convertToSnakeCase
@@ -767,6 +781,7 @@ public class WillowClient {
     /// Closes the client and releases resources.
     public func close() {
         session.invalidateAndCancel()
+        storageSession.invalidateAndCancel()
         lightClient?.stop()
     }
 }

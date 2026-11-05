@@ -415,7 +415,7 @@ final class StubServer {
             retryConfig: RetryConfig(maxRetries: 2, initialBackoff: 0.001, maxBackoff: 0.001, backoffFactor: 1),
             consensusRpcURL: consensusRpcURL.flatMap { URL(string: $0) }
         )
-        return WillowClient(config: config, session: session, nonces: nonces, rpcSession: session)
+        return WillowClient(config: config, session: session, nonces: nonces, rpcSession: session, storageSession: session)
     }
 
     fileprivate func answer(_ request: URLRequest) -> (Int, Data) {

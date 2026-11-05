@@ -277,9 +277,13 @@ final class RoutesTests: XCTestCase {
     func testTransactionsAreSentOnce() async throws {
         let stub = StubServer { _ in (502, #"{"success":false,"data":null,"error":"Failed to reach CometBFT RPC"}"#) }
         let client = try stub.client(baseURL: "http://api.test")
+        let signing = FileSigningOptions(
+            ownerDid: "did:willow:a", privateKey: Data(), publicKeyId: "did:willow:a#key-1",
+            signFunction: { _, _ in Data([1, 2, 3]) }, nonce: 4
+        )
 
         do {
-            try await client.files.delete(subgroveId: "sg", fileKey: "f")
+            try await client.files.delete(subgroveId: "sg", fileKey: "f", signing: signing)
             XCTFail("a 502 must throw")
         } catch let error as HTTPError {
             XCTAssertEqual(error.statusCode, 502)
@@ -293,10 +297,14 @@ final class RoutesTests: XCTestCase {
         let client = try stub.client(baseURL: "http://api.test")
 
         // The manifest is submitted first; the chunk upload to a closed port then fails.
+        let signing = FileSigningOptions(
+            ownerDid: "did:willow:a", privateKey: Data(), publicKeyId: "did:willow:a#key-1",
+            signFunction: { _, _ in Data([1, 2, 3]) }, nonce: 4
+        )
         do {
             _ = try await client.files.upload(
                 subgroveId: "sg", fileKey: "f", filename: "a.txt", data: Data("hello".utf8),
-                storageNodeEndpoint: "http://127.0.0.1:1"
+                storageNodeEndpoint: "http://127.0.0.1:1", signing: signing
             )
         } catch {}
 

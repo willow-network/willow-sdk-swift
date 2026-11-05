@@ -87,12 +87,18 @@ struct FileListResponse: Codable {
 
 // MARK: - Signing Options
 
-/// Options for signing file storage transactions.
+/// Options for signing file storage transactions with a key the client's
+/// identity doesn't hold.
 ///
 /// `nonce` is the transaction's nonce, and the signed message binds it. A
-/// write refused in its block after its signature and nonce verify still
-/// spends its nonce, so a retry needs new options with the next free nonce,
-/// which signs anew.
+/// write signed with these options doesn't take its nonce from the client's
+/// nonce allocator: pick one no other write of `ownerDid` holds. A write
+/// refused in its block after its signature and nonce verify still spends
+/// its nonce, so a retry of that one needs new options with the next free
+/// nonce, which signs anew. A write whose outcome is unknown is retried
+/// under the same nonce. With no options, `upload` and `delete` sign with
+/// the client's identity under a nonce from its allocator, as `data.store`
+/// does.
 public struct FileSigningOptions {
     public let ownerDid: String
     public let privateKey: Data
@@ -121,10 +127,15 @@ public class FileOperations {
 
     /// Upload a file to a FileStorage subgrove.
     ///
-    /// With `signing`, `signFunction` signs `storeFileManifestMessage` over
-    /// every field of the manifest sent and `signing.nonce`. A text field
-    /// holding a line break is refused with a validation error before anything
-    /// is signed.
+    /// The manifest is a StoreFileManifest transaction. With `signing`,
+    /// `signFunction` signs `storeFileManifestMessage` over every field of the
+    /// manifest sent and `signing.nonce`. Without it, the client's identity
+    /// signs under the lowest free nonce from its nonce allocator, as for
+    /// `data.store` (a write whose outcome is unknown throws a
+    /// `TransactionSubmitError` to `resubmit`); with no identity either, it
+    /// throws an authentication error and sends nothing (the node refuses an
+    /// unsigned manifest). A text field holding a line break is refused with
+    /// a validation error before anything is signed.
     public func upload(
         subgroveId: String,
         fileKey: String,
@@ -133,6 +144,7 @@ public class FileOperations {
         storageNodeEndpoint: String,
         signing: FileSigningOptions? = nil
     ) async throws -> FileManifest {
+        guard let client = client else { throw NetworkError("Client deallocated") }
         let chunkSize = defaultChunkSize
         let chunks = chunkData(data, chunkSize: chunkSize)
         let chunkCount = chunks.count
@@ -144,22 +156,18 @@ public class FileOperations {
         let chunkHashes = chunks.map { Data(SHA256.hash(data: $0)) }
         let merkleRoot = computeMerkleRoot(chunkHashes)
         let merkleRootHex = merkleRoot.hexString
+        let chunkURLs = try (0..<chunkCount).map { i in
+            try FileOperations.storageURL(
+                storageNodeEndpoint, ["upload", subgroveId, fileKey],
+                query: "chunk_index=\(i)&chunk_count=\(chunkCount)&content_hash=\(contentHashHex)")
+        }
 
-        // Build signature fields
-        let ownerDid: String
-        let signatureBytes: [Int]
-        let publicKeyId: String
-        let nonce: Int
-
-        if let signing = signing {
-            ownerDid = signing.ownerDid
-            publicKeyId = signing.publicKeyId
-            nonce = signing.nonce
-
+        // The manifest, signed under `nonce` by `owner` with `sign`.
+        func manifest(owner: String, publicKeyId: String, nonce: Int, sign: (Data) throws -> Data) throws -> Data {
             let signMessage = try storeFileManifestMessage(
                 subgroveId: subgroveId,
                 fileKey: fileKey,
-                ownerDid: ownerDid,
+                ownerDid: owner,
                 filename: filename,
                 contentType: contentType,
                 totalSize: unsignedField("totalSize", data.count, as: UInt64.self),
@@ -169,43 +177,50 @@ public class FileOperations {
                 chunkMerkleRoot: merkleRoot,
                 nonce: unsignedField("nonce", nonce, as: UInt64.self)
             )
-            let signatureData = try signing.signFunction(Data(signMessage.utf8), signing.privateKey)
-            signatureBytes = Array(signatureData).map { Int($0) }
-        } else {
-            ownerDid = ""
-            signatureBytes = []
-            publicKeyId = ""
-            nonce = 0
+            let manifestTx = StoreFileManifestConsensusBody(
+                subgrove_id: subgroveId,
+                file_key: fileKey,
+                filename: filename,
+                content_type: contentType,
+                total_size: data.count,
+                content_hash: contentHash.map { Int($0) },
+                chunk_count: chunkCount,
+                chunk_size: chunkSize,
+                chunk_merkle_root: merkleRoot.map { Int($0) },
+                owner_did: owner,
+                signature: Array(try sign(Data(signMessage.utf8))).map { Int($0) },
+                public_key_id: publicKeyId,
+                nonce: nonce
+            )
+            return try encodeTransaction(txType: "StoreFileManifest", transaction: manifestTx)
         }
 
         // Submit StoreFileManifestTx to consensus through the API's /tx/submit.
-        guard let client = client else { throw NetworkError("Client deallocated") }
-        let manifestTx = StoreFileManifestConsensusBody(
-            subgrove_id: subgroveId,
-            file_key: fileKey,
-            filename: filename,
-            content_type: contentType,
-            total_size: data.count,
-            content_hash: contentHash.map { Int($0) },
-            chunk_count: chunkCount,
-            chunk_size: chunkSize,
-            chunk_merkle_root: merkleRoot.map { Int($0) },
-            owner_did: ownerDid,
-            signature: signatureBytes,
-            public_key_id: publicKeyId,
-            nonce: nonce
-        )
-        try await client.submitTransaction(encodeTransaction(txType: "StoreFileManifest", transaction: manifestTx))
+        let ownerDid: String
+        if let signing = signing {
+            ownerDid = signing.ownerDid
+            let body = try manifest(owner: signing.ownerDid, publicKeyId: signing.publicKeyId, nonce: signing.nonce) {
+                try signing.signFunction($0, signing.privateKey)
+            }
+            try await client.submitTransaction(body)
+        } else {
+            let identity = try client.transactionIdentity()
+            ownerDid = identity.did
+            // Refuse what can't be signed before spending a request on the nonce.
+            _ = try manifest(owner: identity.did, publicKeyId: identity.publicKeyId, nonce: 1) { _ in Data() }
+            _ = try await client.submitUnderNextNonce(did: identity.did) { nonce in
+                try manifest(owner: identity.did, publicKeyId: identity.publicKeyId, nonce: nonce, sign: identity.sign)
+            }
+        }
 
         // Upload chunks to storage node
         for (i, chunk) in chunks.enumerated() {
-            let url = URL(string: "\(storageNodeEndpoint)/upload/\(subgroveId)/\(fileKey)?chunk_index=\(i)&chunk_count=\(chunkCount)&content_hash=\(contentHashHex)")!
-            var request = URLRequest(url: url)
+            var request = URLRequest(url: chunkURLs[i])
             request.httpMethod = "POST"
             request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
             request.httpBody = chunk
 
-            let (_, response) = try await URLSession.shared.data(for: request)
+            let (_, response) = try await client.storageSession.data(for: request)
             guard let httpResponse = response as? HTTPURLResponse,
                   (200...299).contains(httpResponse.statusCode) else {
                 throw NetworkError("Failed to upload chunk \(i)")
@@ -230,24 +245,42 @@ public class FileOperations {
     }
 
     /// Download a file from a FileStorage subgrove.
+    ///
+    /// The manifest comes from the API (`GET /files/{subgroveId}/{fileKey}`),
+    /// unverified. One the chain would refuse (see `checkManifest`) is refused
+    /// with a validation error before any chunk is fetched. The chunks come
+    /// from `storageNodeEndpoint`; more bytes than the manifest's total size
+    /// are refused as they arrive, and the file must be exactly that size,
+    /// with the manifest's chunk Merkle root and content hash.
     public func download(
         subgroveId: String,
         fileKey: String,
         storageNodeEndpoint: String
     ) async throws -> Data {
+        guard let client = client else { throw NetworkError("Client deallocated") }
         let manifest = try await metadata(subgroveId: subgroveId, fileKey: fileKey)
+        try FileOperations.checkManifest(manifest)
+        let urls = try (0..<manifest.chunkCount).map { i in
+            try FileOperations.storageURL(
+                storageNodeEndpoint, ["chunk", subgroveId, fileKey, String(i)], query: "content_hash=\(manifest.contentHash)")
+        }
 
         var fileData = Data()
         var chunkHashes: [Data] = []
-        for i in 0..<manifest.chunkCount {
-            let url = URL(string: "\(storageNodeEndpoint)/chunk/\(subgroveId)/\(fileKey)/\(i)?content_hash=\(manifest.contentHash)")!
-            let (chunkData, response) = try await URLSession.shared.data(from: url)
+        for (i, url) in urls.enumerated() {
+            let (chunkData, response) = try await client.storageSession.data(from: url)
             guard let httpResponse = response as? HTTPURLResponse,
                   (200...299).contains(httpResponse.statusCode) else {
                 throw NetworkError("Failed to download chunk \(i)")
             }
+            guard UInt64(chunkData.count) <= manifest.totalSize - UInt64(fileData.count) else {
+                throw ValidationError("The storage node served more than the manifest's \(manifest.totalSize) bytes")
+            }
             chunkHashes.append(Data(SHA256.hash(data: chunkData)))
             fileData.append(chunkData)
+        }
+        guard UInt64(fileData.count) == manifest.totalSize else {
+            throw ValidationError("The storage node served \(fileData.count) bytes, not the manifest's \(manifest.totalSize)")
         }
 
         // Verify chunk Merkle root
@@ -265,6 +298,55 @@ public class FileOperations {
         }
 
         return fileData
+    }
+
+    /// The node's largest file, in bytes (1 GiB).
+    internal static let maxFileSize: UInt64 = 1_073_741_824
+    /// The node's smallest chunk of a file of more than one chunk.
+    internal static let minChunkSize: UInt32 = 4_096
+    /// The node's most chunks: `maxFileSize / minChunkSize`.
+    internal static let maxChunkCount: UInt32 = 262_144
+
+    /// Refuses a manifest the chain would refuse: no data, more than 1 GiB or
+    /// 262,144 chunks, a zero chunk size, a chunk count that doesn't match the
+    /// total and chunk sizes (`(count - 1) * size < total <= count * size`),
+    /// chunks under 4,096 bytes in a file of more than one, or a content hash
+    /// or chunk Merkle root that isn't 32 nonzero bytes of hex.
+    internal static func checkManifest(_ manifest: FileManifest) throws {
+        let total = manifest.totalSize
+        let count = UInt64(manifest.chunkCount)
+        let size = UInt64(manifest.chunkSize)
+        guard total > 0, total <= maxFileSize else {
+            throw ValidationError("The manifest's total size \(total) is not 1 to \(maxFileSize) bytes")
+        }
+        guard count > 0, manifest.chunkCount <= maxChunkCount, size > 0 else {
+            throw ValidationError("The manifest's \(count) chunks of \(size) bytes are not 1 to \(maxChunkCount) chunks of at least 1 byte")
+        }
+        guard (count - 1) * size < total, total <= count * size else {
+            throw ValidationError("The manifest's \(count) chunks of \(size) bytes don't hold its \(total) bytes")
+        }
+        guard count == 1 || manifest.chunkSize >= minChunkSize else {
+            throw ValidationError("The manifest's chunks of \(size) bytes are under the node's \(minChunkSize) for a file of more than one")
+        }
+        for (name, hex) in [("content hash", manifest.contentHash), ("chunk Merkle root", manifest.chunkMerkleRoot)] {
+            guard hex.utf8.count == 64, let bytes = Data(hexString: hex), bytes.count == 32, bytes.contains(where: { $0 != 0 }) else {
+                throw ValidationError("The manifest's \(name) is not 32 nonzero bytes of hex")
+            }
+        }
+    }
+
+    /// The storage node URL `endpoint` / each of `segments`, percent-encoded
+    /// as one path segment, with `query` (already encoded).
+    internal static func storageURL(_ endpoint: String, _ segments: [String], query: String) throws -> URL {
+        var base = endpoint
+        while base.hasSuffix("/") {
+            base.removeLast()
+        }
+        let path = segments.map { pathSegment($0) }.joined(separator: "/")
+        guard let url = URL(string: "\(base)/\(path)?\(query)"), url.scheme != nil, url.host != nil else {
+            throw ValidationError("Invalid storage node URL: \(endpoint)")
+        }
+        return url
     }
 
     /// Get file manifest metadata.
@@ -285,53 +367,54 @@ public class FileOperations {
     /// Delete a file (submits DeleteFileManifestTx to consensus).
     ///
     /// With `signing`, `signFunction` signs `deleteFileManifestMessage` over
-    /// the subgrove ID, file key, owner DID, and `signing.nonce`. A text field
-    /// holding a line break is refused with a validation error before anything
-    /// is signed.
+    /// the subgrove ID, file key, owner DID, and `signing.nonce`. Without it,
+    /// the client's identity signs under the lowest free nonce from its nonce
+    /// allocator, as for `data.store`; with no identity either, it throws an
+    /// authentication error and sends nothing. A text field holding a line
+    /// break is refused with a validation error before anything is signed.
     public func delete(subgroveId: String, fileKey: String, signing: FileSigningOptions? = nil) async throws {
         guard let client = client else { throw NetworkError("Client deallocated") }
 
-        let ownerDid: String
-        let signatureBytes: [Int]
-        let publicKeyId: String
-        let nonce: Int
-
-        if let signing = signing {
-            ownerDid = signing.ownerDid
-            publicKeyId = signing.publicKeyId
-            nonce = signing.nonce
-
+        func deletion(owner: String, publicKeyId: String, nonce: Int, sign: (Data) throws -> Data) throws -> Data {
             let signMessage = try deleteFileManifestMessage(
                 subgroveId: subgroveId,
                 fileKey: fileKey,
-                ownerDid: ownerDid,
+                ownerDid: owner,
                 nonce: unsignedField("nonce", nonce, as: UInt64.self)
             )
-            let signatureData = try signing.signFunction(Data(signMessage.utf8), signing.privateKey)
-            signatureBytes = Array(signatureData).map { Int($0) }
-        } else {
-            ownerDid = ""
-            signatureBytes = []
-            publicKeyId = ""
-            nonce = 0
+            let deleteTx = DeleteFileManifestConsensusBody(
+                subgrove_id: subgroveId,
+                file_key: fileKey,
+                owner_did: owner,
+                signature: Array(try sign(Data(signMessage.utf8))).map { Int($0) },
+                public_key_id: publicKeyId,
+                nonce: nonce
+            )
+            return try encodeTransaction(txType: "DeleteFileManifest", transaction: deleteTx)
         }
 
-        let deleteTx = DeleteFileManifestConsensusBody(
-            subgrove_id: subgroveId,
-            file_key: fileKey,
-            owner_did: ownerDid,
-            signature: signatureBytes,
-            public_key_id: publicKeyId,
-            nonce: nonce
-        )
-        try await client.submitTransaction(encodeTransaction(txType: "DeleteFileManifest", transaction: deleteTx))
+        if let signing = signing {
+            let body = try deletion(owner: signing.ownerDid, publicKeyId: signing.publicKeyId, nonce: signing.nonce) {
+                try signing.signFunction($0, signing.privateKey)
+            }
+            try await client.submitTransaction(body)
+            return
+        }
+        let identity = try client.transactionIdentity()
+        _ = try deletion(owner: identity.did, publicKeyId: identity.publicKeyId, nonce: 1) { _ in Data() }
+        _ = try await client.submitUnderNextNonce(did: identity.did) { nonce in
+            try deletion(owner: identity.did, publicKeyId: identity.publicKeyId, nonce: nonce, sign: identity.sign)
+        }
     }
 
     /// Unregister a storage node (submits UnregisterStorageNode to consensus).
     ///
     /// `signFunction` signs `unregisterStorageNodeMessage` over the node DID
-    /// and `signing.nonce`. A node DID holding a line break, or a negative
-    /// nonce, is refused with a validation error before anything is signed.
+    /// and `signing.nonce`, a nonce of the node's DID that the caller picks
+    /// (the node's key isn't the client's identity, so the client's nonce
+    /// allocator doesn't hand it out). A node DID holding a line break, or a
+    /// negative nonce, is refused with a validation error before anything is
+    /// signed.
     public func unregisterStorageNode(nodeDid: String, signing: FileSigningOptions) async throws {
         guard let client = client else { throw NetworkError("Client deallocated") }
 
