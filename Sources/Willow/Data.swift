@@ -152,15 +152,13 @@ public class DataOperations {
             throw ProofError("The proven element for \(key) is not an item")
         }
         let proven: Any
-        if let json = try? NodeJSON.parse(itemBytes) {
-            do {
-                proven = try json.foundationValue()
-            } catch NodeJSON.ReadError.unsupported(let why) {
-                throw NotVerifiableError(
-                    "The value at \(subgroveId)/\(key) can't be verified: \(why). getUnverified returns the API's answer, unchecked")
-            }
-        } else {
+        do {
+            proven = try NodeJSON.parse(itemBytes).foundationValue()
+        } catch NodeJSON.ReadError.notJSON {
             proven = ["hex": itemBytes.hexString]
+        } catch NodeJSON.ReadError.unsupported(let why) {
+            throw NotVerifiableError(
+                "The value at \(subgroveId)/\(key) can't be verified: \(why). getUnverified returns the API's answer, unchecked")
         }
         let served = NSDictionary(dictionary: value.mapValues { $0.value })
         guard let provenObject = proven as? [String: Any], served.isEqual(to: provenObject) else {
@@ -321,11 +319,17 @@ public class DataOperations {
             throw ProofError("The proof doesn't show the whole data tree (it hides nodes), so the query's answer can't be checked")
         }
 
-        // It skips an item its JSON reader refuses.
+        // It skips an item its JSON reader refuses. One the SDK can't read
+        // as the node does makes the answer unverifiable.
         var documents: [(key: Data, value: NodeJSON)] = []
         for item in items {
-            guard let document = try? NodeJSON.parse(item.bytes) else { continue }
-            documents.append((item.key, document))
+            do {
+                documents.append((item.key, try NodeJSON.parse(item.bytes)))
+            } catch NodeJSON.ReadError.notJSON {
+                continue
+            } catch NodeJSON.ReadError.unsupported(let why) {
+                throw unverifiable("the item at key \(item.key.hexString) can't be read as the node reads it: \(why)")
+            }
         }
 
         if let filter = plan.filter {

@@ -65,12 +65,28 @@ internal indirect enum NodeJSON: Equatable {
         }
     }
 
+    /// The most arrays and objects the SDK reads nested in one value, raw
+    /// values' texts included. serde_json allows 127 in a text and gives a
+    /// raw value's text a limit of its own, so the node reads deeper values
+    /// (an item of 36 KB can nest 1,638 levels); reading one level at a time,
+    /// the SDK would run out of a task's 512 KiB stack first (a debug build
+    /// does past about 400). A value nested deeper is `unsupported`: the SDK
+    /// can't read it as the node does.
+    static let maxTotalDepth = 256
+
     /// Reads `bytes` as `serde_json::from_slice::<Value>` does: strict JSON,
     /// whitespace only around values, strings of valid UTF-8 with paired
     /// surrogate escapes and no raw control characters, at most 127 nested
-    /// arrays and objects, and serde_json's private tokens.
+    /// arrays and objects, and serde_json's private tokens. Throws `notJSON`
+    /// where serde_json refuses the bytes, and `unsupported` for a value
+    /// nested deeper than `maxTotalDepth`.
     static func parse(_ bytes: [UInt8]) throws -> NodeJSON {
-        var reader = Reader(bytes: bytes)
+        return try parse(bytes, enclosing: 0)
+    }
+
+    /// `bytes`, the text of a raw value token `enclosing` levels deep.
+    private static func parse(_ bytes: [UInt8], enclosing: Int) throws -> NodeJSON {
+        var reader = Reader(bytes: bytes, enclosing: enclosing)
         reader.skipWhitespace()
         let value = try reader.value(depth: 0)
         reader.skipWhitespace()
@@ -228,6 +244,9 @@ internal indirect enum NodeJSON: Equatable {
     private struct Reader {
         let bytes: [UInt8]
         var index = 0
+        /// How deep the text is nested in the value read: the level of the
+        /// raw value token whose text it is.
+        var enclosing = 0
 
         /// serde_json's reader refuses a 128th level of nesting.
         static let maxDepth = 127
@@ -246,10 +265,10 @@ internal indirect enum NodeJSON: Equatable {
             guard index < bytes.count else { throw notJSON("unexpected end") }
             switch bytes[index] {
             case UInt8(ascii: "{"):
-                guard depth < Self.maxDepth else { throw notJSON("nested too deeply") }
+                try checkDepth(depth)
                 return try object(depth: depth + 1)
             case UInt8(ascii: "["):
-                guard depth < Self.maxDepth else { throw notJSON("nested too deeply") }
+                try checkDepth(depth)
                 return .array(try array(depth: depth + 1))
             case UInt8(ascii: "\""):
                 return .string(try string())
@@ -266,6 +285,16 @@ internal indirect enum NodeJSON: Equatable {
                 return .number(try number())
             default:
                 throw notJSON("unexpected character")
+            }
+        }
+
+        /// Refuses another level of nesting below `depth`: past serde_json's
+        /// limit in this text, as not JSON; past `maxTotalDepth` in all, as
+        /// unsupported.
+        func checkDepth(_ depth: Int) throws {
+            guard depth < Self.maxDepth else { throw notJSON("nested too deeply") }
+            guard enclosing + depth < NodeJSON.maxTotalDepth else {
+                throw ReadError.unsupported("a value nested more than \(NodeJSON.maxTotalDepth) levels deep across raw values")
             }
         }
 
@@ -296,7 +325,7 @@ internal indirect enum NodeJSON: Equatable {
                 index += 1
                 skipWhitespace()
                 if object.keys.isEmpty, let token = PrivateToken(key) {
-                    let value = try tokenValue(token)
+                    let value = try tokenValue(token, depth: depth)
                     skipWhitespace()
                     guard index < bytes.count, bytes[index] == UInt8(ascii: "}") else {
                         throw notJSON("\(token) is not its object's only member")
@@ -317,8 +346,9 @@ internal indirect enum NodeJSON: Equatable {
             }
         }
 
-        /// The value a private token's string stands for.
-        mutating func tokenValue(_ token: PrivateToken) throws -> NodeJSON {
+        /// The value a private token's string stands for, the token's object
+        /// at `depth`.
+        mutating func tokenValue(_ token: PrivateToken, depth: Int) throws -> NodeJSON {
             guard index < bytes.count, bytes[index] == UInt8(ascii: "\"") else {
                 throw notJSON("\(token) takes a string")
             }
@@ -327,7 +357,7 @@ internal indirect enum NodeJSON: Equatable {
             case .number:
                 return .number(try NodeJSON.numberText(text))
             case .rawValue:
-                return try NodeJSON.parse(text)
+                return try NodeJSON.parse(text, enclosing: enclosing + depth)
             }
         }
 

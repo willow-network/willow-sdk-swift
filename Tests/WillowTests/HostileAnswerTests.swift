@@ -156,4 +156,80 @@ final class HostileAnswerTests: XCTestCase {
         let client = WillowClient(config: ClientConfig(baseURL: URL(string: "http://api.test")!, timeout: 5), session: URLSession.shared)
         XCTAssertEqual(client.storageSession.configuration.timeoutIntervalForResource, 10)
     }
+
+    /// JSON nested `perLevel` arrays deep, around a serde raw value token
+    /// holding the same, `levels` times, around `0`.
+    static func rawNested(levels: Int, perLevel: Int = 125) -> String {
+        var text = "0"
+        for _ in 0..<levels {
+            let wrapped = String(repeating: "[", count: perLevel) + text + String(repeating: "]", count: perLevel)
+            text = #"{"$serde_json::private::RawValue":"# + String(decoding: WireJSON.string(wrapped).serialized, as: UTF8.self) + "}"
+        }
+        return text
+    }
+
+    /// serde_json gives each raw value token's text its own 127-level limit,
+    /// so an item of 36 KB nests 1,638 levels. The reader recursed once per
+    /// level, on a task's thread, and ran out of its stack. Nesting past 256
+    /// levels in all is refused as not verifiable (a verified read can't
+    /// reproduce the node's reading of it), not skipped and not read past
+    /// the stack; 252 levels read, and a verified query returns them.
+    func testDeepNestingAcrossRawValuesIsRefused() async throws {
+        let deep = Self.rawNested(levels: 13)
+        let deepest = Self.rawNested(levels: 16)
+        let fits = Self.rawNested(levels: 2)
+        let outcome: (deep: [String], fits: Int) = try await Task.detached {
+            var deepOutcomes: [String] = []
+            for text in [deep, deepest] {
+                do {
+                    _ = try NodeJSON.parse(Array(text.utf8))
+                    deepOutcomes.append("parsed")
+                } catch NodeJSON.ReadError.unsupported(let why) {
+                    deepOutcomes.append("unsupported: \(why)")
+                } catch {
+                    deepOutcomes.append("\(error)")
+                }
+            }
+            var current = try NodeJSON.parse(Array(fits.utf8))
+            var depth = 0
+            while case .array(let elements) = current, let first = elements.first {
+                depth += 1
+                current = first
+            }
+            return (deepOutcomes, depth)
+        }.value
+        for result in outcome.deep {
+            XCTAssertTrue(result.hasPrefix("unsupported"), result)
+        }
+        XCTAssertEqual(outcome.fits, 250)
+        XCTAssertThrowsError(try NodeJSON.parse(Array(Self.rawNested(levels: 3).utf8)), "378 levels")
+
+        // A verified query and get over an item that deep: not verifiable,
+        // neither skipped nor read as bytes.
+        let tree = VerifiedReadsTests.dataTree([("a", #"{"n":"# + deep + "}"), ("b", #"{"n":1}"#)])
+        let shallow = VerifiedReadsTests.dataTree([("a", #"{"n":"# + fits + "}"), ("b", #"{"n":1}"#)])
+        let path = DataOperations.dataPath("sg")
+        let returned: Int = try await Task.detached {
+            try DataOperations.answer(QueryRequest(), proof: shallow.proof, path: path).results.count
+        }.value
+        XCTAssertEqual(returned, 2)
+        let errors: [WillowErrorType?] = await Task.detached {
+            var types: [WillowErrorType?] = []
+            do {
+                let answer = try DataOperations.answer(QueryRequest(), proof: tree.proof, path: path)
+                types.append(answer.results.count == 1 ? nil : .proof)
+            } catch {
+                types.append((error as? WillowError)?.type)
+            }
+            do {
+                let result = try GroveDBVerifier.verifyProof(proofBytes: tree.proof, expectedPath: path)
+                _ = try DataOperations.requireProven(subgroveId: "sg", key: "a", value: ["n": AnyCodable(0)], in: result)
+                types.append(nil)
+            } catch {
+                types.append((error as? WillowError)?.type)
+            }
+            return types
+        }.value
+        XCTAssertEqual(errors, [.notVerifiable, .notVerifiable])
+    }
 }
