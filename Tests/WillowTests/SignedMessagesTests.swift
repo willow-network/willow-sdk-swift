@@ -326,10 +326,14 @@ final class SignedMessagesTests: XCTestCase {
         return try XCTUnwrap(decoder.decode([String: T].self, from: request.body)[variant])
     }
 
-    /// A stub API that reports `nonce - 1` as the account's nonce, so the
-    /// consensus client's next nonce is `nonce`, and accepts every transaction.
+    /// A stub API and CometBFT RPC that report `nonce - 1` as the account's
+    /// base, with no nonce above it used, so the consensus client's next nonce
+    /// is `nonce`, and accept every transaction.
     static func consensusStub(nextNonce nonce: UInt64) -> (StubServer, ConsensusClient) {
         let stub = StubServer { request in
+            if request.url.host == "rpc.test" {
+                return (200, NonceTests.nonceStateAnswer(base: nonce - 1))
+            }
             if request.path.hasSuffix("/nonce") {
                 return (200, #"{"success":true,"data":{"nonce":\#(nonce - 1)}}"#)
             }

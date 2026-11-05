@@ -25,13 +25,15 @@ struct RegistrationExample {
 
             // 2. Generate and register identity
             print("2. Generating and registering identity...")
+            // The DID must be registered on chain and funded for fees
+            // (a RegisterDid transaction) before it can sign writes.
             let identity = try newIdentity(algorithm: .ed25519)
-            _ = try? await client.registerDID(identity.didDocument)
             client.setIdentity(identity)
             print("   Authenticated as: \(identity.did)")
             print()
 
-            // 3. Create schema for user data
+            // 3. Create schema for user data (no indexes: the node refuses a
+            // data subgrove whose schema declares them)
             print("3. Creating schema for user data...")
             let userSchema = SchemaBuilder(name: "users")
                 .description("User profiles and balances")
@@ -41,14 +43,10 @@ struct RegistrationExample {
                 .stringField("wallet_address", required: true)
                 .boolField("verified", required: false)
                 .arrayField("transactions", itemType: "string", required: false)
-                .hashIndex("email_idx", fields: ["email"])
-                .rangeIndex("balance_idx", fields: ["balance"])
-                .uniqueIndex("wallet_idx", fields: ["wallet_address"])
                 .build()
 
             print("   Schema: \(userSchema.name)")
             print("   Fields: \(userSchema.fields.count)")
-            print("   Indexes: \(userSchema.indexes.count)")
             print()
 
             // 4. Register a subgrove with the schema
@@ -60,14 +58,12 @@ struct RegistrationExample {
                 .description("User profiles and account data")
                 .schema(userSchema)
                 .owner(identity.did)
-                .rewardRate(1000) // 1000 WILL per epoch for indexers
                 .build()
 
             do {
-                let subgrove = try await client.registration.registerSubgrove(subgroveRequest)
-                print("   Subgrove registered: \(subgrove.name)")
-                print("   Subgrove ID: \(subgrove.subgroveId)")
-                print("   Reward rate: \(subgrove.rewardRate ?? 0) WILL/epoch")
+                // A RegisterSubgrove transaction signed by the identity.
+                let result = try await client.registration.registerSubgrove(subgroveRequest)
+                print("   Registration submitted: \(result.txHash ?? "")")
             } catch {
                 print("   Note: \(error.localizedDescription)")
             }
@@ -82,10 +78,6 @@ struct RegistrationExample {
                 .intField("amount", required: true)
                 .intField("timestamp", required: true)
                 .stringField("status", required: true)
-                .hashIndex("hash_idx", fields: ["tx_hash"])
-                .rangeIndex("time_idx", fields: ["timestamp"])
-                .hashIndex("from_idx", fields: ["from"])
-                .hashIndex("to_idx", fields: ["to"])
                 .build()
 
             let txSubgroveRequest = SubgroveBuilder(
@@ -94,12 +86,11 @@ struct RegistrationExample {
             )
                 .schema(txSchema)
                 .owner(identity.did)
-                .rewardRate(2000)
                 .build()
 
             do {
-                let subgrove = try await client.registration.registerSubgrove(txSubgroveRequest)
-                print("   Transaction subgrove registered: \(subgrove.name)")
+                let result = try await client.registration.registerSubgrove(txSubgroveRequest)
+                print("   Registration submitted: \(result.txHash ?? "")")
             } catch {
                 print("   Note: \(error.localizedDescription)")
             }
@@ -111,7 +102,7 @@ struct RegistrationExample {
                 let subgroves = try await client.registration.listSubgroves()
                 print("   Found \(subgroves.count) subgroves:")
                 for subgrove in subgroves {
-                    print("   - \(subgrove.name) (items: \(subgrove.itemCount), storage: \(subgrove.storageUsed) bytes)")
+                    print("   - \(subgrove.name) (owner: \(subgrove.ownerDid), writers: \(subgrove.writers.count))")
                 }
             } catch {
                 print("   Note: \(error.localizedDescription)")
@@ -122,7 +113,6 @@ struct RegistrationExample {
             print("7. Managing permissions...")
             // Create another identity for a collaborator
             let collaborator = try newIdentity(algorithm: .ed25519)
-            _ = try? await client.registerDID(collaborator.didDocument)
 
             print("   Collaborator DID: \(collaborator.did)")
             print()

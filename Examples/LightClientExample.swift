@@ -1,8 +1,9 @@
 // Light client example for the Willow Swift SDK
 //
 // This example demonstrates:
-// - Configuring a light client for trustless verification
-// - Verifying data against multiple validators
+// - Configuring a light client, the source of the app hash a proof's root
+//   is compared with
+// - Proof-checked reads, and what they check
 // - Exporting and importing trusted state
 //
 // To run this example, include it in an iOS/macOS app or Swift package.
@@ -18,25 +19,31 @@ struct LightClientExample {
         print()
 
         do {
-            // 1. Configure light client with multiple validators
+            // 1. Configure a light client on the local node's consensus RPC,
+            //    following the chain that RPC reports. List more endpoints
+            //    (and raise minEndpointsForLatestHeight) to require that
+            //    several agree on the chain's latest height.
             print("1. Configuring light client...")
+            let rpc = "http://localhost:26657"
+            let status = try await ConsensusClient(ConsensusConfig(consensusRpcUrl: rpc)).getStatus()
+            guard let chainId = (status["node_info"] as? [String: Any])?["network"] as? String else {
+                print("   The RPC at \(rpc) reports no chain ID")
+                return
+            }
             let lcConfig = LightClientConfig(
-                chainId: "willow-testnet",
-                validatorEndpoints: [
-                    "http://localhost:26657",
-                    "http://localhost:26757",
-                    "http://localhost:26857"
-                ],
+                chainId: chainId,
+                validatorEndpoints: [rpc],
                 trustThreshold: TrustThreshold(numerator: 2, denominator: 3),
                 trustingPeriod: 24 * 60 * 60, // 24 hours
                 maxClockDrift: 10, // 10 seconds
-                minValidatorsForConsensus: 2,
+                minValidatorsForConsensus: 1,
                 autoSync: true,
-                syncInterval: 5 * 60 // 5 minutes
+                syncInterval: 5 * 60, // 5 minutes
+                minEndpointsForLatestHeight: 1
             )
 
-            print("   Chain ID: willow-testnet")
-            print("   Validators: 3 endpoints configured")
+            print("   Chain ID: \(chainId)")
+            print("   Endpoints: \(lcConfig.validatorEndpoints.joined(separator: ", "))")
             print("   Trust threshold: 2/3")
             print("   Trusting period: 24 hours")
             print()
@@ -63,7 +70,6 @@ struct LightClientExample {
             // 4. Set identity for per-request signing
             print("4. Setting identity...")
             let identity = try newIdentity(algorithm: .ed25519)
-            _ = try? await client.registerDID(identity.didDocument)
             client.setIdentity(identity)
             print("   Authenticated as: \(identity.did)")
             print()
@@ -71,7 +77,7 @@ struct LightClientExample {
             // 5. Store test data
             print("5. Storing test data...")
             let testData: [String: Any] = [
-                "message": "This data will be cryptographically verified",
+                "message": "This data is read back with a GroveDB proof",
                 "timestamp": Int(Date().timeIntervalSince1970),
                 "verified": true
             ]
@@ -88,12 +94,14 @@ struct LightClientExample {
             }
             print()
 
-            // 6. Retrieve with full trustless verification
-            print("6. Retrieving data with trustless verification...")
-            print("   This verifies:")
-            print("   - 2/3+ validator signatures on block headers")
-            print("   - GroveDB Merkle proof against consensus app_hash")
-            print("   - Data integrity without trusting any single node")
+            // 6. Retrieve with a proof
+            print("6. Retrieving data with a proof...")
+            print("   This checks:")
+            print("   - a GroveDB proof of the key and value in the subgrove's data tree")
+            print("   - that its root is the chain's app hash after the proof's block,")
+            print("     from a header the light client accepts")
+            print("   The light client accepts headers without verifying their commit")
+            print("   signatures, so that app hash is as trustworthy as its endpoints.")
             print()
 
             do {
@@ -101,15 +109,15 @@ struct LightClientExample {
                     subgroveId: "secure-data",
                     key: "entry-1"
                 )
-                print("   Data retrieved and CRYPTOGRAPHICALLY VERIFIED:")
+                print("   Data retrieved and checked against its proof:")
                 print("   \(response.data)")
             } catch {
                 print("   Note: \(error.localizedDescription)")
             }
             print()
 
-            // 7. Query with verification
-            print("7. Querying with trustless verification...")
+            // 7. Query with a proof of the whole data tree
+            print("7. Querying with a proof...")
             let query = QueryBuilder()
                 .limit(10)
                 .build()
@@ -154,19 +162,12 @@ struct LightClientExample {
             // 10. Show verification comparison
             print("10. Verification comparison...")
             print()
-            print("   LIGHT CLIENT (trustless):")
-            print("   + Verifies validator signatures (2/3+ threshold)")
-            print("   + Validates block header chain")
-            print("   + Verifies proofs against consensus app_hash")
-            print("   + No trust in any single node required")
-            print("   - Slightly higher latency")
+            print("   PROOF-CHECKED (get, query):")
+            print("   + GroveDB proof bound to the path and key, checked locally")
+            print("   + Root compared with the chain's app hash after the proof's block")
+            print("   - Headers are accepted without verifying commit signatures")
             print()
-            print("   STANDARD VERIFICATION (root hash):")
-            print("   + Fast verification")
-            print("   + Verifies GroveDB proofs locally")
-            print("   - Trusts that API returns correct root hash")
-            print()
-            print("   UNVERIFIED (performance mode):")
+            print("   UNVERIFIED (getUnverified, queryUnverified, GraphQL, SQL):")
             print("   + Fastest response times")
             print("   - Trusts the node completely")
             print("   - Only use with trusted nodes")

@@ -77,6 +77,7 @@ final class RoutesTests: XCTestCase {
         }
         let client = try stub.client(baseURL: "http://api.test")
         client.setIdentity(identity)
+        client.setLightClient(try VerifiedReadsTests.pinnedLightClient(height: 8, appHash: "00", stub: stub))
 
         do {
             _ = try await client.data.get(subgroveId: "sg", key: "k")
@@ -96,6 +97,7 @@ final class RoutesTests: XCTestCase {
             return (500, #"{"success":false,"data":null,"error":"Error generating proof"}"#)
         }
         let client = try stub.client(baseURL: "http://api.test")
+        client.setLightClient(try VerifiedReadsTests.pinnedLightClient(height: 8, appHash: "00", stub: stub))
 
         do {
             _ = try await client.data.get(subgroveId: "sg", key: "k")
@@ -128,6 +130,11 @@ final class RoutesTests: XCTestCase {
             GroveDBQueryResult(path: DataOperations.dataPath("sg"), key: Data("k".utf8), value: Data([0x02]) + item.dropFirst()),
         ])
         XCTAssertThrowsError(try DataOperations.requireProven(subgroveId: "sg", key: "k", value: served, in: notItem))
+
+        let unbound = GroveDBVerificationResult(rootHash: "00", results: [
+            GroveDBQueryResult(path: DataOperations.dataPath("sg"), key: Data("k".utf8), value: item, isValueBound: false),
+        ])
+        XCTAssertThrowsError(try DataOperations.requireProven(subgroveId: "sg", key: "k", value: served, in: unbound))
     }
 
     func testGroveItemBytesReadsLongLengths() {
@@ -163,6 +170,7 @@ final class RoutesTests: XCTestCase {
             return (200, #"{"success":true,"data":{"documents":[],"total":0,"offset":0,"limit":100}}"#)
         }
         let client = try stub.client(baseURL: "http://api.test")
+        client.setLightClient(try VerifiedReadsTests.pinnedLightClient(height: 8, appHash: "00", stub: stub))
 
         do {
             _ = try await client.data.query(subgroveId: "sg", query: QueryRequest())
@@ -176,6 +184,7 @@ final class RoutesTests: XCTestCase {
         let json = Data(#"{"documents":[],"total":0,"offset":0,"limit":100,"proof":"0a0b","height":9}"#.utf8)
         let response = try JSONDecoder().decode(QueryResponse.self, from: json)
         XCTAssertEqual(response.proof, Data([0x0a, 0x0b]))
+        XCTAssertEqual(response.height, 9)
     }
 
     func testGetRootHashReadsStateRootHash() async throws {
@@ -268,9 +277,13 @@ final class RoutesTests: XCTestCase {
     func testTransactionsAreSentOnce() async throws {
         let stub = StubServer { _ in (502, #"{"success":false,"data":null,"error":"Failed to reach CometBFT RPC"}"#) }
         let client = try stub.client(baseURL: "http://api.test")
+        let signing = FileSigningOptions(
+            ownerDid: "did:willow:a", privateKey: Data(), publicKeyId: "did:willow:a#key-1",
+            signFunction: { _, _ in Data([1, 2, 3]) }, nonce: 4
+        )
 
         do {
-            try await client.files.delete(subgroveId: "sg", fileKey: "f")
+            try await client.files.delete(subgroveId: "sg", fileKey: "f", signing: signing)
             XCTFail("a 502 must throw")
         } catch let error as HTTPError {
             XCTAssertEqual(error.statusCode, 502)
@@ -284,10 +297,14 @@ final class RoutesTests: XCTestCase {
         let client = try stub.client(baseURL: "http://api.test")
 
         // The manifest is submitted first; the chunk upload to a closed port then fails.
+        let signing = FileSigningOptions(
+            ownerDid: "did:willow:a", privateKey: Data(), publicKeyId: "did:willow:a#key-1",
+            signFunction: { _, _ in Data([1, 2, 3]) }, nonce: 4
+        )
         do {
             _ = try await client.files.upload(
                 subgroveId: "sg", fileKey: "f", filename: "a.txt", data: Data("hello".utf8),
-                storageNodeEndpoint: "http://127.0.0.1:1"
+                storageNodeEndpoint: "http://127.0.0.1:1", signing: signing
             )
         } catch {}
 

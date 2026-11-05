@@ -56,6 +56,7 @@ final class BuildersTests: XCTestCase {
         XCTAssertEqual(request.readers.count, 2)
     }
 
+    @available(*, deprecated)
     func testSubgroveBuilderWithRewardRate() {
         let request = SubgroveBuilder(subgroveId: "users", name: "Users")
             .rewardRate(1000)
@@ -145,6 +146,7 @@ final class BuildersTests: XCTestCase {
         XCTAssertEqual(schema.fields[0].type, "object")
     }
 
+    @available(*, deprecated)
     func testSchemaBuilderAddIndex() {
         let schema = SchemaBuilder(name: "users")
             .index("email_idx", fields: ["email"], type: .hash, unique: true)
@@ -157,6 +159,7 @@ final class BuildersTests: XCTestCase {
         XCTAssertTrue(schema.indexes[0].unique)
     }
 
+    @available(*, deprecated)
     func testSchemaBuilderHashIndex() {
         let schema = SchemaBuilder(name: "test")
             .hashIndex("email_idx", fields: ["email"])
@@ -166,6 +169,7 @@ final class BuildersTests: XCTestCase {
         XCTAssertFalse(schema.indexes[0].unique)
     }
 
+    @available(*, deprecated)
     func testSchemaBuilderRangeIndex() {
         let schema = SchemaBuilder(name: "test")
             .rangeIndex("created_idx", fields: ["created_at"])
@@ -174,6 +178,7 @@ final class BuildersTests: XCTestCase {
         XCTAssertEqual(schema.indexes[0].type, .range)
     }
 
+    @available(*, deprecated)
     func testSchemaBuilderFullTextIndex() {
         let schema = SchemaBuilder(name: "test")
             .fullTextIndex("content_idx", fields: ["title", "body"])
@@ -183,6 +188,7 @@ final class BuildersTests: XCTestCase {
         XCTAssertEqual(schema.indexes[0].fields, ["title", "body"])
     }
 
+    @available(*, deprecated)
     func testSchemaBuilderUniqueIndex() {
         let schema = SchemaBuilder(name: "test")
             .uniqueIndex("email_unique", fields: ["email"])
@@ -192,6 +198,7 @@ final class BuildersTests: XCTestCase {
         XCTAssertTrue(schema.indexes[0].unique)
     }
 
+    @available(*, deprecated)
     func testSchemaBuilderComplex() {
         let schema = SchemaBuilder(name: "users")
             .description("User profiles")
@@ -234,6 +241,7 @@ final class BuildersTests: XCTestCase {
         XCTAssertEqual(query.filters[0].operator, "eq")
     }
 
+    @available(*, deprecated)
     func testQueryBuilderNotEquals() {
         let query = QueryBuilder()
             .notEquals("status", "deleted")
@@ -242,6 +250,7 @@ final class BuildersTests: XCTestCase {
         XCTAssertEqual(query.filters[0].operator, "ne")
     }
 
+    @available(*, deprecated)
     func testQueryBuilderGreaterThan() {
         let query = QueryBuilder()
             .greaterThan("age", 18)
@@ -250,6 +259,7 @@ final class BuildersTests: XCTestCase {
         XCTAssertEqual(query.filters[0].operator, "gt")
     }
 
+    @available(*, deprecated)
     func testQueryBuilderGreaterThanOrEqual() {
         let query = QueryBuilder()
             .greaterThanOrEqual("score", 100)
@@ -258,6 +268,7 @@ final class BuildersTests: XCTestCase {
         XCTAssertEqual(query.filters[0].operator, "gte")
     }
 
+    @available(*, deprecated)
     func testQueryBuilderLessThan() {
         let query = QueryBuilder()
             .lessThan("count", 10)
@@ -266,6 +277,7 @@ final class BuildersTests: XCTestCase {
         XCTAssertEqual(query.filters[0].operator, "lt")
     }
 
+    @available(*, deprecated)
     func testQueryBuilderLessThanOrEqual() {
         let query = QueryBuilder()
             .lessThanOrEqual("price", 99.99)
@@ -274,6 +286,7 @@ final class BuildersTests: XCTestCase {
         XCTAssertEqual(query.filters[0].operator, "lte")
     }
 
+    @available(*, deprecated)
     func testQueryBuilderContains() {
         let query = QueryBuilder()
             .contains("tags", "swift")
@@ -282,6 +295,7 @@ final class BuildersTests: XCTestCase {
         XCTAssertEqual(query.filters[0].operator, "contains")
     }
 
+    @available(*, deprecated)
     func testQueryBuilderSearch() {
         let query = QueryBuilder()
             .search(fields: ["title", "content"], query: "hello world")
@@ -335,6 +349,7 @@ final class BuildersTests: XCTestCase {
         XCTAssertTrue(query.includeProof)
     }
 
+    @available(*, deprecated)
     func testQueryBuilderComplex() {
         let query = QueryBuilder()
             .equals("status", "active")

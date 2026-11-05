@@ -14,10 +14,10 @@ A complete SwiftUI notes application demonstrating the Willow Swift SDK.
   - Collection/schema creation for notes
 
 - **Notes Management**
-  - Create, read, update, delete notes
+  - Create and list notes. A note is written once: editing, pinning, or deleting one would be an UpdateData or DeleteData transaction, which the SDK doesn't build, so the app offers none of them.
+  - The list comes from `client.data.query`, checked against a GroveDB proof of the whole notes tree and the header of the consensus node the client reads. When the SDK can't check the query's answer (it throws `NotVerifiableError`, type `.notVerifiable`), the app lists the notes with `client.data.queryUnverified` and labels the list "Not verified", with the reason. Any other failure, such as a proof that doesn't check out, is shown as an error, not listed.
   - Categories (Personal, Work, Ideas, Archive)
   - Tags support
-  - Pin important notes
   - Search across title, content, and tags
 
 - **Balance Display**
@@ -72,7 +72,7 @@ Central state management using `@Observable` pattern:
 
 ### NotesViewModel
 MVVM pattern for notes operations:
-- CRUD operations via Willow SDK
+- Create and list operations via Willow SDK
 - Local filtering and sorting
 - Async/await for all network operations
 
@@ -81,21 +81,17 @@ SwiftUI views with:
 - `@EnvironmentObject` for shared state
 - Sheet presentations for editors
 - Pull-to-refresh support
-- Swipe actions for quick operations
 
 ## SDK Features Demonstrated
 
 | Feature | Implementation |
 |---------|---------------|
 | DID Generation | `newIdentity(algorithm: .ed25519)` |
-| DID Registration | `client.registerDID(didDocument)` |
-| Authentication | `client.authenticate(identity)` |
+| Request and transaction signing | `client.setIdentity(identity)` |
 | Subgrove Registration | `client.registration.registerSubgrove(request)` |
-| Schema Definition | `SchemaDefinition` with fields and indexes |
-| Data Storage | `client.data.store(...)` |
-| Data Queries | `client.data.query(...)` |
-| Data Updates | `client.data.update(...)` |
-| Data Deletion | `client.data.delete(...)` |
+| Schema Definition | `SchemaDefinition` with fields (no indexes: the node refuses a schema that declares them) |
+| Data Storage | `client.data.store(...)` (a StoreData transaction) |
+| Data Queries | `client.data.query(...)` (proof-checked), `client.data.queryUnverified(...)` (labeled unverified) |
 | Token Balance | `client.token.getBalance(did:)` |
 
 ## Customization
@@ -105,6 +101,8 @@ In `NotesApp.swift`, modify:
 ```swift
 let apiURL = "http://localhost:3031"
 ```
+
+Proof-checked queries compare the proof with the headers of a consensus node. For an API on this machine at port 3031 the SDK uses its node's RPC at port 26657; for any other API, pass the CometBFT RPC of a node you run or trust, `WillowClient(baseURL: apiURL, consensusRpcURL: "...")`, or the query throws before sending anything.
 
 ### Adding New Categories
 In `Models.swift`, extend the `NoteCategory` enum:
@@ -125,4 +123,4 @@ In `NotesApp.swift`, update the `SchemaDefinition` in `setupApp()`.
 
 - This example uses `UserDefaults` for credential storage. In production, use Keychain.
 - The app connects to `localhost:3031` by default. Update for production deployment.
-- All data operations include automatic cryptographic proof verification.
+- `client.data.query` checks the notes against a GroveDB proof and compares its root with the chain's app hash after the proof's block, from a header the configured consensus node serves. The SDK trusts that node and doesn't verify validator signatures. See the SDK README's Verification section for what is and isn't checked.

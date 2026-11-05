@@ -216,4 +216,25 @@ final class TypesTests: XCTestCase {
 
         XCTAssertEqual(result["value"]?.value as? Int, 42)
     }
+
+    func testAnyCodableWritesBooleansAndNumbersApart() throws {
+        func json(_ value: Any) throws -> String {
+            return String(decoding: try JSONEncoder().encode(AnyCodable(value)), as: UTF8.self)
+        }
+        // An NSNumber holding 0 or 1 casts to Bool in Swift, but it's a number.
+        XCTAssertEqual(try json(NSNumber(value: 1)), "1")
+        XCTAssertEqual(try json(NSNumber(value: 0)), "0")
+        XCTAssertEqual(try json(NSNumber(value: true)), "true")
+        XCTAssertEqual(try json(NSNumber(value: false)), "false")
+        XCTAssertEqual(try json(true), "true")
+        XCTAssertEqual(try json(1), "1")
+        XCTAssertEqual(try json(UInt64.max), "18446744073709551615")
+        XCTAssertEqual(try json(NSNumber(value: UInt64.max)), "18446744073709551615")
+        XCTAssertEqual(try json(NSNumber(value: 1.5)), "1.5")
+
+        let parsed = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(#"{"n":1,"b":true,"z":0}"#.utf8)) as? [String: Any])
+        XCTAssertEqual(try json(parsed["n"]!), "1")
+        XCTAssertEqual(try json(parsed["z"]!), "0")
+        XCTAssertEqual(try json(parsed["b"]!), "true")
+    }
 }

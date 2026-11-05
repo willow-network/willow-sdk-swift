@@ -1,27 +1,39 @@
-// Verifiable Ethereum state reads.
+// Ethereum state reads served by an indexer.
 //
 // Counterpart to the indexer's POST /verifiable-rpc/eth/state and
 // /verifiable-rpc/eth/call routes. Walks EIP-1186 MPT proofs locally
-// and exposes ergonomic storage-layout helpers (ERC-20 balance,
-// Uniswap V2 reserves).
+// and exposes a storage-layout helper (ERC-20 balance).
 //
-// Three trust modes follow the Rust/TS/Python/Go SDK conventions.
+// The SDK doesn't verify these reads against Ethereum (see EthOperations).
 
 import Foundation
 import CryptoSwift
 
+/// How much of an indexer's Ethereum state answer `EthOperations` checks. No
+/// mode verifies the answer against Ethereum (see `EthOperations`).
 public enum StateVerifyMode: String, Sendable {
+    /// Walks the account proof and every storage proof against the state
+    /// root the answer itself carries (the default).
     case strict
+    /// Walks no proof, as `.disabled` does: nothing anchors the answer's
+    /// root.
+    @available(*, deprecated, message: "Anchors nothing: no proof is walked, as with .disabled. Use .strict to walk the proofs against the answer's own root.")
     case anchorOnly
+    /// Walks no proof.
     case disabled
 }
 
-public struct VerifiedStorage: Sendable {
-    public let slot: String   // 0x-prefixed
+/// A storage slot's value as an indexer's answer carries it.
+public struct EthStorageSlot: Sendable {
+    public let slot: String   // 0x-prefixed, 32 bytes
     public let value: BigUInt
 }
 
-public struct VerifiedStateRead: Sendable {
+/// An account's state, and the storage slots asked of it, at a block, as an
+/// indexer's answer carries it, unverified against Ethereum (see
+/// `EthOperations`). `mode` says whether its proofs were walked against
+/// `stateRoot`.
+public struct EthStateRead: Sendable {
     public let address: String
     public let blockNumber: UInt64
     public let blockHash: String
@@ -30,18 +42,31 @@ public struct VerifiedStateRead: Sendable {
     public let balance: BigUInt
     public let storageHash: String
     public let codeHash: String
-    public let storage: [VerifiedStorage]
+    public let storage: [EthStorageSlot]
     public let mode: StateVerifyMode
 }
 
-public struct VerifiedCall: Sendable {
+/// An `eth_call` as an indexer ran it: its result, and the state of every
+/// account the call touched, unverified against Ethereum (see
+/// `EthOperations`). No proof binds `result`: the SDK doesn't run the call.
+public struct EthCallResult: Sendable {
     public let blockNumber: UInt64
     public let blockHash: String
     public let stateRoot: String
     public let result: Data
-    public let accessStateReads: [VerifiedStateRead]
+    public let accessStateReads: [EthStateRead]
     public let mode: StateVerifyMode
 }
+
+/// `EthStorageSlot`.
+@available(*, deprecated, renamed: "EthStorageSlot", message: "The value isn't verified against Ethereum.")
+public typealias VerifiedStorage = EthStorageSlot
+/// `EthStateRead`.
+@available(*, deprecated, renamed: "EthStateRead", message: "The state isn't verified against Ethereum.")
+public typealias VerifiedStateRead = EthStateRead
+/// `EthCallResult`.
+@available(*, deprecated, renamed: "EthCallResult", message: "The call isn't verified against Ethereum.")
+public typealias VerifiedCall = EthCallResult
 
 public enum EthStateError: Error, LocalizedError {
     case http(Int, String)
@@ -49,6 +74,10 @@ public enum EthStateError: Error, LocalizedError {
     case noStateProof
     case verificationFailed(String)
     case invalidAddress(String)
+    /// An answer that isn't about what was asked (another address, block,
+    /// or slot), or that carries a balance or value longer than a uint256's
+    /// 32 bytes.
+    case unexpectedAnswer(String)
 
     public var errorDescription: String? {
         switch self {
@@ -57,12 +86,29 @@ public enum EthStateError: Error, LocalizedError {
         case .noStateProof: return "response carried no state proof"
         case .verificationFailed(let msg): return "verification failed: \(msg)"
         case .invalidAddress(let msg): return "invalid address: \(msg)"
+        case .unexpectedAnswer(let msg): return "unexpected answer: \(msg)"
         }
     }
 }
 
 // MARK: - SDK operations
 
+/// Reads Ethereum state through an indexer.
+///
+/// Nothing it returns is verified against Ethereum. Each answer carries the
+/// block's state root, and its MPT proofs bind the account and slot values to
+/// that root, but the SDK has no trusted source of Ethereum block headers (it
+/// runs no Ethereum light client; the block hash and state root it has are
+/// the indexer's), so it can't check that the root is the state root of the
+/// block asked for. Treat every result as the indexer's claim. In `.strict`
+/// mode (the default) the SDK walks the proofs, so a result is at least
+/// consistent with the root the answer names; in the other modes it doesn't.
+///
+/// In every mode an answer must be about what was asked: a state read's proof
+/// must be for the address, block, and slots requested, in order, and a
+/// call's state proofs for the block requested, under the answer's state
+/// root; a balance or value longer than 32 bytes is refused. A zero storage
+/// value is proved by the slot's absence from the account's storage trie.
 public actor EthOperations {
     private let indexerBaseURL: URL
     private let session: URLSession
@@ -75,30 +121,66 @@ public actor EthOperations {
 
     public func setMode(_ mode: StateVerifyMode) { self.mode = mode }
 
-    /// Verified account + storage read at `block`.
+    /// An account's state, and the storage slots asked of it, at `block`, as
+    /// the indexer reports it (see `EthOperations`). `address` is 20 bytes of
+    /// hex; each slot is up to 32 bytes of hex, read as a big-endian number
+    /// and sent as 32 bytes. Throws, rather than return the answer, when the
+    /// answer's proof isn't for that address, block, and those slots in that
+    /// order, or carries a balance or value longer than 32 bytes
+    /// (`EthStateError.unexpectedAnswer`), or, in `.strict` mode, when a
+    /// proof doesn't walk.
     public func getState(
         address: String,
         slots: [String],
         block: UInt64
-    ) async throws -> VerifiedStateRead {
+    ) async throws -> EthStateRead {
+        guard let addressBytes = decodeHex20(address) else {
+            throw EthStateError.invalidAddress(address)
+        }
+        let keys = try slots.enumerated().map { index, slot in try slotKey(slot, index: index) }
         let body: [String: Any] = [
-            "address": address,
-            "slots": slots,
+            "address": "0x" + addressBytes.hexString,
+            "slots": keys.map { "0x" + $0.hexString },
             "block": block,
         ]
         let env = try await post(path: "verifiable-rpc/eth/state", body: body)
-        guard let proof = env.stateProofs.first else { throw EthStateError.noStateProof }
+        guard !env.stateProofs.isEmpty else { throw EthStateError.noStateProof }
+        guard env.stateProofs.count == 1 else {
+            throw EthStateError.unexpectedAnswer("the answer carried \(env.stateProofs.count) state proofs, not 1")
+        }
+        let proof = env.stateProofs[0]
+        try checkStateAnswer(proof, address: addressBytes, slots: keys, block: block)
         if mode == .strict {
             try verifyStateProof(proof)
         }
-        return toVerified(proof, mode: mode)
+        return toEthStateRead(proof, mode: mode)
     }
 
-    /// Verified `eth_call`: ABI-encoded result + state proofs for every
-    /// touched account.
-    public func getCall(tx: [String: Any], block: UInt64) async throws -> VerifiedCall {
+    /// Asks the indexer to run `tx` at `block` and returns the ABI-encoded
+    /// result it reports, with its state proofs for every account the call
+    /// touched (see `EthOperations`). No proof binds the result. Throws when
+    /// the answer or a state proof isn't for `block`, a state proof isn't
+    /// under the answer's state root, or one carries a balance or value
+    /// longer than 32 bytes (`EthStateError.unexpectedAnswer`), or, in
+    /// `.strict` mode, when a proof doesn't walk.
+    public func getCall(tx: [String: Any], block: UInt64) async throws -> EthCallResult {
         let body: [String: Any] = ["tx": tx, "block": block]
         let env = try await post(path: "verifiable-rpc/eth/call", body: body)
+        guard env.blockRange.0 == block else {
+            throw EthStateError.unexpectedAnswer("the answer is for block \(env.blockRange.0), not \(block)")
+        }
+        guard env.stateRoot.count == 32 else {
+            throw EthStateError.unexpectedAnswer("the answer's state root is \(env.stateRoot.count) bytes, not 32")
+        }
+        for (index, proof) in env.stateProofs.enumerated() {
+            guard proof.blockNumber == block else {
+                throw EthStateError.unexpectedAnswer("state proof \(index) is for block \(proof.blockNumber), not \(block)")
+            }
+            guard proof.stateRoot == env.stateRoot else {
+                throw EthStateError.unexpectedAnswer("state proof \(index) is under another state root than the answer's")
+            }
+            try checkWords(proof, "state proof \(index): ")
+        }
         if mode == .strict {
             for proof in env.stateProofs {
                 try verifyStateProof(proof)
@@ -110,16 +192,22 @@ public actor EthOperations {
         }
         let blockHash = env.stateProofs.first.map { bytesIntsToHex($0.blockHash, width: 32) }
             ?? "0x" + String(repeating: "00", count: 32)
-        return VerifiedCall(
+        return EthCallResult(
             blockNumber: env.blockRange.0,
             blockHash: blockHash,
             stateRoot: bytesIntsToHex(env.stateRoot, width: 32),
             result: result,
-            accessStateReads: env.stateProofs.map { toVerified($0, mode: mode) },
+            accessStateReads: env.stateProofs.map { toEthStateRead($0, mode: mode) },
             mode: mode
         )
     }
 
+    /// `balanceOf(holder)` for a token whose balance mapping lives at slot
+    /// `balanceSlot`, as the indexer reports it (see `EthOperations`): the
+    /// value of the slot `getState` asked for. Throws when there is no
+    /// contract at `token` (its account doesn't exist, or has no code). It
+    /// can't tell whether `balanceSlot` is the token's balance mapping: a
+    /// wrong one reads a slot the token never set, which reads as zero.
     public func erc20Balance(
         token: String,
         holder: String,
@@ -135,10 +223,15 @@ public actor EthOperations {
             slots: ["0x" + slot.hexString],
             block: block
         )
-        guard let first = state.storage.first else {
-            throw EthStateError.verificationFailed("erc20Balance: empty storage proofs")
+        // An account that doesn't exist reads with the empty code hash or the
+        // zero hash, as one without code does.
+        if state.codeHash == "0x" + emptyCodeHash.hexString || state.codeHash == "0x" + String(repeating: "00", count: 32) {
+            throw EthStateError.unexpectedAnswer("erc20Balance: no contract at \(state.address): its account doesn't exist or has no code")
         }
-        return first.value
+        guard state.storage.count == 1 else {
+            throw EthStateError.unexpectedAnswer("erc20Balance: no storage value for the balance slot")
+        }
+        return state.storage[0].value
     }
 
     // MARK: - private
@@ -149,7 +242,7 @@ public actor EthOperations {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        let (data, resp) = try await session.data(for: request)
+        let (data, resp) = try await HTTPBody.read(session, request, limit: ResponseLimit.large)
         guard let httpResp = resp as? HTTPURLResponse else {
             throw EthStateError.http(0, "non-http response")
         }
@@ -249,11 +342,77 @@ struct WireEnvelope: Decodable {
     }
 }
 
+// MARK: - Answer checks
+
+/// keccak256(""), the code hash of an account without code.
+let emptyCodeHash = keccak256(Data())
+
+/// A storage slot given as up to 32 bytes of hex (with or without `0x`), as a
+/// big-endian number left-padded to 32 bytes.
+func slotKey(_ slot: String, index: Int) throws -> Data {
+    var digits = Substring(slot)
+    if digits.hasPrefix("0x") || digits.hasPrefix("0X") {
+        digits = digits.dropFirst(2)
+    }
+    guard !digits.isEmpty, digits.count <= 64, digits.allSatisfy({ $0.isHexDigit && $0.isASCII }) else {
+        throw ValidationError("slot \(index): \(slot) isn't 1 to 64 hex digits")
+    }
+    let even = digits.count % 2 == 1 ? "0" + digits : String(digits)
+    guard let bytes = Data(hexString: even) else {
+        throw ValidationError("slot \(index): \(slot) isn't hex")
+    }
+    return Data(repeating: 0, count: 32 - bytes.count) + bytes
+}
+
+/// Refuses a state proof whose balance or a storage value is longer than
+/// 32 bytes: both are uint256s, and a longer one would be read as a number of
+/// any size.
+func checkWords(_ proof: WireStateProof, _ what: String = "") throws {
+    guard proof.accountState.balance.count <= 32 else {
+        throw EthStateError.unexpectedAnswer("\(what)the balance is \(proof.accountState.balance.count) bytes, more than a uint256's 32")
+    }
+    for (index, storage) in proof.storageProofs.enumerated() where storage.value.count > 32 {
+        throw EthStateError.unexpectedAnswer("\(what)storage proof \(index)'s value is \(storage.value.count) bytes, more than a uint256's 32")
+    }
+}
+
+/// Refuses a state proof that isn't for `address` at `block` with exactly the
+/// storage slots `slots`, in order, or whose balance or a value is longer
+/// than 32 bytes.
+func checkStateAnswer(_ proof: WireStateProof, address: Data, slots: [Data], block: UInt64) throws {
+    try checkWords(proof)
+    guard Data(proof.address) == address else {
+        throw EthStateError.unexpectedAnswer("the proof is for address 0x\(Data(proof.address).hexString), not 0x\(address.hexString)")
+    }
+    guard proof.blockNumber == block else {
+        throw EthStateError.unexpectedAnswer("the proof is for block \(proof.blockNumber), not \(block)")
+    }
+    guard proof.storageProofs.count == slots.count else {
+        throw EthStateError.unexpectedAnswer("the proof carries \(proof.storageProofs.count) storage slots, not the \(slots.count) asked for")
+    }
+    for (index, storage) in proof.storageProofs.enumerated() where Data(storage.slot) != slots[index] {
+        throw EthStateError.unexpectedAnswer("storage proof \(index) is for slot 0x\(Data(storage.slot).hexString), not 0x\(slots[index].hexString)")
+    }
+}
+
 // MARK: - Verification
 
+/// Walks the account proof against the proof's own state root, and every
+/// storage proof against the account's storage hash: it checks the answer is
+/// consistent with that root, not that the root is Ethereum's. The address
+/// must be 20 bytes and every slot 32 (a key of another length hashes to
+/// another path), and a zero value must be proved by the slot's absence (a
+/// zero is never stored).
 func verifyStateProof(_ proof: WireStateProof) throws {
     let stateRoot = Data(proof.stateRoot)
     let address = Data(proof.address)
+    guard address.count == 20 else {
+        throw EthStateError.verificationFailed("the proof's address is \(address.count) bytes, not 20")
+    }
+    for (index, storage) in proof.storageProofs.enumerated() where storage.slot.count != 32 {
+        throw EthStateError.verificationFailed("storage proof \(index)'s slot is \(storage.slot.count) bytes, not 32")
+    }
+    try checkWords(proof)
     let addrHash = keccak256(address)
     let balance = BigUInt(bytesBE: proof.accountState.balance)
     let storageHash = Data(proof.accountState.storageHash)
@@ -274,9 +433,11 @@ func verifyStateProof(_ proof: WireStateProof) throws {
     for sp in proof.storageProofs {
         let slot = Data(sp.slot)
         let valueInt = BigUInt(bytesBE: sp.value)
+        // A zero value isn't stored: the proof must show the slot absent,
+        // which the walk reports as an empty value.
         let valueRlp: Data
         if valueInt == 0 {
-            valueRlp = rlpEncodeBytes(Data())
+            valueRlp = Data()
         } else {
             valueRlp = rlpEncodeBytes(valueInt.bigEndianMinimal())
         }
@@ -442,11 +603,7 @@ func rlpDecodeList(_ data: Data) throws -> [Data] {
             throw EthStateError.decode("rlp: list length overflow")
         }
         payloadStart = 1 + lenOfLen
-        var l = 0
-        for b in data[1..<(1 + lenOfLen)] {
-            l = (l << 8) | Int(b)
-        }
-        payloadLen = l
+        payloadLen = try rlpLength(data[1..<(1 + lenOfLen)], atMost: data.count - payloadStart)
     }
     if payloadStart + payloadLen > data.count {
         throw EthStateError.decode("rlp: list payload truncated")
@@ -460,6 +617,23 @@ func rlpDecodeList(_ data: Data) throws -> [Data] {
         pos += advance
     }
     return out
+}
+
+/// A long RLP string's or list's length, from its big-endian length bytes
+/// (at most 8), refused when it is more than `limit`, the bytes left in the
+/// input, so adding it to an index can't overflow.
+private func rlpLength(_ bytes: Data, atMost limit: Int) throws -> Int {
+    var length: UInt64 = 0
+    for byte in bytes {
+        guard length >> 56 == 0 else {
+            throw EthStateError.decode("rlp: length too long")
+        }
+        length = length << 8 | UInt64(byte)
+    }
+    guard limit >= 0, length <= UInt64(limit) else {
+        throw EthStateError.decode("rlp: length \(length) past the end of the input")
+    }
+    return Int(length)
 }
 
 private func rlpDecodeItem(_ data: Data) throws -> (Data, Int) {
@@ -483,10 +657,7 @@ private func rlpDecodeItem(_ data: Data) throws -> (Data, Int) {
         if 1 + lenOfLen > data.count {
             throw EthStateError.decode("rlp: item length overflow")
         }
-        var l = 0
-        for b in data[(base + 1)..<(base + 1 + lenOfLen)] {
-            l = (l << 8) | Int(b)
-        }
+        let l = try rlpLength(data[(base + 1)..<(base + 1 + lenOfLen)], atMost: data.count - 1 - lenOfLen)
         if 1 + lenOfLen + l > data.count {
             throw EthStateError.decode("rlp: long item truncated")
         }
@@ -572,14 +743,14 @@ func bytesIntsToHex(_ bytes: [UInt8], width: Int) -> String {
     return "0x" + Data(b).hexString
 }
 
-func toVerified(_ proof: WireStateProof, mode: StateVerifyMode) -> VerifiedStateRead {
+func toEthStateRead(_ proof: WireStateProof, mode: StateVerifyMode) -> EthStateRead {
     let storage = proof.storageProofs.map { sp in
-        VerifiedStorage(
+        EthStorageSlot(
             slot: bytesIntsToHex(sp.slot, width: 32),
             value: BigUInt(bytesBE: sp.value)
         )
     }
-    return VerifiedStateRead(
+    return EthStateRead(
         address: bytesIntsToHex(proof.address, width: 20),
         blockNumber: proof.blockNumber,
         blockHash: bytesIntsToHex(proof.blockHash, width: 32),
@@ -619,9 +790,10 @@ public struct BigUInt: Equatable, Hashable, Sendable, CustomStringConvertible, E
     public init(integerLiteral value: UInt64) { self.init(value) }
 
     init(bytesBE: [UInt8]) {
-        var b = bytesBE
-        while b.first == 0 { b.removeFirst() }
-        self.bytes = b
+        // Leading zeros dropped in one pass (removing them one at a time from
+        // the front of the array was quadratic in their count).
+        let start: Int = bytesBE.firstIndex(where: { $0 != 0 }) ?? bytesBE.endIndex
+        self.bytes = Array(bytesBE[start...])
     }
 
     public static func == (lhs: BigUInt, rhs: BigUInt) -> Bool {

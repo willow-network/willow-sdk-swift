@@ -128,6 +128,7 @@ struct MatchedLogsResponse: Decodable {
 /// `value` is the raw bytes the ABCI store query returns (already base64-decoded
 /// from the CometBFT JSON-RPC envelope); they are the JSON anchor object.
 func parseEventsCommitment(_ value: Data) throws -> Data {
+    try HTTPBody.checkNesting(value)
     let anchor = try JSONDecoder().decode(EventsCommitmentAnchor.self, from: value)
     guard let commitment = Data(hexString: stripHexPrefix(anchor.eventsCommitment)),
           commitment.count == 32

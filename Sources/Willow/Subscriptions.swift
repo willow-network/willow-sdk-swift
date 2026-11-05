@@ -679,16 +679,20 @@ func sendFrame(
     try await task.send(.string(text))
 }
 
+/// A frame's JSON object; nil for a frame that isn't one, or that nests
+/// deeper than the SDK reads (see `HTTPBody.checkNesting`).
 @Sendable
 func decodeFrame(
     from msg: URLSessionWebSocketTask.Message
 ) -> [String: Any]? {
     switch msg {
     case .string(let text):
+        guard (try? HTTPBody.checkNesting(text.utf8)) != nil else { return nil }
         return try? JSONSerialization.jsonObject(
             with: Data(text.utf8), options: []
         ) as? [String: Any]
     case .data(let data):
+        guard (try? HTTPBody.checkNesting(data)) != nil else { return nil }
         return try? JSONSerialization.jsonObject(with: data, options: [])
             as? [String: Any]
     @unknown default:

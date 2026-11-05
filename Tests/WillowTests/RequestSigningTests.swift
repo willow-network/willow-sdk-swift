@@ -2,12 +2,11 @@ import XCTest
 import CryptoKit
 @testable import Willow
 
-/// Request signing against the API server's rules (crates/api-server/src/middleware.rs
-/// and crates/identity/src/did.rs), with known answers from an independent
-/// implementation of the server's verification.
+/// Request signing against the API server's request-signing rules, with known
+/// answers from an independent implementation of the server's verification.
 final class RequestSigningTests: XCTestCase {
 
-    // The api-server's test vector (read_auth_tests.rs, the_signed_message_is_eight_lines).
+    // The API server's own test vector for the eight-line signed message.
     static let vectorMessage = "willow-request-v2\ndid:willow:a\ndid:willow:a#key-1\nPOST\n/query/sg?x=1\n1700000000\n"
         + "abcdefghijklmnop\n44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
 
@@ -317,10 +316,15 @@ final class RequestSigningTests: XCTestCase {
         XCTAssertTrue(WillowClient.isSubgroveReadRoute(method: "POST", target: "/query/sg"))
         XCTAssertTrue(WillowClient.isSubgroveReadRoute(method: "POST", target: "/sql/sg"))
         XCTAssertTrue(WillowClient.isSubgroveReadRoute(method: "POST", target: "/graphql/sg"))
+        // The key grant reads answer only a nonce-signed caller.
+        XCTAssertTrue(WillowClient.isSubgroveReadRoute(method: "GET", target: "/key-grants/sg"))
+        XCTAssertTrue(WillowClient.isSubgroveReadRoute(method: "GET", target: "/key-grants/sg/did"))
+        XCTAssertTrue(WillowClient.isSubgroveReadRoute(method: "GET", target: "/proof/key-grant/sg/did"))
 
         XCTAssertFalse(WillowClient.isSubgroveReadRoute(method: "POST", target: "/data/sg"))
         XCTAssertFalse(WillowClient.isSubgroveReadRoute(method: "PUT", target: "/data/sg/k"))
-        XCTAssertFalse(WillowClient.isSubgroveReadRoute(method: "GET", target: "/proof/key-grant/sg/did"))
+        XCTAssertFalse(WillowClient.isSubgroveReadRoute(method: "GET", target: "/key-grants/sg/did/x"))
+        XCTAssertFalse(WillowClient.isSubgroveReadRoute(method: "GET", target: "/token/info"))
         XCTAssertFalse(WillowClient.isSubgroveReadRoute(method: "GET", target: "/proof/file/sg/k"))
         XCTAssertFalse(WillowClient.isSubgroveReadRoute(method: "POST", target: "/tx/submit"))
         XCTAssertFalse(WillowClient.isSubgroveReadRoute(method: "GET", target: "/fees/schedule"))
@@ -400,13 +404,18 @@ final class StubServer {
         return URLSession(configuration: configuration)
     }
 
-    func client(baseURL: String, indexerURL: String? = nil) throws -> WillowClient {
+    /// A client of the API at `baseURL` whose requests, and whose default
+    /// light client's requests to the consensus RPC, this server answers.
+    func client(
+        baseURL: String, indexerURL: String? = nil, nonces: NonceAllocator = NonceAllocator(), consensusRpcURL: String? = nil
+    ) throws -> WillowClient {
         let config = ClientConfig(
             baseURL: URL(string: baseURL)!,
             indexerURL: indexerURL.flatMap { URL(string: $0) },
-            retryConfig: RetryConfig(maxRetries: 2, initialBackoff: 0.001, maxBackoff: 0.001, backoffFactor: 1)
+            retryConfig: RetryConfig(maxRetries: 2, initialBackoff: 0.001, maxBackoff: 0.001, backoffFactor: 1),
+            consensusRpcURL: consensusRpcURL.flatMap { URL(string: $0) }
         )
-        return WillowClient(config: config, session: session)
+        return WillowClient(config: config, session: session, nonces: nonces, rpcSession: session, storageSession: session)
     }
 
     fileprivate func answer(_ request: URLRequest) -> (Int, Data) {

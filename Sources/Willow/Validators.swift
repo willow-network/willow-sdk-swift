@@ -10,18 +10,18 @@ public class ValidatorOperations {
         self.client = client
     }
 
-    /// Retrieves all validators.
+    /// Retrieves the validators `GET /validators` lists: the active, unjailed ones.
     public func list() async throws -> [ValidatorInfo] {
         guard let client = client else { throw NetworkError("Client deallocated") }
 
-        return try await client.get(path: "/validators")
+        return try await client.getData(path: "/validators", "validators", limit: ResponseLimit.large)
     }
 
-    /// Retrieves information about a specific validator.
+    /// Retrieves one validator by its DID (`GET /validators/{did}`).
     public func get(address: String) async throws -> ValidatorInfo {
         guard let client = client else { throw NetworkError("Client deallocated") }
 
-        return try await client.get(path: "/validators/\(pathSegment(address))")
+        return try await client.getData(path: "/validators/\(pathSegment(address))", "validator")
     }
 
     /// Retrieves all active validators.
@@ -30,12 +30,17 @@ public class ValidatorOperations {
         return validators.filter { $0.status == .active }
     }
 
-    /// Returns the total voting power of all active validators.
-    public func getTotalVotingPower() async throws -> Int64 {
-        let validators = try await list()
-        return validators
-            .filter { $0.status == .active }
-            .reduce(0) { $0 + $1.votingPower }
+    /// Returns the total stake of all active validators, in the token's
+    /// smallest unit, as decimal digits.
+    public func getTotalStake() async throws -> String {
+        var total = U128.zero
+        for validator in try await list() where validator.status == .active {
+            guard let stake = U128(validator.totalStake), let sum = total.adding(stake) else {
+                throw SerializationError("Validator stake \(validator.totalStake) is not a u128 amount")
+            }
+            total = sum
+        }
+        return total.description
     }
 
     /// Returns the number of active validators.

@@ -1,5 +1,4 @@
 import Foundation
-import CryptoKit
 
 // MARK: - Constants
 
@@ -64,45 +63,55 @@ public struct CryptoHash: Equatable, Hashable {
 
 // MARK: - Hash Functions
 
-/// Computes SHA256 hash of data.
+// Merk's hash rules, as grovedb-merk hashes its trees. Every hash is BLAKE3 with
+// a 32-byte output; a length prefix is an unsigned LEB128 varint.
+
+/// BLAKE3 of `data`.
 public func computeHash(_ data: Data) -> CryptoHash {
-    let hash = SHA256.hash(data: data)
-    return CryptoHash(bytes: Array(hash))
+    return CryptoHash(bytes: BLAKE3.hash(data))
 }
 
-/// Computes SHA256 hash of bytes.
+/// BLAKE3 of `bytes`.
 public func computeHash(_ bytes: [UInt8]) -> CryptoHash {
-    return computeHash(Data(bytes))
+    return CryptoHash(bytes: BLAKE3.hash(bytes))
 }
 
-/// Computes the value hash.
+/// `n` as an unsigned LEB128 varint, the length prefix Merk hashes.
+internal func merkVarint(_ n: Int) -> [UInt8] {
+    var value = UInt64(n)
+    var out: [UInt8] = []
+    while value > 0x7F {
+        out.append(UInt8(value & 0x7F) | 0x80)
+        value >>= 7
+    }
+    out.append(UInt8(value))
+    return out
+}
+
+/// A value's hash: BLAKE3(varint(value.count) || value).
 public func valueHash(_ value: Data) -> CryptoHash {
-    return computeHash(value)
+    return computeHash(merkVarint(value.count) + [UInt8](value))
 }
 
-/// Computes the key-value hash.
+/// A key-value hash: BLAKE3(varint(key.count) || key || valueHash(value)).
 public func kvHash(key: Data, value: Data) -> CryptoHash {
-    var combined = [UInt8]()
-    combined.append(contentsOf: key)
-    combined.append(contentsOf: value)
-    return computeHash(combined)
+    return kvDigestToKvHash(key: key, valueHash: valueHash(value))
 }
 
-/// Computes the node hash from kv hash and child hashes.
+/// A key-value hash from the value's hash: BLAKE3(varint(key.count) || key || valueHash).
+public func kvDigestToKvHash(key: Data, valueHash: CryptoHash) -> CryptoHash {
+    return computeHash(merkVarint(key.count) + [UInt8](key) + valueHash.bytes)
+}
+
+/// A node's hash: BLAKE3(kvHash || leftHash || rightHash), a missing child as the null hash.
 public func computeNodeHash(kvHash: CryptoHash, leftHash: CryptoHash, rightHash: CryptoHash) -> CryptoHash {
-    var combined = [UInt8]()
-    combined.append(contentsOf: kvHash.bytes)
-    combined.append(contentsOf: leftHash.bytes)
-    combined.append(contentsOf: rightHash.bytes)
-    return computeHash(combined)
+    return computeHash(kvHash.bytes + leftHash.bytes + rightHash.bytes)
 }
 
-/// Combines two hashes.
+/// Two hashes combined: BLAKE3(a || b). A subtree's element commits to the
+/// subtree as combineHash(valueHash(element bytes), subtree root hash).
 public func combineHash(_ a: CryptoHash, _ b: CryptoHash) -> CryptoHash {
-    var combined = [UInt8]()
-    combined.append(contentsOf: a.bytes)
-    combined.append(contentsOf: b.bytes)
-    return computeHash(combined)
+    return computeHash(a.bytes + b.bytes)
 }
 
 // MARK: - Merk Node Types
@@ -180,12 +189,13 @@ public struct MerkOp {
 // MARK: - Element Types
 
 /// Type of element in GroveDB.
+/// The raw value is the element's variant index in grovedb's `Element`.
 public enum ElementType: Int {
     case item = 0
     case reference = 1
     case tree = 2
-    case sumTree = 3
-    case sumItem = 4
+    case sumItem = 3
+    case sumTree = 4
     case bigSumTree = 5
     case countTree = 6
     case countSumTree = 7
@@ -225,12 +235,16 @@ public struct Element {
 public struct ProvedKeyValue {
     public let key: Data
     public let value: Data?
+    /// The value hash the proof commits to for this key.
     public let proofHash: CryptoHash
+    /// The kind of node that carried it.
+    public let nodeType: MerkNodeType
 
-    public init(key: Data, value: Data?, proofHash: CryptoHash) {
+    public init(key: Data, value: Data?, proofHash: CryptoHash, nodeType: MerkNodeType = .kv) {
         self.key = key
         self.value = value
         self.proofHash = proofHash
+        self.nodeType = nodeType
     }
 }
 
@@ -282,12 +296,26 @@ public class GroveDBProof {
 public struct GroveDBQueryResult {
     public let path: [[UInt8]]
     public let key: Data
+    /// The serialized grovedb element (for a reference, the element it points
+    /// to). It is bound to the root only when `isValueBound` is true.
     public let value: Data
+    /// Whether `value` is bound to the root. It is false for a node that
+    /// carries a tree element without the tree's lower layer: that node's
+    /// value hash combines the element's bytes with a subtree root the proof
+    /// doesn't carry, so only the key is bound, and the bytes are whatever the
+    /// proof says (they may not even be a tree's: the key may hold an item).
+    public let isValueBound: Bool
+    /// The kind of Merk node that carried the result. An item is carried by
+    /// a `.kv` node; a reference by a `.kvRefValueHash` node, whose `value`
+    /// is the element it points to, not the element stored at `key`.
+    public let nodeType: MerkNodeType
 
-    public init(path: [[UInt8]], key: Data, value: Data) {
+    public init(path: [[UInt8]], key: Data, value: Data, isValueBound: Bool = true, nodeType: MerkNodeType = .kv) {
         self.path = path
         self.key = key
         self.value = value
+        self.isValueBound = isValueBound
+        self.nodeType = nodeType
     }
 }
 
@@ -295,12 +323,21 @@ public struct GroveDBQueryResult {
 
 /// Result of proof verification.
 public struct GroveDBVerificationResult {
+    /// The root hash the proof hashes to, as lowercase hex.
     public let rootHash: String
     public let results: [GroveDBQueryResult]
+    /// True when the proof shows every element of the tree at the path it
+    /// was verified at, each bound to the root, so `results` is that whole
+    /// tree and a key missing from it is absent. It is false when the proof
+    /// hides a node or carries a result whose value isn't bound
+    /// (`GroveDBQueryResult.isValueBound`). Only
+    /// `verifyProof(proofBytes:expectedPath:)` sets it.
+    public let coversWholeTree: Bool
 
-    public init(rootHash: String, results: [GroveDBQueryResult]) {
+    public init(rootHash: String, results: [GroveDBQueryResult], coversWholeTree: Bool = false) {
         self.rootHash = rootHash
         self.results = results
+        self.coversWholeTree = coversWholeTree
     }
 }
 

@@ -13,11 +13,29 @@ public enum WillowErrorType: String {
     case serialization = "serialization"
     case crypto = "crypto"
     case proof = "proof"
+    /// A verified read the SDK can't check as asked, though nothing shows the
+    /// API's answer is wrong (see `NotVerifiableError`).
+    case notVerifiable = "not_verifiable"
+    /// A verified read whose proof is of a state too far from the chain's
+    /// latest height (see `ProofHeightOutOfRangeError`).
+    case proofHeightOutOfRange = "proof_height_out_of_range"
     case lightClient = "light_client"
     case config = "config"
     case consensus = "consensus"
     case transaction = "transaction"
     case insufficientFunds = "insufficient_funds"
+    /// An answer longer than the SDK's cap for its route, refused before any
+    /// of it is decoded and not retried. The caps: 4 MiB for answers of a
+    /// fixed shape (an account's nonce, a balance, a subgrove's entry, a
+    /// file's manifest, a `/tx/submit` answer, CometBFT's status, commit,
+    /// validators, and ABCI queries); 2 MiB and 64 KiB for a `/proof` of one
+    /// key; 2 MiB for a file chunk (less when the manifest's chunk is
+    /// smaller); 12 MiB for a `/data` value and CometBFT's `tx`; 64 MiB for
+    /// queries, GraphQL, SQL, historical queries, matched logs, Ethereum
+    /// state and call answers, and the lists the node doesn't page
+    /// (subgroves, indexers, validators, key grantees, permissions). A query
+    /// past its cap asks for less (a lower limit, a narrower query).
+    case responseTooLarge = "response_too_large"
 }
 
 /// Main error type for the Willow SDK.
@@ -63,16 +81,20 @@ public struct HTTPError: Error, LocalizedError {
 
 // MARK: - Transaction Error
 
-/// Transaction-specific error.
+/// Transaction-specific error: CheckTx refused the transaction.
 public struct TransactionError: Error, LocalizedError {
     public let message: String
     public let txHash: String?
     public let errorCode: Int
+    /// The signed transaction refused, for a write the SDK signed under a
+    /// nonce it chose (see `SignedSubmission`).
+    public let submission: SignedSubmission?
 
-    public init(message: String, txHash: String? = nil, errorCode: Int = 0) {
+    public init(message: String, txHash: String? = nil, errorCode: Int = 0, submission: SignedSubmission? = nil) {
         self.message = message
         self.txHash = txHash
         self.errorCode = errorCode
+        self.submission = submission
     }
 
     public var errorDescription: String? {
@@ -80,6 +102,37 @@ public struct TransactionError: Error, LocalizedError {
             return "transaction error (code \(errorCode), tx \(txHash)): \(message)"
         }
         return "transaction error (code \(errorCode)): \(message)"
+    }
+}
+
+// MARK: - Transaction Submit Error
+
+/// A write whose outcome is unknown: its submission failed in transit (a
+/// network error), or the API answered a 5xx, a 408, or a 2xx that isn't
+/// JSON. The transaction may have reached the node and may still land, so
+/// its nonce stays held.
+///
+/// Retry it only with `resubmit(_:)` on the client that sent it, which
+/// sends `submission`, the identical signed transaction, again under the
+/// same nonce: whichever copy lands first spends the nonce and the other is
+/// refused, so the write runs at most once. Calling the write again would
+/// sign it under a fresh nonce, and both could run. To learn whether it
+/// took effect, read what it wrote.
+public struct TransactionSubmitError: Error, LocalizedError {
+    /// The signed transaction sent.
+    public let submission: SignedSubmission
+    /// What failed: a `URLError`, an `HTTPError`, or the API's answer.
+    public let cause: Error
+
+    public init(submission: SignedSubmission, cause: Error) {
+        self.submission = submission
+        self.cause = cause
+    }
+
+    public var errorDescription: String? {
+        return "the transaction under nonce \(submission.nonce) of \(submission.did) may have reached the node "
+            + "(\(cause.localizedDescription)); resubmit it under the same nonce with resubmit(_:), "
+            + "not as a new write, or it may run twice"
     }
 }
 
@@ -147,6 +200,25 @@ public func CryptoError(_ message: String, cause: Error? = nil) -> WillowError {
 /// Creates a proof verification error.
 public func ProofError(_ message: String) -> WillowError {
     return WillowError(type: .proof, message: message)
+}
+
+/// Creates the error for a verified read the SDK can't check as asked: the
+/// proof may be genuine, but the SDK can't reproduce the node's answer from it
+/// or can't return the proven value exactly. The unverified read
+/// (`getUnverified`, `queryUnverified`) returns the node's answer, unchecked.
+/// A proof that doesn't check out is a `ProofError` instead.
+public func NotVerifiableError(_ message: String) -> WillowError {
+    return WillowError(type: .notVerifiable, message: message)
+}
+
+/// Creates the error for a verified read whose proof is of a state more than
+/// `LightClientConfig.maxProofLagBlocks` blocks behind the chain's latest
+/// height (a stale answer), or whose height is that far ahead of it. The
+/// proof itself may be genuine, and reading again may get a current one. A
+/// proof whose root the header it must match doesn't carry is a `ProofError`
+/// instead.
+public func ProofHeightOutOfRangeError(_ message: String) -> WillowError {
+    return WillowError(type: .proofHeightOutOfRange, message: message)
 }
 
 /// Creates a light client error.

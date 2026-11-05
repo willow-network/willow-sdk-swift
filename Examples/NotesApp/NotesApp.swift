@@ -108,8 +108,8 @@ class AppState: ObservableObject {
         let identity = try newIdentity(algorithm: .ed25519)
         let client = try getClient()
 
-        // Register DID + set identity for per-request signing (synchronous).
-        _ = try await client.registerDID(identity.didDocument)
+        // Set the identity for request and transaction signing. Its DID must
+        // be registered on chain and funded before it can write.
         client.setIdentity(identity)
 
         // Save credentials. In a real app, prefer Keychain over UserDefaults.
@@ -127,9 +127,6 @@ class AppState: ObservableObject {
         let identity = try identityFromPrivateKey(algorithm: .ed25519, privateKeyHex: privateKeyHex)
         let client = try getClient()
 
-        // registerDID is idempotent server-side, so we just try it and ignore
-        // a "DID already exists" error rather than probing first.
-        _ = try? await client.registerDID(identity.didDocument)
         client.setIdentity(identity)
 
         UserDefaults.standard.set(privateKeyHex, forKey: "willow_private_key")
@@ -173,6 +170,7 @@ class AppState: ObservableObject {
         let client = try getClient()
 
         // Notes schema: fields are an [SchemaField] array (each with its own name).
+        // No indexes: the node refuses a data subgrove whose schema declares them.
         let schema = SchemaDefinition(
             name: "notes",
             description: "User notes",
@@ -185,10 +183,6 @@ class AppState: ObservableObject {
                 SchemaField(name: "created", type: "number", required: false, indexed: true),
                 SchemaField(name: "updated", type: "number", required: false, indexed: true),
                 SchemaField(name: "pinned", type: "boolean", required: false, indexed: true),
-            ],
-            indexes: [
-                IndexDefinition(name: "by_category", fields: ["category"], type: .hash),
-                IndexDefinition(name: "by_updated", fields: ["updated"], type: .range),
             ]
         )
 
@@ -202,6 +196,7 @@ class AppState: ObservableObject {
             readers: [],
             rewardRate: 0
         )
+        // A RegisterSubgrove transaction signed by the identity.
         _ = try await client.registration.registerSubgrove(request)
 
         subgroveRegistered = true
@@ -215,7 +210,7 @@ class AppState: ObservableObject {
         do {
             let client = try getClient()
             if let balanceInfo = try? await client.token.getBalance(did: did) {
-                balance = Double(balanceInfo.available)
+                balance = Double(balanceInfo.available) ?? 0
             }
         } catch {
             // Silently fail - balances are optional display

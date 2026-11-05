@@ -38,56 +38,54 @@ public enum CommitmentFrequency: Codable, Equatable {
         case never = "Never"
     }
 
+    /// Reads serde's form: a unit variant as its name (`"EveryUpdate"`), a
+    /// variant with a count as `{"EveryNBlocks": n}`.
     public init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        if (try? container.decodeNil(forKey: .everyUpdate)) == false || container.contains(.everyUpdate) {
-            if let _ = try? container.decode(String.self, forKey: .everyUpdate) {
+        if let single = try? decoder.singleValueContainer(), let value = try? single.decode(String.self) {
+            switch value {
+            case "EveryUpdate":
                 self = .everyUpdate
-                return
+            case "Never":
+                self = .never
+            default:
+                throw DecodingError.dataCorruptedError(
+                    in: single,
+                    debugDescription: "Unknown CommitmentFrequency value: \(value)"
+                )
             }
-            self = .everyUpdate
             return
         }
-        if let n = try? container.decode(UInt64.self, forKey: .everyNBlocks) {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        if let n = try container.decodeIfPresent(UInt64.self, forKey: .everyNBlocks) {
             self = .everyNBlocks(n)
-            return
-        }
-        if let n = try? container.decode(UInt64.self, forKey: .everyNSeconds) {
+        } else if let n = try container.decodeIfPresent(UInt64.self, forKey: .everyNSeconds) {
             self = .everyNSeconds(n)
-            return
-        }
-        if container.contains(.never) {
-            self = .never
-            return
-        }
-
-        // Try single-value string for simple variants
-        let singleContainer = try decoder.singleValueContainer()
-        let value = try singleContainer.decode(String.self)
-        switch value {
-        case "EveryUpdate":
+        } else if container.contains(.everyUpdate) {
             self = .everyUpdate
-        case "Never":
+        } else if container.contains(.never) {
             self = .never
-        default:
-            throw DecodingError.dataCorruptedError(
-                in: singleContainer,
-                debugDescription: "Unknown CommitmentFrequency value: \(value)"
-            )
+        } else {
+            throw DecodingError.dataCorrupted(DecodingError.Context(
+                codingPath: decoder.codingPath, debugDescription: "Unknown CommitmentFrequency value"
+            ))
         }
     }
 
+    /// Writes serde's form: a unit variant as its name, a count as `{"EveryNBlocks": n}`.
     public func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
         switch self {
         case .everyUpdate:
-            try container.encode("EveryUpdate", forKey: .everyUpdate)
+            var container = encoder.singleValueContainer()
+            try container.encode("EveryUpdate")
         case .everyNBlocks(let n):
+            var container = encoder.container(keyedBy: CodingKeys.self)
             try container.encode(n, forKey: .everyNBlocks)
         case .everyNSeconds(let n):
+            var container = encoder.container(keyedBy: CodingKeys.self)
             try container.encode(n, forKey: .everyNSeconds)
         case .never:
-            try container.encode("Never", forKey: .never)
+            var container = encoder.singleValueContainer()
+            try container.encode("Never")
         }
     }
 }
@@ -256,14 +254,36 @@ public struct RotateSubgroveKeyTx: Codable {
 
 // MARK: - Key Grant Proof Response
 
-/// Response containing a GroveDB Merkle proof for a key grant.
+/// A key grant's GroveDB proof as `GET /proof/key-grant/{subgroveId}/{did}`
+/// serves it.
 public struct KeyGrantProofResponse: Codable {
-    public let proof: Data?
-    public let rootHash: String?
+    /// The proof bytes, from the hex the API serves.
+    public let proof: Data
+    public let subgroveId: String
+    public let granteeDid: String
 
     enum CodingKeys: String, CodingKey {
         case proof
-        case rootHash = "root_hash"
+        case subgroveId = "subgrove_id"
+        case granteeDid = "grantee_did"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let hex = try container.decode(String.self, forKey: .proof)
+        guard let bytes = Data(hexString: hex.hasPrefix("0x") ? String(hex.dropFirst(2)) : hex) else {
+            throw DecodingError.dataCorruptedError(forKey: .proof, in: container, debugDescription: "proof is not hex")
+        }
+        proof = bytes
+        subgroveId = try container.decode(String.self, forKey: .subgroveId)
+        granteeDid = try container.decode(String.self, forKey: .granteeDid)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(proof.hexString, forKey: .proof)
+        try container.encode(subgroveId, forKey: .subgroveId)
+        try container.encode(granteeDid, forKey: .granteeDid)
     }
 }
 
@@ -276,7 +296,9 @@ public struct KeyGrantProofResponse: Codable {
 /// transactions via the consensus client.
 ///
 /// Query methods (`getMyKeyGrant`, `listKeyGrantees`, `getKeyGrantProof`) use
-/// the `WillowClient` REST API. Transaction methods (`grantSubgroveKey`,
+/// the `WillowClient` REST API, which answers them only for a caller whose
+/// request is signed with a one-time nonce; the client signs them so when an
+/// identity is set. Transaction methods (`grantSubgroveKey`,
 /// `revokeSubgroveKey`, `rotateSubgroveKey`) require a `ConsensusClient` to
 /// broadcast transactions to the blockchain.
 public class PrivacyOperations {
@@ -313,13 +335,7 @@ public class PrivacyOperations {
         }
 
         let path = "/key-grants/\(pathSegment(subgroveId))/\(pathSegment(identity.did))"
-        let response: ApiResponse<EncryptedKeyGrant> = try await client.get(path: path)
-
-        guard let grant = response.data else {
-            throw NotFoundError("Key grant")
-        }
-
-        return grant
+        return try await client.getData(path: path, "key grant")
     }
 
     /// Lists all grantee DIDs for a subgrove.
@@ -335,18 +351,13 @@ public class PrivacyOperations {
         try client.requireAuth()
 
         let path = "/key-grants/\(pathSegment(subgroveId))"
-        let response: ApiResponse<[String]> = try await client.get(path: path)
-
-        guard let grantees = response.data else {
-            throw NotFoundError("Key grantees")
-        }
-
-        return grantees
+        return try await client.getData(path: path, "key grantees", limit: ResponseLimit.large)
     }
 
     /// Gets the GroveDB Merkle proof for a key grant.
     ///
-    /// Public endpoint -- proofs are non-sensitive.
+    /// The API answers it only for a nonce-signed caller, so an identity
+    /// must be set.
     ///
     /// - Parameters:
     ///   - subgroveId: The subgrove ID.
@@ -354,15 +365,10 @@ public class PrivacyOperations {
     /// - Returns: The proof response containing proof bytes and root hash.
     public func getKeyGrantProof(subgroveId: String, did: String) async throws -> KeyGrantProofResponse {
         guard let client = client else { throw NetworkError("Client deallocated") }
+        try client.requireAuth()
 
         let path = "/proof/key-grant/\(pathSegment(subgroveId))/\(pathSegment(did))"
-        let response: ApiResponse<KeyGrantProofResponse> = try await client.get(path: path)
-
-        guard let proof = response.data else {
-            throw NotFoundError("Key grant proof")
-        }
-
-        return proof
+        return try await client.getData(path: path, "key grant proof")
     }
 
     // MARK: - Transaction Operations
@@ -370,6 +376,10 @@ public class PrivacyOperations {
     /// Grants a DID access to a subgrove's encryption key.
     ///
     /// Broadcasts a `GrantSubgroveKey` transaction via consensus.
+    /// `signFunction` signs `grantSubgroveKeyMessage` over the subgrove ID, the
+    /// sender DID, every field of the grant, and the transaction's nonce. A
+    /// text field holding a line break, or a grantee that isn't a Willow DID,
+    /// is refused with a validation error before anything is signed.
     ///
     /// - Parameters:
     ///   - subgroveId: The subgrove ID.
@@ -391,26 +401,34 @@ public class PrivacyOperations {
             throw AuthenticationError("Identity not set")
         }
 
-        let nonce = try await consensus.getNextNonce(did: identity.did)
+        // Refuse what can't be signed before spending a request on the nonce.
+        _ = try grantSubgroveKeyMessage(subgroveId: subgroveId, senderDid: identity.did, grant: grant, nonce: 0)
 
-        let signMessage = "GrantSubgroveKey:\(subgroveId):\(grant.granteeDid):\(identity.did):\(nonce)"
-        let signatureData = try signFunction(Data(signMessage.utf8), privateKey)
-
-        var tx = GrantSubgroveKeyTx(
-            subgroveId: subgroveId,
-            encryptedKeyGrant: grant,
-            senderDid: identity.did,
-            publicKeyId: identity.publicKeyId,
-            nonce: nonce
-        )
-        tx.signature = Array(signatureData)
-
-        return try await consensus.broadcastPrivacyTransaction(txType: "GrantSubgroveKey", transaction: tx)
+        return try await consensus.submitUnderNextNonce(did: identity.did) { nonce in
+            var tx = GrantSubgroveKeyTx(
+                subgroveId: subgroveId,
+                encryptedKeyGrant: grant,
+                senderDid: identity.did,
+                publicKeyId: identity.publicKeyId,
+                nonce: nonce
+            )
+            let signMessage = try grantSubgroveKeyMessage(
+                subgroveId: tx.subgroveId,
+                senderDid: tx.senderDid,
+                grant: tx.encryptedKeyGrant,
+                nonce: unsignedField("nonce", tx.nonce, as: UInt64.self)
+            )
+            tx.signature = Array(try signFunction(Data(signMessage.utf8), privateKey))
+            return try encodeTransaction(txType: "GrantSubgroveKey", transaction: tx)
+        }
     }
 
     /// Revokes a DID's access to a subgrove's encryption key.
     ///
-    /// Broadcasts a `RevokeSubgroveKey` transaction via consensus.
+    /// Broadcasts a `RevokeSubgroveKey` transaction via consensus, signed over
+    /// `revokeSubgroveKeyMessage`. A subgrove ID holding `:`, or a revokee
+    /// that isn't a Willow DID, is refused with a validation error before
+    /// anything is signed.
     ///
     /// - Parameters:
     ///   - subgroveId: The subgrove ID.
@@ -432,28 +450,37 @@ public class PrivacyOperations {
             throw AuthenticationError("Identity not set")
         }
 
-        let nonce = try await consensus.getNextNonce(did: identity.did)
+        // Refuse what can't be signed before spending a request on the nonce.
+        _ = try revokeSubgroveKeyMessage(subgroveId: subgroveId, revokeeDid: revokeeDid, senderDid: identity.did, nonce: 0)
 
-        let signMessage = "RevokeSubgroveKey:\(subgroveId):\(revokeeDid):\(identity.did):\(nonce)"
-        let signatureData = try signFunction(Data(signMessage.utf8), privateKey)
-
-        var tx = RevokeSubgroveKeyTx(
-            subgroveId: subgroveId,
-            revokeeDid: revokeeDid,
-            senderDid: identity.did,
-            publicKeyId: identity.publicKeyId,
-            nonce: nonce
-        )
-        tx.signature = Array(signatureData)
-
-        return try await consensus.broadcastPrivacyTransaction(txType: "RevokeSubgroveKey", transaction: tx)
+        return try await consensus.submitUnderNextNonce(did: identity.did) { nonce in
+            var tx = RevokeSubgroveKeyTx(
+                subgroveId: subgroveId,
+                revokeeDid: revokeeDid,
+                senderDid: identity.did,
+                publicKeyId: identity.publicKeyId,
+                nonce: nonce
+            )
+            let signMessage = try revokeSubgroveKeyMessage(
+                subgroveId: tx.subgroveId,
+                revokeeDid: tx.revokeeDid,
+                senderDid: tx.senderDid,
+                nonce: try unsignedField("nonce", tx.nonce, as: UInt64.self)
+            )
+            tx.signature = Array(try signFunction(Data(signMessage.utf8), privateKey))
+            return try encodeTransaction(txType: "RevokeSubgroveKey", transaction: tx)
+        }
     }
 
     /// Rotates the subgrove encryption key to a new epoch with new grants.
     ///
     /// Broadcasts a `RotateSubgroveKey` transaction via consensus. This replaces
     /// the current encryption key with a new one and re-grants access to the
-    /// specified DIDs with the new key material.
+    /// specified DIDs with the new key material. `signFunction` signs
+    /// `rotateSubgroveKeyMessage` over the subgrove ID, the sender DID, the new
+    /// epoch, every field of every grant in order, and the transaction's nonce.
+    /// A text field holding a line break, or a grantee that isn't a Willow
+    /// DID, is refused with a validation error before anything is signed.
     ///
     /// - Parameters:
     ///   - subgroveId: The subgrove ID.
@@ -477,21 +504,27 @@ public class PrivacyOperations {
             throw AuthenticationError("Identity not set")
         }
 
-        let nonce = try await consensus.getNextNonce(did: identity.did)
+        // Refuse what can't be signed before spending a request on the nonce.
+        _ = try rotateSubgroveKeyMessage(subgroveId: subgroveId, senderDid: identity.did, newEpoch: newEpoch, newGrants: newGrants, nonce: 0)
 
-        let signMessage = "RotateSubgroveKey:\(subgroveId):\(newEpoch):\(identity.did):\(nonce)"
-        let signatureData = try signFunction(Data(signMessage.utf8), privateKey)
-
-        var tx = RotateSubgroveKeyTx(
-            subgroveId: subgroveId,
-            newEpoch: newEpoch,
-            newGrants: newGrants,
-            senderDid: identity.did,
-            publicKeyId: identity.publicKeyId,
-            nonce: nonce
-        )
-        tx.signature = Array(signatureData)
-
-        return try await consensus.broadcastPrivacyTransaction(txType: "RotateSubgroveKey", transaction: tx)
+        return try await consensus.submitUnderNextNonce(did: identity.did) { nonce in
+            var tx = RotateSubgroveKeyTx(
+                subgroveId: subgroveId,
+                newEpoch: newEpoch,
+                newGrants: newGrants,
+                senderDid: identity.did,
+                publicKeyId: identity.publicKeyId,
+                nonce: nonce
+            )
+            let signMessage = try rotateSubgroveKeyMessage(
+                subgroveId: tx.subgroveId,
+                senderDid: tx.senderDid,
+                newEpoch: tx.newEpoch,
+                newGrants: tx.newGrants,
+                nonce: unsignedField("nonce", tx.nonce, as: UInt64.self)
+            )
+            tx.signature = Array(try signFunction(Data(signMessage.utf8), privateKey))
+            return try encodeTransaction(txType: "RotateSubgroveKey", transaction: tx)
+        }
     }
 }

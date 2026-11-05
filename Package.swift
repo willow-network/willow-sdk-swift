@@ -34,7 +34,11 @@ let package = Package(
         .testTarget(
             name: "WillowTests",
             dependencies: ["Willow"],
-            resources: [.copy("Fixtures/signed_messages_kat.json")]
+            resources: [
+                .copy("Fixtures/signed_messages_kat.json"),
+                .copy("Fixtures/signed_messages_kat_2.json"),
+                .copy("Fixtures/grovedb"),
+            ]
         ),
     ]
 )

@@ -14,47 +14,101 @@ public class DataOperations {
 
     /// Gets an item and verifies it against a GroveDB proof.
     ///
-    /// Reads the value from `GET /data/{subgroveId}/{key}` and its proof from
-    /// `GET /proof/{subgroveId}/{key}`, then requires that the proof descends to
-    /// the subgrove's data tree, proves `key` there with the value served, and
-    /// hashes to the light client's verified root. It returns the value the
-    /// proof proves. Any failure throws; the value is never returned
-    /// unverified.
+    /// Reads the value from `GET /data/{subgroveId}/{key}` and its proof
+    /// from `GET /proof/{subgroveId}/{key}`. The proof must prove, in the
+    /// subgrove's data tree (`subgroves/{subgroveId}/data`), the key holding
+    /// an item (a KV node; a reference is refused) with the value served, and
+    /// its root must be the chain's app hash after the block the proof's
+    /// state is from. The proof is served with that block's height H; a
+    /// header at H+1 carries the state after block H, and so does every later
+    /// header up to and including the header of the next block with
+    /// transactions, since a block without them leaves the state unchanged.
+    /// The light client supplies the header
+    /// (`LightClient.verifyAppHash(_:forStateAfter:)`): the newest one it has
+    /// accepted at H+1 or later that carries the root, or else the header at
+    /// H+1, waiting for it if the chain hasn't produced it yet. The proof is
+    /// checked with Merk's hash rules (BLAKE3) and grovedb's proof encoding.
     ///
-    /// The proof verifier cannot verify a proof from the chain yet, so this
-    /// throws for every live read: it decodes proof integers as fixed-width
-    /// where grovedb writes bincode varints, it hashes Merk nodes with SHA-256
-    /// where grovedb-merk uses BLAKE3 over length-prefixed fields, it does not
-    /// check a `KVValueHash` node's value against its value hash, and the root
-    /// is compared with the light client's latest trusted header rather than
-    /// the header at the proof's height. Use `getUnverified` to read without a
-    /// proof.
+    /// The API chooses the state it proves, so the state must be recent: a
+    /// proof of a state more than `LightClientConfig.maxProofLagBlocks`
+    /// (default 20) blocks behind the chain's latest height
+    /// (`LightClient.latestChainHeight()`) throws `ProofHeightOutOfRangeError`
+    /// (type `.proofHeightOutOfRange`), as does a height that far ahead of it.
+    /// A proof whose root the header doesn't carry throws a proof error.
+    ///
+    /// The value is proven as of the state of the header returned in
+    /// `proof.header` (the state after block `proof.header.height - 1`), not
+    /// as of now: it may have changed since.
+    ///
+    /// It returns the value the proof proves, read as the node reads it; any
+    /// failure throws, and the value is never returned unverified. Numbers
+    /// are `Int` when they are integers that fit, else the `Double` that is
+    /// the number; a value holding a number a `Double` would round (such as
+    /// `0.12345678901234567890` or `18446744073709551615`) throws
+    /// `NotVerifiableError` (store such numbers as strings).
+    ///
+    /// The app hash comes from the consensus RPC the client is configured
+    /// with (`consensusRpcURL`, the local node's for an API on this machine,
+    /// or a light client you set; see `WillowClient.getOrCreateLightClient()`).
+    /// The SDK trusts that node, as a client trusts its own node: it doesn't
+    /// verify validator signatures, so a dishonest consensus node can make a
+    /// forged value verify, but a forged value or proof from the API can't.
+    /// With no consensus RPC configured this throws a config error before
+    /// sending anything.
+    ///
+    /// A key the API reports missing throws `NotFoundError` (type
+    /// `.notFound`). That answer comes without a proof, so it does not prove
+    /// the key absent. Use `getUnverified` to read without a proof.
     public func get(subgroveId: String, key: String) async throws -> DataResponse {
         guard let client = client else { throw NetworkError("Client deallocated") }
 
+        // The light client takes its first header before the proof is read:
+        // either the header after the proof's block is above it, or no block
+        // with transactions came between and it carries the proof's state.
+        let lc = try await client.getOrCreateLightClient()
+        _ = try await lc.currentTrustedState()
+
         let value = try await fetchValue(subgroveId: subgroveId, key: key, client: client)
 
-        let proofResponse: ApiResponse<ServedProof> = try await client.get(path: "/proof/\(pathSegment(subgroveId))/\(pathSegment(key))")
+        let proofResponse: ApiResponse<ServedProof> = try await client.get(
+            path: "/proof/\(pathSegment(subgroveId))/\(pathSegment(key))", limit: ResponseLimit.proof)
         let served = try client.unwrap(proofResponse, "proof")
         let cleanHex = served.proof.hasPrefix("0x") ? String(served.proof.dropFirst(2)) : served.proof
         guard let proofBytes = Data(hexString: cleanHex), !proofBytes.isEmpty else {
             throw ProofError("The API returned no proof for \(subgroveId)/\(key)")
         }
-
-        let result = try GroveDBVerifier.verifyProof(proofBytes: proofBytes, expectedPath: DataOperations.dataPath(subgroveId))
-        let proven = try DataOperations.requireProven(subgroveId: subgroveId, key: key, value: value, in: result)
-
-        let lc = try await client.getOrCreateLightClient()
-        let expectedRootHash = try await lc.getVerifiedRootHash()
-        guard result.rootHash.lowercased() == expectedRootHash.lowercased() else {
-            throw ProofError("Root hash mismatch: expected \(expectedRootHash), got \(result.rootHash)")
+        guard proofBytes.count <= GroveDBVerifier.maxSingleKeyProofBytes else {
+            throw ProofError(
+                "The API returned a proof of \(proofBytes.count) bytes for \(subgroveId)/\(key), over the 1 MiB a proof of one key holds")
         }
+        guard let height = served.height, height > 0 else {
+            throw ProofError("The API returned the proof for \(subgroveId)/\(key) without the height of its state")
+        }
+
+        // The root is checked first, so that what the proof says is about a
+        // state the chain had.
+        let result = try GroveDBVerifier.verifyProof(proofBytes: proofBytes, expectedPath: DataOperations.dataPath(subgroveId))
+        let header = try await DataOperations.requireRoot(result.rootHash, stateAfter: height, lightClient: lc)
+        let proven = try DataOperations.requireProven(subgroveId: subgroveId, key: key, value: value, in: result)
 
         return DataResponse(
             key: key,
             data: proven,
-            proof: DataProof(proof: proofBytes, rootHash: result.rootHash, height: served.height ?? 0, verifiedAt: Int64(Date().timeIntervalSince1970))
+            proof: DataProof(
+                proof: proofBytes, rootHash: result.rootHash, height: height,
+                verifiedAt: Int64(Date().timeIntervalSince1970), header: header)
         )
+    }
+
+    /// Requires that `rootHash` is the chain's app hash after block `height`
+    /// in a recent header, and returns that header (see
+    /// `LightClient.verifyAppHash(_:forStateAfter:)`); hex is compared
+    /// case-insensitively.
+    internal static func requireRoot(_ rootHash: String, stateAfter height: Int64, lightClient: LightClient) async throws -> VerifiedHeader {
+        guard height < Int64.max else {
+            throw ProofError("The proof's height \(height) has no next header")
+        }
+        return try await lightClient.verifyAppHash(rootHash, forStateAfter: height)
     }
 
     /// Gets an item without proof verification (faster but less secure), from
@@ -69,7 +123,8 @@ public class DataOperations {
     /// The value `GET /data/{subgroveId}/{key}` serves: the stored JSON object
     /// (or `{"hex": ...}` for bytes that are not JSON).
     private func fetchValue(subgroveId: String, key: String, client: WillowClient) async throws -> [String: AnyCodable] {
-        let response: ApiResponse<AnyCodable> = try await client.get(path: "/data/\(pathSegment(subgroveId))/\(pathSegment(key))")
+        let response: ApiResponse<AnyCodable> = try await client.get(
+            path: "/data/\(pathSegment(subgroveId))/\(pathSegment(key))", limit: ResponseLimit.tx)
         let value = try client.unwrap(response, "Data")
         guard let object = value.value as? [String: Any] else {
             throw SerializationError("The value at \(subgroveId)/\(key) is not a JSON object")
@@ -83,23 +138,35 @@ public class DataOperations {
     }
 
     /// Requires that `result` proves `key` in the subgrove's data tree with an
-    /// item whose bytes are the JSON of `value` (compared as JSON, since the API
-    /// re-serializes it), and returns the proven value.
+    /// item, carried by a KV node as grovedb proves one (a reference's node
+    /// carries the element it points to, not what the key holds), and returns
+    /// the value the item holds as the node's reader reads it: its JSON
+    /// (serde_json with arbitrary precision; see `query`), or `{"hex": ...}`
+    /// for bytes that reader refuses, as `GET /data` serves them. `value`, the
+    /// value served, must equal it (compared as JSON, since the API
+    /// re-serializes it).
+    ///
+    /// A value holding a number a `Double` would round, or an object with keys
+    /// that differ only as Unicode canonical equivalents, can't be returned
+    /// exactly: it throws `NotVerifiableError`.
     internal static func requireProven(subgroveId: String, key: String, value: [String: AnyCodable], in result: GroveDBVerificationResult) throws -> [String: AnyCodable] {
         let path = dataPath(subgroveId)
         guard let proved = result.results.first(where: { $0.path == path && $0.key == Data(key.utf8) }) else {
             throw ProofError("The proof does not prove key \(key) in \(subgroveId)'s data")
         }
-        guard let itemBytes = groveItemBytes(proved.value) else {
+        guard proved.nodeType == .kv, proved.isValueBound, let itemBytes = groveItemBytes(proved.value) else {
             throw ProofError("The proven element for \(key) is not an item")
         }
-        let served = NSDictionary(dictionary: value.mapValues { $0.value })
         let proven: Any
-        if let json = try? JSONSerialization.jsonObject(with: itemBytes, options: [.fragmentsAllowed]) {
-            proven = json
-        } else {
+        do {
+            proven = try NodeJSON.parse(itemBytes).foundationValue()
+        } catch NodeJSON.ReadError.notJSON {
             proven = ["hex": itemBytes.hexString]
+        } catch NodeJSON.ReadError.unsupported(let why) {
+            throw NotVerifiableError(
+                "The value at \(subgroveId)/\(key) can't be verified: \(why). getUnverified returns the API's answer, unchecked")
         }
+        let served = NSDictionary(dictionary: value.mapValues { $0.value })
         guard let provenObject = proven as? [String: Any], served.isEqual(to: provenObject) else {
             throw ProofError("The value served for \(key) is not the value the proof proves")
         }
@@ -132,42 +199,270 @@ public class DataOperations {
 
     // MARK: - Query Operations
 
-    /// Queries data with automatic proof verification.
-    /// Applies computed fields if registered for the subgrove.
+    /// Queries a DataStorage subgrove and verifies the answer against a
+    /// GroveDB proof of its whole data tree. Applies computed fields if
+    /// registered for the subgrove.
     ///
-    /// Asks `POST /query/{subgroveId}` for a proof and requires it to hash to
-    /// the light client's verified root; a response without one throws. The
-    /// documents are not checked against the proof's contents. As with `get`,
-    /// the proof verifier cannot verify a proof from the chain yet, so this
-    /// throws for every live query.
+    /// Asks `POST /query/{subgroveId}` for a proof. The node proves every
+    /// element of `subgroves/{subgroveId}/data`; the proof must prove that
+    /// tree at that path and hide no node of it (or prove it empty), every
+    /// element must be an item, and its root must be the chain's app hash
+    /// after the block the proof's state is from, in a recent header, as in
+    /// `get` (a stale proof throws `ProofHeightOutOfRangeError`). The answer
+    /// is the node's as of that header's state (`QueryResponse.header`), not
+    /// as of now. Once the root is checked, the SDK answers the query itself
+    /// over those items, as the node does, reading the items and the request
+    /// body it sends as the node's JSON reader does (`serde_json` with
+    /// arbitrary precision and raw values, so an object whose first key is
+    /// `$serde_json::private::Number` or `$serde_json::private::RawValue` is
+    /// read as the number or JSON its string holds):
+    ///
+    /// - the items that parse as JSON, in key order;
+    /// - the filter: the value at the field's dotted path (object keys
+    ///   compared as UTF-8 bytes) must equal the filter's value as JSON
+    ///   values, numbers compared by their text as the node keeps it (so `1`
+    ///   isn't `1.0`, nor `9007199254740993` `9007199254740992`), strings by
+    ///   their UTF-8 bytes;
+    /// - the sort, stable: numbers by value, strings by their UTF-8 bytes;
+    /// - the offset and limit (default 100).
+    ///
+    /// Of the API's answer only the proof and its height are read; the
+    /// documents it serves are not used. Every result is a proven item, with
+    /// its key, and `totalCount` counts the proven items that pass the
+    /// filter. Numbers in the results are `Int` when they are integers that
+    /// fit, else the `Double` whose shortest decimal form is the number. Any
+    /// failure throws.
+    ///
+    /// Where the node's answer can't be reproduced, the query isn't verified.
+    /// It throws `NotVerifiableError` (type `.notVerifiable`, not `.proof`:
+    /// nothing shows the answer is wrong) when the sort field holds, across
+    /// the matching items, numbers or strings that differ alongside values of
+    /// another kind (or no value), which the node's sort doesn't put in one
+    /// order; and when a result holds a number a `Double` would round (such
+    /// as `0.12345678901234567890`, `18446744073709551615`, or `1e400`; store
+    /// such numbers as strings) or an object two of whose keys differ only as
+    /// Unicode canonical equivalents. `queryUnverified` returns the node's
+    /// answer to such a query, unchecked.
+    ///
+    /// The app hash comes from the configured consensus RPC, which the SDK
+    /// trusts without verifying validator signatures, as for `get`; with none
+    /// configured this throws a config error before sending anything. A
+    /// request the node can't run (see `QueryRequest`) is refused with a
+    /// validation error before anything is sent.
     public func query(subgroveId: String, query: QueryRequest) async throws -> QueryResponse {
         guard let client = client else { throw NetworkError("Client deallocated") }
+        try query.validateForNode()
+        // The light client takes its first header before the proof is read
+        // (see `get`).
+        let lc = try await client.getOrCreateLightClient()
+        _ = try await lc.currentTrustedState()
 
         var queryWithProof = query
         queryWithProof.includeProof = true
+        // The body is written once: the query is answered from these bytes,
+        // read as the node reads them, and these bytes are sent.
+        let body = try queryWithProof.nodeBody()
+        let plan = try NodeQueryPlan(body: body)
+        let envelope: ApiResponse<ServedQueryProof> = try await client.postData(
+            path: "/query/\(pathSegment(subgroveId))", body: body, limit: ResponseLimit.large)
+        let served = try client.unwrap(envelope, "query result")
 
-        let envelope: ApiResponse<QueryResponse> = try await client.post(path: "/query/\(pathSegment(subgroveId))", body: queryWithProof)
-        var response = try client.unwrap(envelope, "query result")
-
-        guard let proofData = response.proof, !proofData.isEmpty else {
+        guard let proofHex = served.proof else {
             throw ProofError("The API returned no proof for the query on \(subgroveId)")
         }
-        try await verifyProof(proofData, client: client)
+        guard let proof = Data(hexString: proofHex.hasPrefix("0x") ? String(proofHex.dropFirst(2)) : proofHex), !proof.isEmpty else {
+            throw ProofError("The API returned a proof for the query on \(subgroveId) that isn't hex")
+        }
+        guard let height = served.height, height > 0 else {
+            throw ProofError("The API returned the proof for the query on \(subgroveId) without the height of its state")
+        }
 
-        // Apply computed fields if registered
+        // The root is checked before the query is answered, so that an
+        // answer the SDK can't reproduce is about a state the chain had.
+        let (rootHash, tree) = try GroveDBVerifier.verifyTree(proof, at: DataOperations.dataPath(subgroveId))
+        let header = try await DataOperations.requireRoot(rootHash.hexString, stateAfter: height, lightClient: lc)
+        let answer = try DataOperations.answer(plan, tree: tree)
+
+        var response = QueryResponse(
+            results: answer.results,
+            totalCount: answer.total,
+            hasMore: plan.offset + answer.results.count < answer.total,
+            proof: proof,
+            height: height,
+            header: header
+        )
         if let fields = client.computedFieldRegistry.get(datasetId: subgroveId) {
             response = applyComputedFieldsToResponse(response: response, fields: fields)
         }
-
         return response
     }
 
-    /// Queries data without proof verification (`POST /query/{subgroveId}`).
-    /// Applies computed fields if registered for the subgrove.
+    /// Verifies `proof` as a proof of the whole tree at `path` holding only
+    /// items, and answers `query`, as the SDK sends it, over those items as
+    /// the node's query route does (see `query(subgroveId:query:)`).
+    internal static func answer(_ query: QueryRequest, proof: Data, path: [[UInt8]]) throws -> (rootHash: String, results: [QueryResult], total: Int) {
+        try query.validateForNode()
+        return try answer(NodeQueryPlan(body: query.nodeBody()), proof: proof, path: path)
+    }
+
+    internal static func answer(_ plan: NodeQueryPlan, proof: Data, path: [[UInt8]]) throws -> (rootHash: String, results: [QueryResult], total: Int) {
+        let (rootHash, tree) = try GroveDBVerifier.verifyTree(proof, at: path)
+        let answer = try answer(plan, tree: tree)
+        return (rootHash.hexString, answer.results, answer.total)
+    }
+
+    /// Answers `plan` over a proven tree that must hold only items and be
+    /// shown whole.
+    internal static func answer(_ plan: NodeQueryPlan, tree: ProvenTree) throws -> (results: [QueryResult], total: Int) {
+        // The node reads the tree in key order.
+        var items: [(key: Data, bytes: Data)] = []
+        for entry in tree.entries.sorted(by: { $0.key.lexicographicallyPrecedes($1.key) }) {
+            guard entry.nodeType == .kv, entry.isValueBound, let bytes = groveItemBytes(entry.value) else {
+                throw ProofError("The data tree holds an element that isn't an item, at key \(entry.key.hexString)")
+            }
+            items.append((entry.key, bytes))
+        }
+        guard tree.complete else {
+            throw ProofError("The proof doesn't show the whole data tree (it hides nodes), so the query's answer can't be checked")
+        }
+
+        // It skips an item its JSON reader refuses. One the SDK can't read
+        // as the node does makes the answer unverifiable.
+        var documents: [(key: Data, value: NodeJSON)] = []
+        for item in items {
+            do {
+                documents.append((item.key, try NodeJSON.parse(item.bytes)))
+            } catch NodeJSON.ReadError.notJSON {
+                continue
+            } catch NodeJSON.ReadError.unsupported(let why) {
+                throw unverifiable("the item at key \(item.key.hexString) can't be read as the node reads it: \(why)")
+            }
+        }
+
+        if let filter = plan.filter {
+            documents = documents.filter { $0.value.value(atPath: filter.field) == filter.value }
+        }
+        if let sort = plan.sort {
+            let keys = documents.map { SortKey($0.value.value(atPath: sort.field)) }
+            guard SortKey.orderIsConsistent(keys) else {
+                throw unverifiable(
+                    "its sort field holds, across the matching items, numbers or strings that differ alongside values of another kind or no value, which the node's sort doesn't put in one order")
+            }
+            // A stable sort: ties keep key order.
+            let order: [Int] = Array(documents.indices).sorted { (i: Int, j: Int) -> Bool in
+                var compared: Int = SortKey.compare(keys[i], keys[j])
+                if sort.descending {
+                    compared = -compared
+                }
+                if compared != 0 {
+                    return compared < 0
+                }
+                return i < j
+            }
+            documents = order.map { documents[$0] }
+        }
+
+        let total = documents.count
+        let page = documents.dropFirst(plan.offset).prefix(plan.limit)
+        let results = try page.map { document -> QueryResult in
+            guard case .object = document.value else {
+                throw SerializationError("The document at key \(document.key.hexString) is not a JSON object")
+            }
+            let object: [String: Any]
+            do {
+                object = try document.value.foundationValue() as? [String: Any] ?? [:]
+            } catch NodeJSON.ReadError.unsupported(let why) {
+                throw unverifiable("the result at key \(document.key.hexString) can't be returned exactly: \(why)")
+            }
+            return QueryResult(key: String(decoding: document.key, as: UTF8.self), data: object.mapValues { AnyCodable($0) })
+        }
+        return (results, total)
+    }
+
+    /// The error for a query whose answer the SDK can't reproduce.
+    private static func unverifiable(_ why: String) -> WillowError {
+        return NotVerifiableError("This query can't be verified: \(why). queryUnverified returns the node's answer, unchecked")
+    }
+
+    /// A sort field's value as the node's comparator sees it: a number as
+    /// `f64` (none when it isn't finite, which sorts first), a string as its
+    /// UTF-8 bytes, anything else (a missing field included) as equal to
+    /// everything.
+    internal enum SortKey: Equatable {
+        case number(Double?)
+        case string([UInt8])
+        case other
+
+        init(_ value: NodeJSON?) {
+            switch value {
+            case .number(let text)?:
+                let double = Double(text)
+                self = .number(double.flatMap { $0.isFinite ? ($0 == 0 ? 0 : $0) : nil })
+            case .string(let bytes)?:
+                self = .string(bytes)
+            default:
+                self = .other
+            }
+        }
+
+        /// -1, 0, or 1, as the node compares two values.
+        static func compare(_ a: SortKey, _ b: SortKey) -> Int {
+            switch (a, b) {
+            case let (.number(x), .number(y)):
+                switch (x, y) {
+                case (nil, nil): return 0
+                case (nil, _): return -1
+                case (_, nil): return 1
+                case let (x?, y?): return x < y ? -1 : (x > y ? 1 : 0)
+                }
+            case let (.string(x), .string(y)):
+                return x == y ? 0 : (x.lexicographicallyPrecedes(y) ? -1 : 1)
+            default:
+                return 0
+            }
+        }
+
+        /// Whether the node's comparator orders `keys` consistently (a strict
+        /// weak order), so that its stable sort has one answer. It does when
+        /// the keys are all numbers, all strings, or all equal to each other;
+        /// numbers (or strings) that differ, alongside a key of another kind,
+        /// are each equal to that key but not to each other.
+        static func orderIsConsistent(_ keys: [SortKey]) -> Bool {
+            var numbers = Set<Double?>()
+            var strings = Set<[UInt8]>()
+            var (numberCount, stringCount, otherCount) = (0, 0, 0)
+            for key in keys {
+                switch key {
+                case .number(let value):
+                    numbers.insert(value)
+                    numberCount += 1
+                case .string(let bytes):
+                    strings.insert(bytes)
+                    stringCount += 1
+                case .other:
+                    otherCount += 1
+                }
+            }
+            if numbers.count > 1, stringCount > 0 || otherCount > 0 {
+                return false
+            }
+            if strings.count > 1, numberCount > 0 || otherCount > 0 {
+                return false
+            }
+            return true
+        }
+    }
+
+    /// Queries data without proof verification (`POST /query/{subgroveId}`):
+    /// the documents and total are the node's, unchecked. Applies computed
+    /// fields if registered for the subgrove. A request the node can't run
+    /// (see `QueryRequest`) is refused with a validation error before
+    /// anything is sent.
     public func queryUnverified(subgroveId: String, query: QueryRequest) async throws -> QueryResponse {
         guard let client = client else { throw NetworkError("Client deallocated") }
 
-        let envelope: ApiResponse<QueryResponse> = try await client.post(path: "/query/\(pathSegment(subgroveId))", body: query)
+        let envelope: ApiResponse<QueryResponse> = try await client.postData(
+            path: "/query/\(pathSegment(subgroveId))", body: try query.nodeBody(), limit: ResponseLimit.large)
         var response = try client.unwrap(envelope, "query result")
 
         // Apply computed fields if registered
@@ -180,57 +475,103 @@ public class DataOperations {
 
     // MARK: - Store Operations
 
-    /// Stores an item.
-    public func store(subgroveId: String, key: String, data: [String: Any]) async throws {
+    /// Stores an item as a `StoreData` transaction, signed by the client's
+    /// identity and submitted to `POST /tx/submit` (the API serves no data
+    /// write route: writes go through consensus).
+    ///
+    /// `data` is serialized once, with sorted keys and each `Double` in its
+    /// shortest form (`0.1` as `0.1`, which `JSONSerialization` would write
+    /// as `0.10000000000000001`): the text the node keeps, which `get` and
+    /// `query` return as that same `Double`, and which an equality filter on
+    /// the same `Double` matches. The transaction carries that JSON text's
+    /// UTF-8 bytes under the identity's next nonce, signed over
+    /// `storeDataMessage`. A subgrove ID, key, or DID holding a line
+    /// break is refused with a validation error before anything is signed.
+    ///
+    /// The nonce is the lowest one above the account's base that the client
+    /// hasn't seen used and that no other write in flight from this process
+    /// holds, so writes sent before earlier ones land take distinct nonces. A
+    /// write refused at CheckTx gives its nonce back, unless the refusal says
+    /// the nonce is held by a pending transaction, already used, or spent. A
+    /// write refused in its block after its signature and nonce verify spends
+    /// its nonce, so calling again signs under another. One whose submission
+    /// failed in transit (a network error, a 5xx, or a 408) may still land,
+    /// so its nonce stays held for 120 s and it throws a
+    /// `TransactionSubmitError`: retry it only with
+    /// `client.resubmit(error.submission)`, which sends the same signed
+    /// transaction under the same nonce, so it runs at most once. Calling
+    /// `store` again would sign it under a fresh nonce. After a refusal that
+    /// says the nonce is already used, read the key: an earlier attempt may
+    /// have landed under that nonce, and storing again under a fresh one would
+    /// write twice.
+    ///
+    /// It returns once CheckTx admits the transaction, before it is in a
+    /// block: the item is readable once that block is committed.
+    @discardableResult
+    public func store(subgroveId: String, key: String, data: [String: Any]) async throws -> BroadcastResult {
         guard let client = client else { throw NetworkError("Client deallocated") }
-        try client.requireAuth()
-
-        let request = StoreRequest(key: key, data: data)
-        let path = "/subgroves/\(pathSegment(subgroveId))/data"
-        let _: EmptyStoreResponse = try await client.post(path: path, body: request)
+        let identity = try client.transactionIdentity()
+        let text = try storeDataText(data)
+        // Refuse a line break before spending a request on the nonce.
+        _ = try storeDataMessage(subgroveId: subgroveId, key: key, ownerDid: identity.did, data: Data(text.utf8), nonce: 0)
+        return try await client.submitUnderNextNonce(did: identity.did) { nonce in
+            let tx = try signedStoreData(
+                subgroveId: subgroveId, key: key, data: text, ownerDid: identity.did,
+                publicKeyId: identity.publicKeyId, nonce: nonce, sign: identity.sign
+            )
+            return try encodeTransaction(txType: "StoreData", transaction: tx)
+        }
     }
 
     /// Stores multiple items in batch.
+    ///
+    /// The node has no batch write and the API no batch route, so this throws
+    /// a validation error and sends nothing. Store each item with
+    /// `store(subgroveId:key:data:)`, one transaction each.
+    @available(*, deprecated, message: "The node has no batch write; store each item with store(subgroveId:key:data:).")
     public func batchStore(subgroveId: String, items: [StoreRequest]) async throws {
-        guard let client = client else { throw NetworkError("Client deallocated") }
-        try client.requireAuth()
-
-        let path = "/subgroves/\(pathSegment(subgroveId))/data/batch"
-        let batchRequest = BatchStoreRequest(items: items)
-        let _: EmptyStoreResponse = try await client.post(path: path, body: batchRequest)
+        throw ValidationError(
+            "The node has no batch write: store each item with store(subgroveId:key:data:), one StoreData transaction each"
+        )
     }
 
     // MARK: - Update Operations
 
     /// Updates an item.
+    ///
+    /// An update is an UpdateData consensus transaction, which this SDK
+    /// doesn't build, and the API serves no update route, so this throws a
+    /// validation error and sends nothing.
+    @available(*, deprecated, message: "An update is an UpdateData transaction, which this SDK doesn't build.")
     public func update(subgroveId: String, key: String, data: [String: Any]) async throws {
-        guard let client = client else { throw NetworkError("Client deallocated") }
-        try client.requireAuth()
-
-        let path = "/subgroves/\(pathSegment(subgroveId))/data/\(pathSegment(key))"
-        let body = data.mapValues { AnyCodable($0) }
-        let _: EmptyStoreResponse = try await client.put(path: path, body: body)
+        throw ValidationError(
+            "Updating data is an UpdateData consensus transaction, which this SDK doesn't build; the API serves no update route"
+        )
     }
 
     // MARK: - Delete Operations
 
     /// Deletes an item.
+    ///
+    /// A delete is a DeleteData consensus transaction, which this SDK doesn't
+    /// build, and the API serves no delete route, so this throws a validation
+    /// error and sends nothing.
+    @available(*, deprecated, message: "A delete is a DeleteData transaction, which this SDK doesn't build.")
     public func delete(subgroveId: String, key: String) async throws {
-        guard let client = client else { throw NetworkError("Client deallocated") }
-        try client.requireAuth()
-
-        let path = "/subgroves/\(pathSegment(subgroveId))/data/\(pathSegment(key))"
-        try await client.delete(path: path)
+        throw ValidationError(
+            "Deleting data is a DeleteData consensus transaction, which this SDK doesn't build; the API serves no delete route"
+        )
     }
 
     // MARK: - Historical Query Operations
 
-    /// Gets checkpoint state root information.
+    /// Gets checkpoint state root information
+    /// (`GET /checkpoints/{subgroveId}/{checkpointId}/state-root`).
     public func getCheckpointStateRoot(subgroveId: String, checkpointId: String) async throws -> CheckpointInfo {
         guard let client = client else { throw NetworkError("Client deallocated") }
 
         let path = "/checkpoints/\(pathSegment(subgroveId))/\(pathSegment(checkpointId))/state-root"
-        return try await client.get(path: path)
+        return try await client.getData(path: path, "checkpoint")
     }
 
     /// Queries historical indexed data from a checkpoint.
@@ -239,73 +580,103 @@ public class DataOperations {
         guard let client = client else { throw NetworkError("Client deallocated") }
 
         let path = "/historical/query/\(pathSegment(subgroveId))/\(pathSegment(checkpointId))"
-        return try await client.post(path: path, body: request)
+        return try await client.post(path: path, body: request, limit: ResponseLimit.large)
     }
 
-    /// Queries historical data with automatic proof verification.
-    /// Forces proof inclusion and verifies the proof against the checkpoint's state root.
+    /// Queries historical data with proof verification: not supported.
+    ///
+    /// A checkpoint's `state_root` is not a GroveDB root a proof can hash to,
+    /// and nothing ties the response's `data` to its proof, so the SDK can't
+    /// verify a historical answer. This throws a validation error and sends
+    /// nothing. `queryHistorical` returns the answer unverified.
+    @available(*, deprecated, message: "A historical answer can't be verified; use queryHistorical, which returns it unverified.")
     public func queryHistoricalVerified(subgroveId: String, checkpointId: String, request: HistoricalQueryRequest) async throws -> HistoricalQueryResponse {
-        // Force proof inclusion
-        var requestWithProof = request
-        requestWithProof.includeProof = true
-
-        let response = try await queryHistorical(subgroveId: subgroveId, checkpointId: checkpointId, request: requestWithProof)
-
-        // Verify the proof against checkpoint state root
-        guard let proofHex = response.proof, !proofHex.isEmpty else {
-            throw ProofError("Historical query did not return proof data despite include_proof=true")
-        }
-
-        // Decode hex proof
-        let cleanHex = proofHex.hasPrefix("0x") ? String(proofHex.dropFirst(2)) : proofHex
-        guard let proofBytes = Data(hexString: cleanHex) else {
-            throw ProofError("Failed to decode historical proof hex")
-        }
-
-        // Verify proof and get computed root hash
-        let result = try GroveDBVerifier.verifyProof(proofBytes: proofBytes)
-
-        // Normalize and compare root hashes
-        let computedRoot = result.rootHash.lowercased().replacingOccurrences(of: "0x", with: "")
-        let expectedRoot = response.stateRoot.lowercased().replacingOccurrences(of: "0x", with: "")
-
-        if computedRoot != expectedRoot {
-            throw ProofError("Historical proof verification failed: computed root \(result.rootHash) does not match checkpoint state root \(response.stateRoot)")
-        }
-
-        return response
-    }
-
-    // MARK: - Proof Verification
-
-    private func verifyProof(_ proofData: Data, client: WillowClient) async throws {
-        // Always verify through the light client; auto-initialized via
-        // trust-on-first-use on first call. Pin a known-good checkpoint
-        // header in production deployments.
-        let lc = try await client.getOrCreateLightClient()
-        let expectedRootHash = try await lc.getVerifiedRootHash()
-
-        // Verify the proof
-        let result = try GroveDBVerifier.verifyProofAgainstRoot(proofBytes: proofData, expectedRootHash: expectedRootHash)
-        if result.rootHash != expectedRootHash {
-            throw ProofError("Root hash mismatch: expected \(expectedRootHash), got \(result.rootHash)")
-        }
+        throw ValidationError(
+            "A historical query's answer can't be verified: a checkpoint's state root is not a GroveDB root and its data isn't bound to the proof; queryHistorical returns it unverified"
+        )
     }
 }
 
 // MARK: - Helper Types
 
-private struct EmptyStoreResponse: Codable {}
-
 /// What `GET /proof/{subgroveId}/{key}` serves: the hex GroveDB proof and the
-/// block height it was generated at.
+/// height of the block whose state it proves (the header at `height + 1`
+/// carries that state's app hash).
 private struct ServedProof: Codable {
     let proof: String
     let height: Int64?
 }
 
-private struct BatchStoreRequest: Codable {
-    let items: [StoreRequest]
+/// The part of `POST /query`'s answer a verified query reads: the proof and
+/// its height.
+private struct ServedQueryProof: Codable {
+    let proof: String?
+    let height: Int64?
+}
+
+/// A query as the node's query route reads it from the request body: the
+/// first member of `filters` as an equality filter unless its value is an
+/// object, the sort's field and order (`desc`, or else ascending), the
+/// offset, and the limit (default 100).
+internal struct NodeQueryPlan {
+    let filter: (field: [UInt8], value: NodeJSON)?
+    let sort: (field: [UInt8], descending: Bool)?
+    let offset: Int
+    let limit: Int
+
+    init(body: Data) throws {
+        guard case .object(let request)? = try? NodeJSON.parse(body) else {
+            throw ValidationError("The query body isn't a JSON object the node reads")
+        }
+        func key(_ name: String) -> NodeJSON? {
+            return request[Array(name.utf8)]
+        }
+        func count(_ name: String, default fallback: Int) throws -> Int {
+            switch key(name) {
+            case nil, .null?:
+                return fallback
+            case .number(let text)?:
+                guard let value = UInt32(text) else { throw ValidationError("A query's \(name) must be 0 to \(UInt32.max)") }
+                return Int(value)
+            default:
+                throw ValidationError("A query's \(name) must be a number")
+            }
+        }
+
+        if case .object(let filters)? = key("filters") {
+            // The node takes the map's first member: one is unambiguous.
+            guard filters.count <= 1 else {
+                throw ValidationError("The node's query route runs one filter; this query has \(filters.count)")
+            }
+            if let field = filters.keys.first, let value = filters[field] {
+                if case .object = value {
+                    filter = nil
+                } else {
+                    filter = (field, value)
+                }
+            } else {
+                filter = nil
+            }
+        } else {
+            filter = nil
+        }
+
+        switch key("sort") {
+        case nil, .null?:
+            sort = nil
+        case .object(let members)?:
+            guard case .string(let field)? = members[Array("field".utf8)],
+                  case .string(let order)? = members[Array("order".utf8)] else {
+                throw ValidationError("A query's sort needs a field and an order")
+            }
+            sort = (field, order == Array("desc".utf8))
+        default:
+            throw ValidationError("A query's sort must be an object")
+        }
+
+        offset = try count("offset", default: 0)
+        limit = try count("limit", default: 100)
+    }
 }
 
 // MARK: - Query Builder
@@ -321,56 +692,64 @@ public class QueryBuilder {
 
     public init() {}
 
-    /// Adds an equals filter.
+    /// Adds an equals filter. The node's query route runs one filter, so a
+    /// query with more than one is refused.
     @discardableResult
     public func equals(_ field: String, _ value: Any) -> QueryBuilder {
         filters.append(QueryFilter(field: field, operator: "eq", value: value))
         return self
     }
 
-    /// Adds a not equals filter.
+    /// Adds a not equals filter. The node's query route doesn't run it.
+    @available(*, deprecated, message: "The node's query route runs only an equality filter; data.query and data.queryUnverified refuse a query with this one.")
     @discardableResult
     public func notEquals(_ field: String, _ value: Any) -> QueryBuilder {
         filters.append(QueryFilter(field: field, operator: "ne", value: value))
         return self
     }
 
-    /// Adds a greater than filter.
+    /// Adds a greater than filter. The node's query route doesn't run it.
+    @available(*, deprecated, message: "The node's query route runs only an equality filter; data.query and data.queryUnverified refuse a query with this one.")
     @discardableResult
     public func greaterThan(_ field: String, _ value: Any) -> QueryBuilder {
         filters.append(QueryFilter(field: field, operator: "gt", value: value))
         return self
     }
 
-    /// Adds a greater than or equal filter.
+    /// Adds a greater than or equal filter. The node's query route doesn't run it.
+    @available(*, deprecated, message: "The node's query route runs only an equality filter; data.query and data.queryUnverified refuse a query with this one.")
     @discardableResult
     public func greaterThanOrEqual(_ field: String, _ value: Any) -> QueryBuilder {
         filters.append(QueryFilter(field: field, operator: "gte", value: value))
         return self
     }
 
-    /// Adds a less than filter.
+    /// Adds a less than filter. The node's query route doesn't run it.
+    @available(*, deprecated, message: "The node's query route runs only an equality filter; data.query and data.queryUnverified refuse a query with this one.")
     @discardableResult
     public func lessThan(_ field: String, _ value: Any) -> QueryBuilder {
         filters.append(QueryFilter(field: field, operator: "lt", value: value))
         return self
     }
 
-    /// Adds a less than or equal filter.
+    /// Adds a less than or equal filter. The node's query route doesn't run it.
+    @available(*, deprecated, message: "The node's query route runs only an equality filter; data.query and data.queryUnverified refuse a query with this one.")
     @discardableResult
     public func lessThanOrEqual(_ field: String, _ value: Any) -> QueryBuilder {
         filters.append(QueryFilter(field: field, operator: "lte", value: value))
         return self
     }
 
-    /// Adds a contains filter.
+    /// Adds a contains filter. The node's query route doesn't run it.
+    @available(*, deprecated, message: "The node's query route runs only an equality filter; data.query and data.queryUnverified refuse a query with this one.")
     @discardableResult
     public func contains(_ field: String, _ value: Any) -> QueryBuilder {
         filters.append(QueryFilter(field: field, operator: "contains", value: value))
         return self
     }
 
-    /// Adds a full-text search.
+    /// Adds a full-text search. The node's query route has none.
+    @available(*, deprecated, message: "The node's query route has no full-text search; data.query and data.queryUnverified refuse a query with one.")
     @discardableResult
     public func search(fields: [String], query: String) -> QueryBuilder {
         self.search = QuerySearch(fields: fields, query: query)

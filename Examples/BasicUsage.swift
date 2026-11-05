@@ -21,6 +21,8 @@ struct BasicUsageExample {
         do {
             // 1. Create client
             print("1. Creating client...")
+            // Verified reads take headers from this node's RPC (port 26657);
+            // for a remote API, pass consensusRpcURL.
             let client = try WillowClient(baseURL: "http://localhost:3031")
             print("   Connected to Willow node")
             print()
@@ -32,14 +34,9 @@ struct BasicUsageExample {
             print("   Public Key ID: \(identity.publicKeyId)")
             print()
 
-            // 3. Register the DID
-            print("3. Registering DID...")
-            do {
-                _ = try await client.registerDID(identity.didDocument)
-                print("   DID registered successfully")
-            } catch {
-                print("   Note: \(error.localizedDescription)")
-            }
+            // 3. The DID must be registered on chain and funded for fees
+            // (a RegisterDid transaction) before it can sign writes.
+            print("3. DID: \(identity.did)")
             print()
 
             // 4. Set identity for per-request signing (synchronous; no server session).

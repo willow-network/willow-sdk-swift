@@ -124,7 +124,8 @@ public actor WillowIndexers {
         let url = apiURL.appendingPathComponent("indexers")
         var req = URLRequest(url: url)
         req.httpMethod = "GET"
-        let (data, response) = try await session.data(for: req)
+        // `/indexers` isn't paged: it grows with the chain.
+        let (data, response) = try await HTTPBody.read(session, req, limit: ResponseLimit.large)
         guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
             throw NetworkError("Failed to fetch /indexers")
         }
@@ -153,7 +154,7 @@ public actor WillowIndexers {
         IndexerInfo(
             indexerDid: "explicit-override",
             subgroves: [],
-            stakeAmount: 0,
+            stakeAmount: "0",
             endpoint: url,
             queryEndpoint: url,
             status: "active",
