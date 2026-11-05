@@ -220,7 +220,7 @@ public class FileOperations {
             request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
             request.httpBody = chunk
 
-            let (_, response) = try await HTTPBody.read(client.storageSession, request, limit: ResponseLimit.small)
+            let (_, response) = try await HTTPBody.read(client.storageSession, request, limit: ResponseLimit.small, json: false)
             guard let httpResponse = response as? HTTPURLResponse,
                   (200...299).contains(httpResponse.statusCode) else {
                 throw NetworkError("Failed to upload chunk \(i)")
@@ -277,7 +277,7 @@ public class FileOperations {
             let chunkData: Data
             let response: URLResponse
             do {
-                (chunkData, response) = try await HTTPBody.read(client.storageSession, from: url, limit: limit)
+                (chunkData, response) = try await HTTPBody.read(client.storageSession, from: url, limit: limit, json: false)
             } catch let error as WillowError where error.type == .responseTooLarge && limit == expected {
                 throw ValidationError(
                     "The storage node served more than chunk \(i) holds: the manifest's \(manifest.chunkSize)-byte chunks of \(manifest.totalSize) bytes")

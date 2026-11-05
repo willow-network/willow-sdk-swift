@@ -52,4 +52,73 @@ final class ResponseLimitsTests: XCTestCase {
         }
         XCTAssertEqual(stub.requests.count, 1)
     }
+
+    /// `levels` arrays nested around `0`.
+    static func nested(_ levels: Int) -> String {
+        return String(repeating: "[", count: levels) + "0" + String(repeating: "]", count: levels)
+    }
+
+    /// An answer nested 500 levels deep overflowed a task's stack as
+    /// `AnyCodable` decoded it (before any proof was read, for a verified
+    /// get), crashing the process. It is refused before it is decoded; an
+    /// answer nested to the limit still reads on a task's stack, and brackets
+    /// inside strings don't count.
+    func testDeeplyNestedAnswersAreRefusedBeforeDecoding() async throws {
+        let deep = Self.nested(500)
+        let stub = StubServer { request in
+            switch request.path {
+            case "/data/sg/deep":
+                return (200, #"{"success":true,"data":{"a":"# + deep + "}}")
+            case "/data/sg/strings":
+                let brackets = String(repeating: "[{", count: 300)
+                return (200, #"{"success":true,"data":{"a":"\"\#(brackets)","b":"\#(brackets)\\"}}"#)
+            case "/query/deep", "/query/sg":
+                // The documents' array and object, and the envelope's two
+                // objects, hold the value 4 levels down: 156 reaches the limit.
+                let levels = request.path == "/query/deep" ? 500 : HTTPBody.maxJSONDepth - 4
+                return (200, #"{"success":true,"data":{"documents":[{"a":"# + Self.nested(levels) + #"}],"total":1},"error":null}"#)
+            default:
+                return (404, "")
+            }
+        }
+        let client = try stub.client(baseURL: "http://api.test")
+        let outcome: (refused: [String], read: [Int]) = try await Task.detached {
+            var refused: [String] = []
+            do {
+                _ = try await client.data.getUnverified(subgroveId: "sg", key: "deep")
+                refused.append("read")
+            } catch let error as WillowError {
+                refused.append(error.type.rawValue)
+            }
+            do {
+                _ = try await client.data.queryUnverified(subgroveId: "deep", query: QueryRequest())
+                refused.append("read")
+            } catch let error as WillowError {
+                refused.append(error.type.rawValue)
+            }
+            let strings = try await client.data.getUnverified(subgroveId: "sg", key: "strings")
+            let page = try await client.data.queryUnverified(subgroveId: "sg", query: QueryRequest())
+            var depth = 0
+            var current: Any? = page.results.first?.data["a"]?.value
+            while let array = current as? [Any] {
+                depth += 1
+                current = array.first
+            }
+            return (refused, [strings.data.count, depth])
+        }.value
+        XCTAssertEqual(outcome.refused, ["response_too_large", "response_too_large"])
+        XCTAssertEqual(outcome.read, [2, HTTPBody.maxJSONDepth - 4])
+    }
+
+    /// The scan counts brackets outside strings only, and an escaped quote
+    /// doesn't end a string.
+    func testTheNestingScanSkipsStrings() throws {
+        let limit = HTTPBody.maxJSONDepth
+        XCTAssertNoThrow(try HTTPBody.checkNesting(Array(Self.nested(limit).utf8)))
+        XCTAssertThrowsError(try HTTPBody.checkNesting(Array(Self.nested(limit + 1).utf8)))
+        let quoted = #"["\"\#(String(repeating: "[", count: limit + 1))", "\\"]"#
+        XCTAssertNoThrow(try HTTPBody.checkNesting(Array(quoted.utf8)))
+        let afterEscapedBackslash = #"["\\", "# + Self.nested(limit) + "]"
+        XCTAssertThrowsError(try HTTPBody.checkNesting(Array(afterEscapedBackslash.utf8)))
+    }
 }

@@ -52,8 +52,11 @@ internal enum HTTPBody {
     /// Sends `request` through `session` and reads the answer's body a piece
     /// at a time, refusing it with `ResponseTooLargeError` once it passes
     /// `limit` bytes (or declares a longer length), before any of it is
-    /// decoded. The request is cancelled when refused.
-    static func read(_ session: URLSession, _ request: URLRequest, limit: Int) async throws -> (Data, URLResponse) {
+    /// decoded. The request is cancelled when refused. A `json` answer (every
+    /// answer but a file chunk's) nested deeper than `maxJSONDepth` is
+    /// refused too (see `checkNesting`), whatever its status, since even an
+    /// error's body is read as JSON.
+    static func read(_ session: URLSession, _ request: URLRequest, limit: Int, json: Bool = true) async throws -> (Data, URLResponse) {
         let (bytes, response) = try await session.bytes(for: request)
         if response.expectedContentLength > Int64(limit) {
             bytes.task.cancel()
@@ -68,12 +71,61 @@ internal enum HTTPBody {
             }
             body.append(byte)
         }
+        if json {
+            try checkNesting(body)
+        }
         return (Data(body), response)
     }
 
     /// `read` of a GET of `url`.
-    static func read(_ session: URLSession, from url: URL, limit: Int) async throws -> (Data, URLResponse) {
-        return try await read(session, URLRequest(url: url), limit: limit)
+    static func read(_ session: URLSession, from url: URL, limit: Int, json: Bool = true) async throws -> (Data, URLResponse) {
+        return try await read(session, URLRequest(url: url), limit: limit, json: json)
+    }
+
+    /// The deepest an answer's JSON may nest. `JSONDecoder`, `AnyCodable`,
+    /// and `JSONSerialization` read JSON recursively, several stack frames a
+    /// level, and a task's thread has a small stack: an answer nested 500
+    /// levels overflowed it, crashing the process. The node stores no value
+    /// nested more than 127 levels (serde_json's limit), and the deepest
+    /// answer that carries one (a query's document) wraps it in 4 more.
+    static let maxJSONDepth = 160
+
+    /// Refuses JSON text whose arrays and objects nest more than
+    /// `maxJSONDepth` deep, with `ResponseTooLargeError`, before it is
+    /// decoded: a scan of its bytes that counts `[` and `{` against `]` and
+    /// `}`, skipping what is inside strings (a `\` escapes the byte after
+    /// it). Text that isn't JSON is left for the decoder to refuse.
+    static func checkNesting<Bytes: Sequence>(_ text: Bytes) throws where Bytes.Element == UInt8 {
+        var depth = 0
+        var inString = false
+        var escaped = false
+        for byte in text {
+            if inString {
+                if escaped {
+                    escaped = false
+                } else if byte == UInt8(ascii: "\\") {
+                    escaped = true
+                } else if byte == UInt8(ascii: "\"") {
+                    inString = false
+                }
+                continue
+            }
+            switch byte {
+            case UInt8(ascii: "\""):
+                inString = true
+            case UInt8(ascii: "["), UInt8(ascii: "{"):
+                depth += 1
+                guard depth <= maxJSONDepth else {
+                    throw WillowError(
+                        type: .responseTooLarge,
+                        message: "The answer nests JSON more than \(maxJSONDepth) levels deep, past the SDK's limit")
+                }
+            case UInt8(ascii: "]"), UInt8(ascii: "}"):
+                depth = max(0, depth - 1)
+            default:
+                break
+            }
+        }
     }
 
     /// A readable size for `limit`: in MiB when it is whole MiB, else KiB.
