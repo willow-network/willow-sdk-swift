@@ -135,6 +135,38 @@ final class TrustModelTests: XCTestCase {
         }
     }
 
+    /// A consensus RPC that can't answer when the light client starts fails
+    /// that read; the next read starts it again.
+    func testALightClientThatFailedToStartStartsAgain() async throws {
+        let value = #"{"balance":250}"#
+        let tree = VerifiedReadsTests.dataTree([(Self.bob, value)])
+        let chain = StubChain(headers: [42: (tree.hash.hexString, Date().addingTimeInterval(-5))])
+        let down = Locked(true)
+        let flaky = StubServer { request in
+            if request.url.host == "rpc.test" {
+                return down.value ? (503, "") : chain.answer(request)
+            }
+            switch request.path {
+            case "/data/sg/\(Self.bob)":
+                return (200, #"{"success":true,"data":\#(value)}"#)
+            case "/proof/sg/\(Self.bob)":
+                return (200, #"{"success":true,"data":{"proof":"\#(tree.proof.hexString)","height":41}}"#)
+            default:
+                return (404, "")
+            }
+        }
+        let client = try flaky.client(baseURL: "https://api.test", consensusRpcURL: "https://rpc.test")
+        do {
+            _ = try await client.data.get(subgroveId: "sg", key: Self.bob)
+            XCTFail("the consensus RPC is down")
+        } catch {}
+        XCTAssertFalse(client.hasLightClient())
+        down.value = false
+        let response = try await client.data.get(subgroveId: "sg", key: Self.bob)
+        XCTAssertEqual(response.data["balance"]?.value as? Int, 250)
+        XCTAssertTrue(client.hasLightClient())
+    }
+
     /// Only an API on this machine at port 3031 has its node's RPC derived
     /// (port 26657); any other API needs `consensusRpcURL`.
     func testOnlyALocalAPIsRPCIsDerived() throws {

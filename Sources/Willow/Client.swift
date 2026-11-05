@@ -268,10 +268,16 @@ public class WillowClient {
         }
 
         lightClientInitTask = task
-        let lc = try await task.value
-        self.lightClient = lc
-        lightClientInitTask = nil
-        return lc
+        do {
+            let lc = try await task.value
+            self.lightClient = lc
+            lightClientInitTask = nil
+            return lc
+        } catch {
+            // A failed start isn't kept: the next verified read tries again.
+            lightClientInitTask = nil
+            throw error
+        }
     }
 
     /// The consensus RPC verified reads take headers from, without a trailing
