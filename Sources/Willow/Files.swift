@@ -312,16 +312,17 @@ public class FileOperations {
 
     /// The node's largest file, in bytes (1 GiB).
     internal static let maxFileSize: UInt64 = 1_073_741_824
-    /// The node's smallest chunk of a file of more than one chunk.
-    internal static let minChunkSize: UInt32 = 4_096
-    /// The node's most chunks: `maxFileSize / minChunkSize`.
+    /// The node's most chunks: 1 GiB in chunks of 4,096 bytes, the smallest
+    /// chunk it now takes in a file of more than one.
     internal static let maxChunkCount: UInt32 = 262_144
 
     /// Refuses a manifest the chain would refuse: no data, more than 1 GiB or
     /// 262,144 chunks, a zero chunk size, a chunk count that doesn't match the
     /// total and chunk sizes (`(count - 1) * size < total <= count * size`),
-    /// chunks under 4,096 bytes in a file of more than one, or a content hash
-    /// or chunk Merkle root that isn't 32 nonzero bytes of hex.
+    /// or a content hash or chunk Merkle root that isn't 32 nonzero bytes of
+    /// hex. Chunks under 4,096 bytes in a file of more than one are taken:
+    /// the chain refuses them only from a later height, so a manifest stored
+    /// before it may have them.
     internal static func checkManifest(_ manifest: FileManifest) throws {
         let total = manifest.totalSize
         let count = UInt64(manifest.chunkCount)
@@ -334,9 +335,6 @@ public class FileOperations {
         }
         guard (count - 1) * size < total, total <= count * size else {
             throw ValidationError("The manifest's \(count) chunks of \(size) bytes don't hold its \(total) bytes")
-        }
-        guard count == 1 || manifest.chunkSize >= minChunkSize else {
-            throw ValidationError("The manifest's chunks of \(size) bytes are under the node's \(minChunkSize) for a file of more than one")
         }
         for (name, hex) in [("content hash", manifest.contentHash), ("chunk Merkle root", manifest.chunkMerkleRoot)] {
             guard hex.utf8.count == 64, let bytes = Data(hexString: hex), bytes.count == 32, bytes.contains(where: { $0 != 0 }) else {

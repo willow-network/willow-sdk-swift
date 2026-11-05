@@ -35,7 +35,6 @@ final class FilesTests: XCTestCase {
             Self.manifest(totalSize: "1048577", chunkCount: "262145", chunkSize: "4"),
             Self.manifest(totalSize: "600000", chunkCount: "1", chunkSize: "262144"),
             Self.manifest(totalSize: "5", chunkCount: "2", chunkSize: "262144"),
-            Self.manifest(totalSize: "8000", chunkCount: "2", chunkSize: "4000"),
             Self.manifest(contentHash: "ab ab"),
             Self.manifest(contentHash: String(repeating: "00", count: 32)),
             Self.manifest(merkleRoot: "xyz"),
@@ -80,6 +79,32 @@ final class FilesTests: XCTestCase {
                 XCTAssertEqual(error.type, .validation)
             }
         }
+    }
+
+    /// A manifest whose chunks are under the 4,096 bytes the chain now
+    /// requires of a file of more than one downloads: the chain refuses such
+    /// a manifest only from a later height, so one stored before it may have
+    /// them.
+    func testADownloadTakesAManifestWithChunksUnderTheCurrentMinimum() async throws {
+        let file = Data("hello world".utf8)
+        let chunks = [file.prefix(4), file.dropFirst(4).prefix(4), file.dropFirst(8)]
+        let leaves = chunks.map { Data(SHA256.hash(data: $0)) }
+        let left = Data(SHA256.hash(data: leaves[0] + leaves[1]))
+        let right = Data(SHA256.hash(data: leaves[2] + leaves[2]))
+        let root = Data(SHA256.hash(data: left + right)).hexString
+        let content = Data(SHA256.hash(data: file)).hexString
+        let stub = StubServer { request in
+            if request.url.host == "api.test" {
+                return (200, Self.manifest(totalSize: "11", chunkCount: "3", chunkSize: "4", contentHash: content, merkleRoot: root))
+            }
+            guard let index = Int(request.path.split(separator: "/").last ?? ""), index < chunks.count else {
+                return (404, "")
+            }
+            return (200, String(decoding: chunks[index], as: UTF8.self))
+        }
+        let client = try stub.client(baseURL: "http://api.test")
+        let data = try await client.files.download(subgroveId: "sg", fileKey: "f", storageNodeEndpoint: "http://storage.test")
+        XCTAssertEqual(data, file)
     }
 
     /// With no signing options and no identity, an upload or delete sends
