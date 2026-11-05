@@ -44,6 +44,12 @@ public struct LightClientConfig {
     /// `LightClient.verifyAppHash(_:forStateAfter:)` wait for a header the
     /// chain hasn't produced yet.
     public let headerWaitTimeout: TimeInterval
+    /// How many blocks a verified read's proof may be from the chain's latest
+    /// height (`LightClient.latestChainHeight()`): the API chooses the state
+    /// it proves, so a proof of a state further behind (or a height further
+    /// ahead) is refused with `ProofHeightOutOfRangeError`. See
+    /// `LightClient.verifyAppHash(_:forStateAfter:)`. Default 20.
+    public let maxProofLagBlocks: Int64
 
     public init(
         chainId: String,
@@ -56,7 +62,8 @@ public struct LightClientConfig {
         syncInterval: TimeInterval = 5 * 60, // 5 minutes
         rpcTimeout: TimeInterval = 10,
         maxRetries: Int = 3,
-        headerWaitTimeout: TimeInterval = 30
+        headerWaitTimeout: TimeInterval = 30,
+        maxProofLagBlocks: Int64 = 20
     ) {
         self.chainId = chainId
         self.validatorEndpoints = validatorEndpoints
@@ -69,6 +76,7 @@ public struct LightClientConfig {
         self.rpcTimeout = rpcTimeout
         self.maxRetries = maxRetries
         self.headerWaitTimeout = headerWaitTimeout
+        self.maxProofLagBlocks = maxProofLagBlocks
     }
 
     public static var `default`: LightClientConfig {
@@ -358,6 +366,43 @@ public struct TrustedState: Codable {
     public init(header: TrustedHeader, validatorSet: ValidatorSet) {
         self.header = header
         self.validatorSet = validatorSet
+    }
+}
+
+// MARK: - Verified Header
+
+/// The header whose app hash a verified read's proof root matched.
+///
+/// A header at height `height` carries the chain's state after block
+/// `height - 1`. A verified read proves its value as of that state, not as
+/// of now: the value held after block `height - 1`, and may have changed
+/// since. `LightClient.verifyAppHash(_:forStateAfter:)` matches a root to the
+/// newest header it knows that carries it, no more than
+/// `LightClientConfig.maxProofLagBlocks` blocks behind the chain's latest
+/// height.
+public struct VerifiedHeader: Codable, Equatable {
+    /// The header's height. It carries the state after block `height - 1`.
+    public let height: Int64
+    /// The header's block time, when known (a header pinned without its
+    /// block time has none).
+    public let time: Date?
+    /// The header's app hash, the root the proof hashes to.
+    public let appHash: String
+
+    enum CodingKeys: String, CodingKey {
+        case height
+        case time
+        case appHash = "app_hash"
+    }
+
+    public init(height: Int64, time: Date?, appHash: String) {
+        self.height = height
+        self.time = time
+        self.appHash = appHash
+    }
+
+    init(_ header: TrustedHeader) {
+        self.init(height: header.height, time: header.headerTime, appHash: header.appHash)
     }
 }
 

@@ -16,6 +16,9 @@ public enum WillowErrorType: String {
     /// A verified read the SDK can't check as asked, though nothing shows the
     /// API's answer is wrong (see `NotVerifiableError`).
     case notVerifiable = "not_verifiable"
+    /// A verified read whose proof is of a state too far from the chain's
+    /// latest height (see `ProofHeightOutOfRangeError`).
+    case proofHeightOutOfRange = "proof_height_out_of_range"
     case lightClient = "light_client"
     case config = "config"
     case consensus = "consensus"
@@ -159,6 +162,16 @@ public func ProofError(_ message: String) -> WillowError {
 /// A proof that doesn't check out is a `ProofError` instead.
 public func NotVerifiableError(_ message: String) -> WillowError {
     return WillowError(type: .notVerifiable, message: message)
+}
+
+/// Creates the error for a verified read whose proof is of a state more than
+/// `LightClientConfig.maxProofLagBlocks` blocks behind the chain's latest
+/// height (a stale answer), or whose height is that far ahead of it. The
+/// proof itself may be genuine, and reading again may get a current one. A
+/// proof whose root the header it must match doesn't carry is a `ProofError`
+/// instead.
+public func ProofHeightOutOfRangeError(_ message: String) -> WillowError {
+    return WillowError(type: .proofHeightOutOfRange, message: message)
 }
 
 /// Creates a light client error.

@@ -534,13 +534,16 @@ final class LightClientTests: XCTestCase {
         XCTAssertEqual(a, b)
 
         // A root any accepted header at or after the next height carries is
-        // the chain's state then; no header is fetched.
-        let fetched = stub.requests.count
+        // the chain's state then; no header is fetched, only the chain's
+        // latest height.
+        let headerRequests = { stub.requests.filter { $0.path != "/status" }.count }
+        let fetched = headerRequests()
         let carrying45 = try await lc.verifyAppHash(chain.headers[45]!.appHash.uppercased(), forStateAfter: 41)
-        XCTAssertEqual(carrying45, 45)
+        XCTAssertEqual(carrying45, VerifiedHeader(height: 45, time: carrying45.time, appHash: chain.headers[45]!.appHash))
+        XCTAssertEqual(try XCTUnwrap(carrying45.time).timeIntervalSince1970, chain.headers[45]!.time.timeIntervalSince1970, accuracy: 1e-6)
         let carrying42 = try await lc.verifyAppHash(chain.headers[42]!.appHash, forStateAfter: 41)
-        XCTAssertEqual(carrying42, 42)
-        XCTAssertEqual(stub.requests.count, fetched)
+        XCTAssertEqual(carrying42.height, 42)
+        XCTAssertEqual(headerRequests(), fetched)
         // The header at the next height carries another root.
         do {
             _ = try await lc.verifyAppHash(String(repeating: "ff", count: 32), forStateAfter: 41)
@@ -582,11 +585,11 @@ final class LightClientTests: XCTestCase {
     }
 
     func testImportingAStateReplacesTheAcceptedHeaders() async throws {
-        let stub = StubServer { _ in (404, "") }
+        let stub = StubServer { request in request.path == "/status" ? StubChain.status(60) : (404, "") }
         let old = String(repeating: "aa", count: 32)
         let lc = try Self.pinned(height: 50, appHash: old, stub: stub)
         let carrying = try await lc.verifyAppHash(old, forStateAfter: 41)
-        XCTAssertEqual(carrying, 50)
+        XCTAssertEqual(carrying.height, 50)
 
         let imported = String(repeating: "bb", count: 32)
         try lc.importTrustedState(TrustedState(
@@ -606,7 +609,7 @@ final class LightClientTests: XCTestCase {
             _ = try await lc.verifyAppHash(old, forStateAfter: 41)
             XCTFail("the header at 50 is no longer accepted")
         } catch {}
-        XCTAssertTrue(stub.requests.isEmpty)
+        XCTAssertEqual(stub.requests.filter { $0.path != "/status" }.count, 0)
     }
 
     func testEveryPageOfTheValidatorSetIsRead() async throws {
@@ -660,16 +663,27 @@ final class LightClientTests: XCTestCase {
 /// Answers CometBFT's `/commit` and `/validators` for the headers it holds,
 /// in CometBFT's JSON (heights as strings, RFC 3339 times with nanoseconds),
 /// every validator signing; a height it doesn't hold is one the chain hasn't
-/// reached. With no height, `/commit` answers the highest.
+/// reached. With no height, `/commit` answers the highest. `/status` reports
+/// `latest`, or the highest header.
 struct StubChain {
     let chainId: String
     let headers: [Int64: (appHash: String, time: Date)]
     let validators: Int
+    let latest: Int64?
 
-    init(chainId: String = "willow-chain", headers: [Int64: (appHash: String, time: Date)], validators: Int = 1) {
+    init(chainId: String = "willow-chain", headers: [Int64: (appHash: String, time: Date)], validators: Int = 1, latest: Int64? = nil) {
         self.chainId = chainId
         self.headers = headers
         self.validators = validators
+        self.latest = latest
+    }
+
+    /// CometBFT's `/status` answer for a chain at `height`.
+    static func status(_ height: Int64) -> (Int, String) {
+        let hash = String(repeating: "E3", count: 32)
+        return (200, #"""
+        {"jsonrpc":"2.0","id":-1,"result":{"node_info":{"network":"willow-chain"},"sync_info":{"latest_block_hash":"\#(hash)","latest_app_hash":"\#(hash)","latest_block_height":"\#(height)","catching_up":false},"validator_info":{"voting_power":"10"}}}
+        """#)
     }
 
     static func address(_ index: Int) -> String {
@@ -684,6 +698,9 @@ struct StubChain {
     }
 
     func answer(_ request: ReceivedRequest) -> (Int, String) {
+        if request.path == "/status" {
+            return Self.status(latest ?? headers.keys.max() ?? 0)
+        }
         let items = URLComponents(url: request.url, resolvingAgainstBaseURL: false)?.queryItems ?? []
         func item(_ name: String) -> Int? { return items.first { $0.name == name }?.value.flatMap { Int($0) } }
         let height = item("height").map(Int64.init) ?? headers.keys.max() ?? 0

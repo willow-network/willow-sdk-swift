@@ -661,6 +661,11 @@ public struct QueryResponse {
     /// The block the proof's state is from: the state after block `height`,
     /// whose app hash is in the header at `height + 1`. Served with a proof.
     public let height: Int64?
+    /// For a verified query (`data.query`), the header whose app hash the
+    /// proof's root matched: the answer is the node's as of that header's
+    /// state (after block `header.height - 1`), not as of now. Nil for an
+    /// unverified answer; not encoded or decoded.
+    public let header: VerifiedHeader?
 }
 
 extension QueryResponse: Codable {
@@ -695,6 +700,7 @@ extension QueryResponse: Codable {
             proof = nil
         }
         height = try container.decodeIfPresent(Int64.self, forKey: .height)
+        header = nil
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -1147,18 +1153,27 @@ public struct HealthStatus: Codable {
 
 // MARK: - Data Types
 
-/// A proof for data retrieval.
+/// The proof a verified `data.get` checked.
 public struct DataProof: Codable {
     public let proof: Data
+    /// The root the proof hashes to, as lowercase hex.
     public let rootHash: String
+    /// The height the API served with the proof: the block whose state it
+    /// says the proof is of.
     public let height: Int64
+    /// When the SDK verified it (Unix seconds, this device's clock).
     public let verifiedAt: Int64
+    /// The header whose app hash the root matched. The value is proven as of
+    /// that header's state, the state after block `header.height - 1`, not
+    /// as of now.
+    public let header: VerifiedHeader
 
     enum CodingKeys: String, CodingKey {
         case proof
         case rootHash = "root_hash"
         case height
         case verifiedAt = "verified_at"
+        case header
     }
 }
 

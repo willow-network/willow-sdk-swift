@@ -18,17 +18,28 @@ public class DataOperations {
     /// from `GET /proof/{subgroveId}/{key}`. The proof must prove, in the
     /// subgrove's data tree (`subgroves/{subgroveId}/data`), the key holding
     /// an item (a KV node; a reference is refused) with the value served, and
-    /// its root must be the chain's app hash after the
-    /// block the proof's state is from. The proof is served with that
-    /// block's height H; a header at H+1 carries the state after block H,
-    /// and so does every later header up to and including the header of the
-    /// next block with transactions, since a block without them leaves the
-    /// state unchanged.
+    /// its root must be the chain's app hash after the block the proof's
+    /// state is from. The proof is served with that block's height H; a
+    /// header at H+1 carries the state after block H, and so does every later
+    /// header up to and including the header of the next block with
+    /// transactions, since a block without them leaves the state unchanged.
     /// The light client supplies the header
-    /// (`LightClient.verifyAppHash(_:forStateAfter:)`): one it has accepted
-    /// at H+1 or later that carries the root, or else the header at H+1,
-    /// waiting for it if the chain hasn't produced it yet. The proof is
+    /// (`LightClient.verifyAppHash(_:forStateAfter:)`): the newest one it has
+    /// accepted at H+1 or later that carries the root, or else the header at
+    /// H+1, waiting for it if the chain hasn't produced it yet. The proof is
     /// checked with Merk's hash rules (BLAKE3) and grovedb's proof encoding.
+    ///
+    /// The API chooses the state it proves, so the state must be recent: a
+    /// proof of a state more than `LightClientConfig.maxProofLagBlocks`
+    /// (default 20) blocks behind the chain's latest height
+    /// (`LightClient.latestChainHeight()`) throws `ProofHeightOutOfRangeError`
+    /// (type `.proofHeightOutOfRange`), as does a height that far ahead of it.
+    /// A proof whose root the header doesn't carry throws a proof error.
+    ///
+    /// The value is proven as of the state of the header returned in
+    /// `proof.header` (the state after block `proof.header.height - 1`), not
+    /// as of now: it may have changed since.
+    ///
     /// It returns the value the proof proves, read as the node reads it; any
     /// failure throws, and the value is never returned unverified. Numbers
     /// are `Int` when they are integers that fit, else the `Double` that is
@@ -63,25 +74,30 @@ public class DataOperations {
             throw ProofError("The API returned the proof for \(subgroveId)/\(key) without the height of its state")
         }
 
+        // The root is checked first, so that what the proof says is about a
+        // state the chain had.
         let result = try GroveDBVerifier.verifyProof(proofBytes: proofBytes, expectedPath: DataOperations.dataPath(subgroveId))
+        let header = try await DataOperations.requireRoot(result.rootHash, stateAfter: height, lightClient: lc)
         let proven = try DataOperations.requireProven(subgroveId: subgroveId, key: key, value: value, in: result)
-        try await DataOperations.requireRoot(result.rootHash, stateAfter: height, lightClient: lc)
 
         return DataResponse(
             key: key,
             data: proven,
-            proof: DataProof(proof: proofBytes, rootHash: result.rootHash, height: height, verifiedAt: Int64(Date().timeIntervalSince1970))
+            proof: DataProof(
+                proof: proofBytes, rootHash: result.rootHash, height: height,
+                verifiedAt: Int64(Date().timeIntervalSince1970), header: header)
         )
     }
 
     /// Requires that `rootHash` is the chain's app hash after block `height`
-    /// (see `LightClient.verifyAppHash(_:forStateAfter:)`); hex is compared
+    /// in a recent header, and returns that header (see
+    /// `LightClient.verifyAppHash(_:forStateAfter:)`); hex is compared
     /// case-insensitively.
-    internal static func requireRoot(_ rootHash: String, stateAfter height: Int64, lightClient: LightClient) async throws {
+    internal static func requireRoot(_ rootHash: String, stateAfter height: Int64, lightClient: LightClient) async throws -> VerifiedHeader {
         guard height < Int64.max else {
             throw ProofError("The proof's height \(height) has no next header")
         }
-        _ = try await lightClient.verifyAppHash(rootHash, forStateAfter: height)
+        return try await lightClient.verifyAppHash(rootHash, forStateAfter: height)
     }
 
     /// Gets an item without proof verification (faster but less secure), from
@@ -181,13 +197,15 @@ public class DataOperations {
     /// element of `subgroves/{subgroveId}/data`; the proof must prove that
     /// tree at that path and hide no node of it (or prove it empty), every
     /// element must be an item, and its root must be the chain's app hash
-    /// after the block the proof's state is from, as in `get`. The SDK then
-    /// answers the query itself over those items, as the node does, reading
-    /// the items and the request body it sends as the node's JSON reader
-    /// does (`serde_json` with arbitrary precision and raw values, so an
-    /// object whose first key is `$serde_json::private::Number` or
-    /// `$serde_json::private::RawValue` is read as the number or JSON its
-    /// string holds):
+    /// after the block the proof's state is from, in a recent header, as in
+    /// `get` (a stale proof throws `ProofHeightOutOfRangeError`). The answer
+    /// is the node's as of that header's state (`QueryResponse.header`), not
+    /// as of now. Once the root is checked, the SDK answers the query itself
+    /// over those items, as the node does, reading the items and the request
+    /// body it sends as the node's JSON reader does (`serde_json` with
+    /// arbitrary precision and raw values, so an object whose first key is
+    /// `$serde_json::private::Number` or `$serde_json::private::RawValue` is
+    /// read as the number or JSON its string holds):
     ///
     /// - the items that parse as JSON, in key order;
     /// - the filter: the value at the field's dotted path (object keys
@@ -213,8 +231,8 @@ public class DataOperations {
     /// order; and when a result holds a number a `Double` would round (such
     /// as `0.12345678901234567890`, `18446744073709551615`, or `1e400`; store
     /// such numbers as strings) or an object two of whose keys differ only as
-    /// Unicode canonical equivalents.
-    /// `queryUnverified` returns the node's answer to such a query, unchecked.
+    /// Unicode canonical equivalents. `queryUnverified` returns the node's
+    /// answer to such a query, unchecked.
     ///
     /// The app hash is only as trustworthy as the light client's header: see
     /// `LightClient`. A request the node can't run (see `QueryRequest`) is
@@ -246,15 +264,19 @@ public class DataOperations {
             throw ProofError("The API returned the proof for the query on \(subgroveId) without the height of its state")
         }
 
-        let answer = try DataOperations.answer(plan, proof: proof, path: DataOperations.dataPath(subgroveId))
-        try await DataOperations.requireRoot(answer.rootHash, stateAfter: height, lightClient: lc)
+        // The root is checked before the query is answered, so that an
+        // answer the SDK can't reproduce is about a state the chain had.
+        let (rootHash, tree) = try GroveDBVerifier.verifyTree(proof, at: DataOperations.dataPath(subgroveId))
+        let header = try await DataOperations.requireRoot(rootHash.hexString, stateAfter: height, lightClient: lc)
+        let answer = try DataOperations.answer(plan, tree: tree)
 
         var response = QueryResponse(
             results: answer.results,
             totalCount: answer.total,
             hasMore: plan.offset + answer.results.count < answer.total,
             proof: proof,
-            height: height
+            height: height,
+            header: header
         )
         if let fields = client.computedFieldRegistry.get(datasetId: subgroveId) {
             response = applyComputedFieldsToResponse(response: response, fields: fields)
@@ -272,7 +294,13 @@ public class DataOperations {
 
     internal static func answer(_ plan: NodeQueryPlan, proof: Data, path: [[UInt8]]) throws -> (rootHash: String, results: [QueryResult], total: Int) {
         let (rootHash, tree) = try GroveDBVerifier.verifyTree(proof, at: path)
+        let answer = try answer(plan, tree: tree)
+        return (rootHash.hexString, answer.results, answer.total)
+    }
 
+    /// Answers `plan` over a proven tree that must hold only items and be
+    /// shown whole.
+    internal static func answer(_ plan: NodeQueryPlan, tree: ProvenTree) throws -> (results: [QueryResult], total: Int) {
         // The node reads the tree in key order.
         var items: [(key: Data, bytes: Data)] = []
         for entry in tree.entries.sorted(by: { $0.key.lexicographicallyPrecedes($1.key) }) {
@@ -329,7 +357,7 @@ public class DataOperations {
             }
             return QueryResult(key: String(decoding: document.key, as: UTF8.self), data: object.mapValues { AnyCodable($0) })
         }
-        return (rootHash.hexString, results, total)
+        return (results, total)
     }
 
     /// The error for a query whose answer the SDK can't reproduce.

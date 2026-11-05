@@ -648,6 +648,9 @@ final class VerifiedReadsTests: XCTestCase {
         let tree = Self.notesTree()
         var served = 0
         let stub = StubServer { request in
+            if request.url.host == "rpc.test", request.path == "/status" {
+                return StubChain.status(42)
+            }
             guard request.url.host == "api.test", request.path == "/query/notes" else { return (404, "") }
             served += 1
             // The documents served are not the proven ones, and one isn't
@@ -665,9 +668,11 @@ final class VerifiedReadsTests: XCTestCase {
         XCTAssertEqual(response.totalCount, 2)
         XCTAssertFalse(response.hasMore)
         XCTAssertEqual(response.height, 41)
+        XCTAssertEqual(response.header, VerifiedHeader(height: 42, time: nil, appHash: tree.hash.hexString.uppercased()))
         XCTAssertEqual(response.proof, tree.proof)
 
-        let body = try XCTUnwrap(JSONSerialization.jsonObject(with: stub.requests[0].body) as? [String: Any])
+        let sent = try XCTUnwrap(stub.requests.first { $0.path == "/query/notes" })
+        let body = try XCTUnwrap(JSONSerialization.jsonObject(with: sent.body) as? [String: Any])
         XCTAssertEqual(body["include_proof"] as? Bool, true)
         XCTAssertEqual(body["filters"] as? [String: String], ["tag": "x"])
         XCTAssertEqual(body["sort"] as? [String: String], ["field": "rank", "order": "asc"])
@@ -678,8 +683,8 @@ final class VerifiedReadsTests: XCTestCase {
         let tree = Self.notesTree()
         let stub = StubServer { request in
             if request.url.host == "rpc.test" {
-                // Not an answer the light client accepts.
-                return (200, #"{"jsonrpc":"2.0","id":-1,"result":{}}"#)
+                // Not an answer the light client accepts, but for the latest height.
+                return request.path == "/status" ? StubChain.status(42) : (200, #"{"jsonrpc":"2.0","id":-1,"result":{}}"#)
             }
             return (200, #"{"success":true,"data":{"documents":[],"total":0,"offset":0,"limit":100,"proof":"\#(tree.proof.hexString)","height":41}}"#)
         }
@@ -692,7 +697,7 @@ final class VerifiedReadsTests: XCTestCase {
             _ = try await client.data.query(subgroveId: "notes", query: QueryRequest())
             XCTFail("the header at the proof's own height must not be used")
         } catch {}
-        XCTAssertEqual(stub.requests.filter { $0.url.host == "rpc.test" }.first?.target, "/commit?height=42")
+        XCTAssertEqual(stub.requests.filter { $0.url.host == "rpc.test" && $0.path != "/status" }.first?.target, "/commit?height=42")
     }
 
     func testAVerifiedQueryWithoutAHeightOrProofThrows() async throws {
@@ -715,16 +720,7 @@ final class VerifiedReadsTests: XCTestCase {
 
     func testAVerifiedGetChecksTheHeaderAfterTheProofsBlock() async throws {
         let f = try GroveDBProofTests.fixture("nested_single_key_user_bob", as: SingleKey.self)
-        let stub = StubServer { request in
-            switch request.path {
-            case "/data/my-sub/user:bob":
-                return (200, #"{"success":true,"data":{"balance":250}}"#)
-            case "/proof/my-sub/user:bob":
-                return (200, #"{"success":true,"data":{"proof":"\#(f.proof_hex)","height":41}}"#)
-            default:
-                return (404, "")
-            }
-        }
+        let stub = try Self.bobServer(height: 41, latest: 42)
         let client = try stub.client(baseURL: "http://api.test")
         client.setLightClient(try Self.pinnedLightClient(height: 42, appHash: f.expected_root_hex.uppercased(), stub: stub))
 
@@ -732,15 +728,19 @@ final class VerifiedReadsTests: XCTestCase {
         XCTAssertEqual(response.data["balance"]?.value as? Int, 250)
         XCTAssertEqual(response.proof?.height, 41)
         XCTAssertEqual(response.proof?.rootHash, f.expected_root_hex)
-        XCTAssertTrue(stub.requests.allSatisfy { $0.url.host == "api.test" })
+        XCTAssertEqual(response.proof?.header, VerifiedHeader(height: 42, time: nil, appHash: f.expected_root_hex.uppercased()))
+        // Of the RPC, only the chain's latest height is read.
+        XCTAssertEqual(stub.requests.filter { $0.url.host == "rpc.test" }.map { $0.target }, ["/status"])
     }
 
-    /// A stub API serving `bob`'s value and its proof, with `height`.
-    static func bobServer(height: Int64, rpc: @escaping (ReceivedRequest) -> (Int, String) = { _ in (404, "") }) throws -> StubServer {
+    /// A stub API serving `bob`'s value and its proof, with `height`, and an
+    /// RPC answering `rpc`, by default only `/status`, at `latest`.
+    static func bobServer(height: Int64, latest: Int64? = nil, rpc: ((ReceivedRequest) -> (Int, String))? = nil) throws -> StubServer {
         let f = try GroveDBProofTests.fixture("nested_single_key_user_bob", as: SingleKey.self)
+        let answerRPC = rpc ?? { request in request.path == "/status" ? StubChain.status(latest ?? height + 1) : (404, "") }
         return StubServer { request in
             if request.url.host == "rpc.test" {
-                return rpc(request)
+                return answerRPC(request)
             }
             switch request.path {
             case "/data/my-sub/user:bob":
@@ -755,7 +755,7 @@ final class VerifiedReadsTests: XCTestCase {
 
     func testAVerifiedGetTakesALaterAcceptedHeaderCarryingTheRoot() async throws {
         let f = try GroveDBProofTests.fixture("nested_single_key_user_bob", as: SingleKey.self)
-        let stub = try Self.bobServer(height: 41)
+        let stub = try Self.bobServer(height: 41, latest: 50)
         let client = try stub.client(baseURL: "http://api.test")
         // No block with transactions since block 41: the header at 50 still
         // carries the state after it.
@@ -763,11 +763,12 @@ final class VerifiedReadsTests: XCTestCase {
 
         let response = try await client.data.get(subgroveId: "my-sub", key: "user:bob")
         XCTAssertEqual(response.data["balance"]?.value as? Int, 250)
-        XCTAssertFalse(stub.requests.contains { $0.url.host == "rpc.test" })
+        XCTAssertEqual(response.proof?.header.height, 50)
+        XCTAssertEqual(stub.requests.filter { $0.url.host == "rpc.test" }.map { $0.target }, ["/status"])
     }
 
     func testAVerifiedGetRefusesAStateOlderThanEveryAcceptedHeader() async throws {
-        let stub = try Self.bobServer(height: 41)
+        let stub = try Self.bobServer(height: 41, latest: 50)
         let client = try stub.client(baseURL: "http://api.test")
         // The header at 50 carries another state, and the header at 42 is
         // below every header the light client has accepted.
@@ -780,7 +781,7 @@ final class VerifiedReadsTests: XCTestCase {
             XCTAssertEqual(error.type, .lightClient)
             XCTAssertTrue(error.message.contains("below every header"), error.message)
         }
-        XCTAssertFalse(stub.requests.contains { $0.url.host == "rpc.test" })
+        XCTAssertEqual(stub.requests.filter { $0.url.host == "rpc.test" }.map { $0.target }, ["/status"])
     }
 
     func testAVerifiedGetFetchesAndAcceptsTheNextHeader() async throws {
@@ -795,12 +796,15 @@ final class VerifiedReadsTests: XCTestCase {
         let response = try await client.data.get(subgroveId: "my-sub", key: "user:bob")
         XCTAssertEqual(response.data["balance"]?.value as? Int, 250)
         XCTAssertEqual(lc.getSyncStatus().latestTrustedHeight, 42)
+        XCTAssertEqual(response.proof?.header.height, 42)
+        let time = try XCTUnwrap(response.proof?.header.time)
+        XCTAssertEqual(time.timeIntervalSince1970, chain.headers[42]!.time.timeIntervalSince1970, accuracy: 1e-6)
         let rpc = stub.requests.filter { $0.url.host == "rpc.test" }.map { $0.target }
-        XCTAssertEqual(rpc, ["/commit?height=42", "/validators?height=42&page=1&per_page=100"])
+        XCTAssertEqual(rpc, ["/status", "/commit?height=42", "/validators?height=42&page=1&per_page=100"])
 
         // A later read of the same state takes the header from memory.
         _ = try await client.data.get(subgroveId: "my-sub", key: "user:bob")
-        XCTAssertEqual(stub.requests.filter { $0.url.host == "rpc.test" }.count, 2)
+        XCTAssertEqual(stub.requests.filter { $0.url.host == "rpc.test" && $0.path != "/status" }.count, 2)
     }
 
     /// A light client with no header yet takes its first one before the
@@ -844,10 +848,138 @@ final class VerifiedReadsTests: XCTestCase {
         XCTAssertEqual(stub.requests[first].target, "/commit")
     }
 
+    /// A chain whose header at 40 a light client is pinned to, whose header
+    /// at 42 carries `bob`'s proven state, and whose latest header, at
+    /// `latest`, carries `latestRoot`.
+    static func staleChain(latest: Int64, latestRoot: String) throws -> StubChain {
+        let f = try GroveDBProofTests.fixture("nested_single_key_user_bob", as: SingleKey.self)
+        let now = Date()
+        return StubChain(headers: [
+            40: (String(repeating: "40", count: 32), now.addingTimeInterval(-600)),
+            42: (f.expected_root_hex, now.addingTimeInterval(-500)),
+            latest: (latestRoot, now.addingTimeInterval(-5)),
+        ])
+    }
+
+    /// A light client pinned to `chain`'s header at 40, reading it through `stub`.
+    static func lightClient(pinnedIn chain: StubChain, stub: StubServer, maxLag: Int64 = 20) throws -> LightClient {
+        let config = LightClientConfig(
+            chainId: "willow-chain", validatorEndpoints: ["http://rpc.test"], autoSync: false, headerWaitTimeout: 0.3, maxProofLagBlocks: maxLag)
+        let lc = try LightClient(config, trustedState: TrustedState(
+            header: TrustedHeader(height: 40, appHash: chain.headers[40]!.appHash, headerTime: chain.headers[40]!.time),
+            validatorSet: ValidatorSet(validators: [])))
+        lc.session = stub.session
+        return lc
+    }
+
+    /// The API chooses the state it proves. A genuine proof of a state long
+    /// since replaced, whose next header the light client can check, is
+    /// refused as out of range, not returned as the current value.
+    func testAVerifiedGetRefusesAStaleProof() async throws {
+        let chain = try Self.staleChain(latest: 200, latestRoot: String(repeating: "cd", count: 32))
+        let stub = try Self.bobServer(height: 41, rpc: chain.answer)
+        let client = try stub.client(baseURL: "http://api.test")
+        client.setLightClient(try Self.lightClient(pinnedIn: chain, stub: stub))
+
+        do {
+            let response = try await client.data.get(subgroveId: "my-sub", key: "user:bob")
+            XCTFail("a proof 159 blocks behind the chain was returned as verified: \(response.data)")
+        } catch let error as WillowError {
+            XCTAssertEqual(error.type, .proofHeightOutOfRange, error.message)
+            XCTAssertTrue(error.message.contains("159 blocks behind"), error.message)
+        }
+
+        // At most maxProofLagBlocks behind is taken.
+        let lenientStub = try Self.bobServer(height: 41, rpc: chain.answer)
+        let lenient = try lenientStub.client(baseURL: "http://api.test")
+        lenient.setLightClient(try Self.lightClient(pinnedIn: chain, stub: lenientStub, maxLag: 159))
+        let response = try await lenient.data.get(subgroveId: "my-sub", key: "user:bob")
+        XCTAssertEqual(response.proof?.header.height, 42)
+    }
+
+    /// A proof of an old block's state is current if no block with
+    /// transactions came since: the latest header still carries it, and the
+    /// read is matched to that header.
+    func testAVerifiedGetTakesAnOldBlocksStateTheLatestHeaderCarries() async throws {
+        let f = try GroveDBProofTests.fixture("nested_single_key_user_bob", as: SingleKey.self)
+        let chain = try Self.staleChain(latest: 200, latestRoot: f.expected_root_hex)
+        let stub = try Self.bobServer(height: 41, rpc: chain.answer)
+        let client = try stub.client(baseURL: "http://api.test")
+        let lc = try Self.lightClient(pinnedIn: chain, stub: stub)
+        client.setLightClient(lc)
+
+        let response = try await client.data.get(subgroveId: "my-sub", key: "user:bob")
+        XCTAssertEqual(response.data["balance"]?.value as? Int, 250)
+        let header = try XCTUnwrap(response.proof?.header)
+        XCTAssertEqual(header.height, 200)
+        XCTAssertEqual(try XCTUnwrap(header.time).timeIntervalSince1970, chain.headers[200]!.time.timeIntervalSince1970, accuracy: 1e-6)
+        XCTAssertEqual(lc.getSyncStatus().latestTrustedHeight, 200)
+    }
+
+    func testAVerifiedQueryRefusesAProofFarAheadOfTheChain() async throws {
+        let tree = Self.notesTree()
+        let stub = StubServer { request in
+            if request.url.host == "rpc.test" {
+                return request.path == "/status" ? StubChain.status(42) : (404, "")
+            }
+            return (200, #"{"success":true,"data":{"documents":[],"total":0,"offset":0,"limit":100,"proof":"\#(tree.proof.hexString)","height":63}}"#)
+        }
+        let client = try stub.client(baseURL: "http://api.test")
+        client.setLightClient(try Self.pinnedLightClient(height: 42, appHash: tree.hash.hexString, stub: stub))
+        do {
+            _ = try await client.data.query(subgroveId: "notes", query: QueryRequest())
+            XCTFail("a height 21 blocks ahead of the chain")
+        } catch let error as WillowError {
+            XCTAssertEqual(error.type, .proofHeightOutOfRange, error.message)
+            XCTAssertTrue(error.message.contains("21 blocks ahead"), error.message)
+        }
+        XCTAssertEqual(stub.requests.filter { $0.url.host == "rpc.test" }.map { $0.target }, ["/status"])
+    }
+
+    func testTheLatestHeightIsTheMajoritysOfTheEndpoints() async throws {
+        let heights: [String: Int64] = ["a.test": 100, "b.test": 101, "c.test": 5_000, "d.test": 99, "e.test": 0]
+        let stub = StubServer { request in
+            guard request.path == "/status", let height = heights[request.url.host ?? ""] else { return (404, "") }
+            return height > 0 ? StubChain.status(height) : (500, "")
+        }
+        func latest(_ hosts: [String], needed: Int = 1, pinned: Int64 = 1) async throws -> Int64 {
+            let config = LightClientConfig(
+                chainId: "willow-chain", validatorEndpoints: hosts.map { "http://\($0)" }, minValidatorsForConsensus: needed, autoSync: false)
+            let lc = try LightClient(config, trustedState: TrustedState(
+                header: TrustedHeader(height: pinned, appHash: "00"), validatorSet: ValidatorSet(validators: [])))
+            lc.session = stub.session
+            return try await lc.latestChainHeight()
+        }
+        // The highest a majority of those answering have reached: one far
+        // ahead doesn't move it.
+        let all = try await latest(["a.test", "b.test", "c.test", "d.test", "e.test"])
+        XCTAssertEqual(all, 100)
+        let two = try await latest(["a.test", "c.test"])
+        XCTAssertEqual(two, 100)
+        let one = try await latest(["c.test"])
+        XCTAssertEqual(one, 5_000)
+        let three = try await latest(["a.test", "b.test", "c.test"], needed: 3)
+        XCTAssertEqual(three, 100)
+        // The highest accepted header, if higher.
+        let pinned = try await latest(["a.test"], pinned: 150)
+        XCTAssertEqual(pinned, 150)
+        do {
+            _ = try await latest(["a.test", "e.test"], needed: 2)
+            XCTFail("one endpoint answered; two are needed")
+        } catch let error as WillowError {
+            XCTAssertEqual(error.type, .lightClient)
+        }
+        XCTAssertThrowsError(try LightClient(LightClientConfig(
+            chainId: "c", validatorEndpoints: ["http://a.test"], maxProofLagBlocks: -1)))
+    }
+
     func testAVerifiedGetWaitsForTheNextHeaderThenGivesUp() async throws {
         let f = try GroveDBProofTests.fixture("nested_single_key_user_bob", as: SingleKey.self)
         let stub = StubServer { request in
             if request.url.host == "rpc.test" {
+                if request.path == "/status" {
+                    return StubChain.status(41)
+                }
                 return (500, #"{"jsonrpc":"2.0","id":-1,"error":{"code":-32603,"message":"Internal error","data":"height 42 must be less than or equal to the current blockchain height 41"}}"#)
             }
             switch request.path {

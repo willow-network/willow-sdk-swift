@@ -14,8 +14,8 @@ import Foundation
 /// serves is the one the header commits to, so a header it accepts is only as
 /// trustworthy as the endpoints it reads.
 ///
-/// It reads CometBFT's RPC answers (`/commit` and `/validators`). It is safe
-/// to use from several tasks at once.
+/// It reads CometBFT's RPC answers (`/commit`, `/validators`, and
+/// `/status`). It is safe to use from several tasks at once.
 public final class LightClient: @unchecked Sendable {
     private let config: LightClientConfig
     private let decoder: JSONDecoder
@@ -46,6 +46,9 @@ public final class LightClient: @unchecked Sendable {
         guard !config.validatorEndpoints.isEmpty else {
             throw LightClientError("At least one validator endpoint is required")
         }
+        guard config.maxProofLagBlocks >= 0 else {
+            throw LightClientConfigError("maxProofLagBlocks must not be negative, not \(config.maxProofLagBlocks)")
+        }
         self.config = config
         self._session = LightClient.makeSession(config)
         self.decoder = LightClient.makeDecoder()
@@ -61,6 +64,9 @@ public final class LightClient: @unchecked Sendable {
     public init(_ config: LightClientConfig, trustedState: TrustedState) throws {
         guard !config.validatorEndpoints.isEmpty else {
             throw LightClientError("At least one validator endpoint is required")
+        }
+        guard config.maxProofLagBlocks >= 0 else {
+            throw LightClientConfigError("maxProofLagBlocks must not be negative, not \(config.maxProofLagBlocks)")
         }
 
         // Validate the trusted state hasn't expired
@@ -203,14 +209,15 @@ public final class LightClient: @unchecked Sendable {
     /// `verify(block:trustedState:)` against the highest header accepted
     /// below it, and be earlier than the lowest accepted above it; a header
     /// below every accepted one can't be checked.
-    private func acceptLocked(_ block: LightBlock) throws {
+    @discardableResult
+    private func acceptLocked(_ block: LightBlock) throws -> TrustedState {
         let height = block.header.height
         if let known = accepted[height] {
             guard known.header.appHash.lowercased() == block.header.appHash.lowercased() else {
                 throw LightClientError(
                     "The header served at height \(height) carries app hash \(block.header.appHash), not \(known.header.appHash), the app hash of the header this client accepted at that height")
             }
-            return
+            return known
         }
         guard let anchor = accepted.filter({ $0.key < height }).max(by: { $0.key < $1.key })?.value else {
             let lowest = accepted.keys.min().map { "\($0)" } ?? "none"
@@ -226,7 +233,9 @@ public final class LightClient: @unchecked Sendable {
             throw LightClientError(
                 "The header at height \(height) is not earlier than the accepted header at height \(next.header.height)")
         }
-        rememberLocked(LightClient.trustedState(of: block))
+        let state = LightClient.trustedState(of: block)
+        rememberLocked(state)
+        return state
     }
 
     // MARK: - Verification
@@ -412,13 +421,18 @@ public final class LightClient: @unchecked Sendable {
     /// below it (see `verify(block:trustedState:)`). A header below every
     /// one this client has accepted can't be checked, so it throws.
     public func verifiedAppHash(atHeight height: Int64) async throws -> String {
+        return try await acceptedHeader(atHeight: height).appHash
+    }
+
+    /// The header at `height`, as `verifiedAppHash(atHeight:)` accepts it.
+    internal func acceptedHeader(atHeight height: Int64) async throws -> TrustedHeader {
         let state = try await currentTrustedState()
         guard Date().timeIntervalSince(state.header.trustingPeriodStart) <= config.trustingPeriod else {
             throw LightClientError("The trusted header at height \(state.header.height) has outlived the trusting period")
         }
         let (known, lowest): (TrustedState?, Int64?) = locked { (accepted[height], accepted.keys.min()) }
         if let known = known {
-            return known.header.appHash
+            return known.header
         }
         if let lowest = lowest, height < lowest {
             throw LightClientError(
@@ -426,59 +440,141 @@ public final class LightClient: @unchecked Sendable {
         }
 
         let block = try await fetchHeader(at: height)
-        try locked {
+        return try locked {
             latestKnownHeight = max(latestKnownHeight, height)
-            try acceptLocked(block)
+            return try acceptLocked(block).header
         }
-        return block.header.appHash
     }
 
     /// Requires that the chain's app hash after block `height` is `appHash`
-    /// (hex, compared case-insensitively), and returns the height of the
-    /// header that carries it.
+    /// (hex, compared case-insensitively), in a header no more than
+    /// `maxProofLagBlocks` blocks behind the chain's latest height, and
+    /// returns that header. Verified reads call it with a proof's root and
+    /// the height the API serves with the proof.
     ///
     /// A header at height H+1 carries the app hash from after block H. The
     /// node leaves its state, and so its app hash, unchanged in a block
     /// without transactions, and every block with transactions changes it
-    /// (the block's height is written into the state). So the app hash from
+    /// (the block's height is written into the state); the API serves as a
+    /// proof's height the last block with transactions. So the app hash from
     /// after block H, where H is a block with transactions, is in every
     /// header from H+1 up to and including the header of the next block with
-    /// transactions, and in no other. This takes:
+    /// transactions, and in no other. A header G that carries it shows the
+    /// state was the chain's after block G-1.
     ///
-    /// - a header this client has accepted, at H+1 or above and within the
-    ///   trusting period (from its block time), that carries `appHash`;
-    /// - otherwise the header at H+1, from `verifiedAppHash(atHeight:)`
-    ///   (fetched and checked if this client hasn't accepted it), which must
-    ///   carry `appHash`: a proof error if it doesn't.
+    /// The API chooses the state it proves, so the state must be recent: the
+    /// latest height L is `latestChainHeight()`, and a header G is recent when
+    /// L - (G - 1) is at most `maxProofLagBlocks`. This returns:
     ///
-    /// A header at H+1 below every header this client has accepted can't be
-    /// checked, so a state older than all of them that has since changed
-    /// throws.
-    public func verifyAppHash(_ appHash: String, forStateAfter height: Int64) async throws -> Int64 {
+    /// - the newest header this client has accepted, at H+1 or above and
+    ///   within the trusting period (from its block time), that carries
+    ///   `appHash`, if it is recent;
+    /// - otherwise, if L - H is at most `maxProofLagBlocks`, the header at
+    ///   H+1, from `verifiedAppHash(atHeight:)` (fetched and checked if this
+    ///   client hasn't accepted it, waiting for one the chain hasn't produced
+    ///   yet), which must carry `appHash`: a proof error if it doesn't;
+    /// - otherwise, after `sync()` takes the latest header, the newest
+    ///   accepted header that carries `appHash`, if it is recent (the state
+    ///   is old, but no block with transactions has come since).
+    ///
+    /// Anything else throws `ProofHeightOutOfRangeError`: a state older than
+    /// that, or a height H more than `maxProofLagBlocks` above L. A header at
+    /// H+1 below every header this client has accepted can't be checked, so
+    /// a recent state older than all of them that has since changed throws a
+    /// light client error.
+    public func verifyAppHash(_ appHash: String, forStateAfter height: Int64) async throws -> VerifiedHeader {
         guard height >= 0, height < Int64.max else {
             throw LightClientError("No header carries the state after block \(height)")
         }
         let next = height + 1
         _ = try await currentTrustedState()
+        let maxLag = config.maxProofLagBlocks
+        var latest = try await latestChainHeight()
+        if height > latest, height - latest > maxLag {
+            throw ProofHeightOutOfRangeError(
+                "The proof is of the state after block \(height), \(height - latest) blocks ahead of the chain's latest height \(latest); at most \(maxLag) is accepted (maxProofLagBlocks)")
+        }
         let wanted = appHash.lowercased()
-        let now = Date()
-        let carrying: Int64? = locked {
-            accepted.values
-                .filter {
-                    $0.header.height >= next && $0.header.appHash.lowercased() == wanted
-                        && now.timeIntervalSince($0.header.trustingPeriodStart) <= config.trustingPeriod
+        // The newest accepted header at `next` or above carrying the root, if
+        // the state it shows (after the block before it) is recent.
+        func recentCarrying() -> TrustedHeader? {
+            let now = Date()
+            let newest: TrustedHeader? = locked {
+                accepted.values
+                    .map { $0.header }
+                    .filter {
+                        $0.height >= next && $0.appHash.lowercased() == wanted
+                            && now.timeIntervalSince($0.trustingPeriodStart) <= config.trustingPeriod
+                    }
+                    .max { $0.height < $1.height }
+            }
+            guard let header = newest, latest - (header.height - 1) <= maxLag else { return nil }
+            return header
+        }
+
+        if let header = recentCarrying() {
+            return VerifiedHeader(header)
+        }
+        if latest - height <= maxLag {
+            let header = try await acceptedHeader(atHeight: next)
+            guard header.appHash.lowercased() == wanted else {
+                throw ProofError("The root \(appHash) is not the app hash \(header.appHash) of the header at height \(next), which carries the state after block \(height)")
+            }
+            return VerifiedHeader(header)
+        }
+        // The state is older than that. It is still the chain's state if no
+        // block with transactions has come since: then the latest header
+        // carries it.
+        try await sync()
+        let synced: Int64 = locked { trustedState?.header.height ?? 0 }
+        latest = max(latest, synced)
+        if let header = recentCarrying() {
+            return VerifiedHeader(header)
+        }
+        throw ProofHeightOutOfRangeError(
+            "The proof is of the state after block \(height), \(latest - height) blocks behind the chain's latest height \(latest), and no header this light client has accepted within \(maxLag) blocks of that height carries its root; at most \(maxLag) is accepted (maxProofLagBlocks)")
+    }
+
+    /// The chain's latest height as the configured endpoints report it
+    /// (CometBFT's `/status`): the highest height that a majority of the
+    /// endpoints that answer, and at least `minValidatorsForConsensus` of
+    /// them, have reached (the lower median of their heights), or the highest
+    /// header this client has accepted if that is higher. An endpoint
+    /// reporting a height far above or below the others' moves it only with
+    /// a majority. It trusts the endpoints as the light client's headers do.
+    /// Verified reads refuse a proof of a state far behind it (see
+    /// `verifyAppHash(_:forStateAfter:)`).
+    ///
+    /// Throws a light client error when fewer than
+    /// `minValidatorsForConsensus` endpoints (and at least one) answer.
+    public func latestChainHeight() async throws -> Int64 {
+        let endpoints = config.validatorEndpoints
+        let answers: [Int64] = await withTaskGroup(of: Int64?.self) { group in
+            for endpoint in endpoints {
+                group.addTask { try? await self.fetchLatestHeight(from: endpoint) }
+            }
+            var heights: [Int64] = []
+            for await height in group {
+                if let height = height, height > 0 {
+                    heights.append(height)
                 }
-                .map { $0.header.height }
-                .min()
+            }
+            return heights
         }
-        if let carrying = carrying {
-            return carrying
+        let heights = answers.sorted(by: >)
+        let needed = max(1, config.minValidatorsForConsensus)
+        guard heights.count >= needed else {
+            throw LightClientError(
+                "Only \(heights.count) of \(endpoints.count) endpoints reported the chain's latest height; \(needed) are needed")
         }
-        let actual = try await verifiedAppHash(atHeight: next)
-        guard actual.lowercased() == wanted else {
-            throw ProofError("The root \(appHash) is not the app hash \(actual) of the header at height \(next), which carries the state after block \(height)")
+        // Highest first: the k-th has been reached by k endpoints.
+        let majority = heights.count / 2 + 1
+        let reached = heights[max(needed, majority) - 1]
+        return locked {
+            let latest = max(reached, trustedState?.header.height ?? 0)
+            latestKnownHeight = max(latestKnownHeight, latest)
+            return latest
         }
-        return next
     }
 
     /// The header at `height`, waiting up to `headerWaitTimeout` for the
@@ -568,6 +664,42 @@ public final class LightClient: @unchecked Sendable {
             validatorSet: validators,
             commit: commit.commit
         )
+    }
+
+    /// The latest height an endpoint's CometBFT `/status` reports.
+    private func fetchLatestHeight(from endpoint: String) async throws -> Int64 {
+        guard let url = URL(string: "\(endpoint)/status") else {
+            throw LightClientError("Invalid endpoint URL: \(endpoint)")
+        }
+        let (data, _) = try await session.data(from: url)
+        try Self.throwRPCError(data)
+
+        struct StatusResponse: Decodable {
+            let result: StatusResult
+        }
+
+        struct StatusResult: Decodable {
+            let syncInfo: SyncInfo
+
+            enum CodingKeys: String, CodingKey {
+                case syncInfo = "sync_info"
+            }
+        }
+
+        struct SyncInfo: Decodable {
+            let latestBlockHeight: Int64
+
+            enum CodingKeys: String, CodingKey {
+                case latestBlockHeight = "latest_block_height"
+            }
+
+            init(from decoder: Decoder) throws {
+                let container = try decoder.container(keyedBy: CodingKeys.self)
+                latestBlockHeight = try container.decodeCometInt64(forKey: .latestBlockHeight)
+            }
+        }
+
+        return try decoder.decode(StatusResponse.self, from: data).result.syncInfo.latestBlockHeight
     }
 
     private func fetchCommit(from endpoint: String, height: Int64?) async throws -> (header: Header, commit: Commit) {
