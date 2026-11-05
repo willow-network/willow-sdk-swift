@@ -474,24 +474,26 @@ public class WillowClient {
     // `pathSegment(_:)` for each value, so a `/`, `?`, `#`, or `%` in a value
     // stays inside its segment. A query goes in `query`, not in `path`.
 
-    internal func get<T: Decodable>(path: String, query: [(String, String)] = []) async throws -> T {
-        return try await send(method: "GET", base: config.baseURL, path: path, query: query, body: nil)
+    // `limit` is the most bytes read of the answer (see `ResponseLimit`).
+
+    internal func get<T: Decodable>(path: String, query: [(String, String)] = [], limit: Int = ResponseLimit.small) async throws -> T {
+        return try await send(method: "GET", base: config.baseURL, path: path, query: query, body: nil, limit: limit)
     }
 
-    internal func post<T: Decodable, B: Encodable>(path: String, body: B) async throws -> T {
-        return try await send(method: "POST", base: config.baseURL, path: path, body: try encoder.encode(body))
+    internal func post<T: Decodable, B: Encodable>(path: String, body: B, limit: Int = ResponseLimit.small) async throws -> T {
+        return try await send(method: "POST", base: config.baseURL, path: path, body: try encoder.encode(body), limit: limit)
     }
 
     /// Posts to an explicit base URL (used for indexer routing).
-    internal func postToBase<T: Decodable, B: Encodable>(base: URL, path: String, body: B) async throws -> T {
-        return try await send(method: "POST", base: base, path: path, body: try encoder.encode(body))
+    internal func postToBase<T: Decodable, B: Encodable>(base: URL, path: String, body: B, limit: Int = ResponseLimit.small) async throws -> T {
+        return try await send(method: "POST", base: base, path: path, body: try encoder.encode(body), limit: limit)
     }
 
     /// Posts `body` encoded without key conversion, so keys the caller
     /// chose (a filter's field, a GraphQL variable) go out as written. The
     /// body's own CodingKeys spell the wire names.
-    internal func postVerbatim<T: Decodable, B: Encodable>(base: URL? = nil, path: String, body: B) async throws -> T {
-        return try await send(method: "POST", base: base ?? config.baseURL, path: path, body: try WillowClient.verbatimBody(body))
+    internal func postVerbatim<T: Decodable, B: Encodable>(base: URL? = nil, path: String, body: B, limit: Int = ResponseLimit.small) async throws -> T {
+        return try await send(method: "POST", base: base ?? config.baseURL, path: path, body: try WillowClient.verbatimBody(body), limit: limit)
     }
 
     /// The body `postVerbatim` sends for `body`: JSON with sorted keys and no
@@ -503,16 +505,16 @@ public class WillowClient {
     }
 
     /// Posts bytes already written as the body.
-    internal func postData<T: Decodable>(path: String, body: Data) async throws -> T {
-        return try await send(method: "POST", base: config.baseURL, path: path, body: body)
+    internal func postData<T: Decodable>(path: String, body: Data, limit: Int = ResponseLimit.small) async throws -> T {
+        return try await send(method: "POST", base: config.baseURL, path: path, body: body, limit: limit)
     }
 
     internal func put<T: Decodable, B: Encodable>(path: String, body: B) async throws -> T {
-        return try await send(method: "PUT", base: config.baseURL, path: path, body: try encoder.encode(body))
+        return try await send(method: "PUT", base: config.baseURL, path: path, body: try encoder.encode(body), limit: ResponseLimit.small)
     }
 
     internal func delete(path: String) async throws {
-        let _: EmptyResponse = try await send(method: "DELETE", base: config.baseURL, path: path, body: nil)
+        let _: EmptyResponse = try await send(method: "DELETE", base: config.baseURL, path: path, body: nil, limit: ResponseLimit.small)
     }
 
     /// Submits a transaction already encoded as JSON (`{"<Variant>": {...}}`)
@@ -527,7 +529,7 @@ public class WillowClient {
     /// nonce not yet used.
     @discardableResult
     internal func submitTransaction(_ body: Data) async throws -> BroadcastResult {
-        let (data, status) = try await sendRaw(method: "POST", base: config.baseURL, path: "/tx/submit", body: body, retry: false)
+        let (data, status) = try await sendRaw(method: "POST", base: config.baseURL, path: "/tx/submit", body: body, limit: ResponseLimit.small, retry: false)
         let result = try parseTxSubmitResponse(data: data, statusCode: status)
         guard result.success else {
             throw TransactionError(
@@ -552,13 +554,13 @@ public class WillowClient {
     }
 
     /// GETs `path` and unwraps the envelope the API answers with.
-    internal func getData<T: Codable>(path: String, query: [(String, String)] = [], _ what: String) async throws -> T {
-        let response: ApiResponse<T> = try await get(path: path, query: query)
+    internal func getData<T: Codable>(path: String, query: [(String, String)] = [], _ what: String, limit: Int = ResponseLimit.small) async throws -> T {
+        let response: ApiResponse<T> = try await get(path: path, query: query, limit: limit)
         return try unwrap(response, what)
     }
 
-    private func send<T: Decodable>(method: String, base: URL, path: String, query: [(String, String)] = [], body: Data?) async throws -> T {
-        let (data, _) = try await sendRaw(method: method, base: base, path: path, query: query, body: body)
+    private func send<T: Decodable>(method: String, base: URL, path: String, query: [(String, String)] = [], body: Data?, limit: Int) async throws -> T {
+        let (data, _) = try await sendRaw(method: method, base: base, path: path, query: query, body: body, limit: limit)
         // Handle empty response
         if T.self == EmptyResponse.self {
             return EmptyResponse() as! T
@@ -569,11 +571,12 @@ public class WillowClient {
     /// Sends a request, retrying network errors, 5xx, and 429 with backoff
     /// unless `retry` is false, and returns the body and status of a 2xx answer.
     /// Each attempt is built and signed anew, so a nonce-signed attempt carries
-    /// its own nonce.
-    private func sendRaw(method: String, base: URL, path: String, query: [(String, String)] = [], body: Data?, retry: Bool = true) async throws -> (Data, Int) {
+    /// its own nonce. An answer past `limit` bytes is refused with
+    /// `ResponseTooLargeError`, not retried.
+    private func sendRaw(method: String, base: URL, path: String, query: [(String, String)] = [], body: Data?, limit: Int, retry: Bool = true) async throws -> (Data, Int) {
         let url = try WillowClient.requestURL(base: base, path: path, query: query)
         let toAPI = isAPI(base)
-        return try await execute(maxRetries: retry ? config.retryConfig.maxRetries : 0) {
+        return try await execute(maxRetries: retry ? config.retryConfig.maxRetries : 0, limit: limit) {
             var request = URLRequest(url: url)
             request.httpMethod = method
             if let body = body {
@@ -729,14 +732,14 @@ public class WillowClient {
         }
     }
 
-    private func execute(maxRetries: Int, _ makeRequest: () throws -> URLRequest) async throws -> (Data, Int) {
+    private func execute(maxRetries: Int, limit: Int, _ makeRequest: () throws -> URLRequest) async throws -> (Data, Int) {
         var lastError: Error?
         var backoff = config.retryConfig.initialBackoff
 
         for attempt in 0...maxRetries {
             do {
                 let request = try makeRequest()
-                let (data, response) = try await session.data(for: request)
+                let (data, response) = try await HTTPBody.read(session, request, limit: limit)
 
                 guard let httpResponse = response as? HTTPURLResponse else {
                     throw NetworkError("Invalid response type")

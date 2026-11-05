@@ -747,13 +747,13 @@ public final class LightClient: @unchecked Sendable {
         guard let status = URL(string: "\(endpoint)/status"), let commit = URL(string: "\(endpoint)/commit") else {
             throw LightClientError("Invalid endpoint URL: \(endpoint)")
         }
-        let (statusData, _) = try await session.data(from: status)
+        let (statusData, _) = try await HTTPBody.read(session, from: status, limit: ResponseLimit.small)
         try throwRPCError(statusData)
         if let network = (try? JSONDecoder().decode(StatusResponse.self, from: statusData))?.result?.node_info?.network,
            !network.isEmpty {
             return network
         }
-        let (commitData, _) = try await session.data(from: commit)
+        let (commitData, _) = try await HTTPBody.read(session, from: commit, limit: ResponseLimit.small)
         try throwRPCError(commitData)
         let chainId = try JSONDecoder().decode(CommitResponse.self, from: commitData).result.signed_header.header.chain_id
         guard !chainId.isEmpty else {
@@ -767,7 +767,7 @@ public final class LightClient: @unchecked Sendable {
         guard let url = URL(string: "\(endpoint)/status") else {
             throw LightClientError("Invalid endpoint URL: \(endpoint)")
         }
-        let (data, _) = try await session.data(from: url)
+        let (data, _) = try await HTTPBody.read(session, from: url, limit: ResponseLimit.small)
         try Self.throwRPCError(data)
 
         struct StatusResponse: Decodable {
@@ -808,7 +808,7 @@ public final class LightClient: @unchecked Sendable {
             throw LightClientError("Invalid endpoint URL: \(endpoint)")
         }
 
-        let (data, _) = try await session.data(from: url)
+        let (data, _) = try await HTTPBody.read(session, from: url, limit: ResponseLimit.small)
         try Self.throwRPCError(data)
 
         struct CommitResponse: Decodable {
@@ -868,7 +868,7 @@ public final class LightClient: @unchecked Sendable {
                 throw LightClientError("Invalid endpoint URL: \(endpoint)")
             }
 
-            let (data, _) = try await session.data(from: url)
+            let (data, _) = try await HTTPBody.read(session, from: url, limit: ResponseLimit.small)
             try Self.throwRPCError(data)
             let result = try decoder.decode(ValidatorsResponse.self, from: data).result
 

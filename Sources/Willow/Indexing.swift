@@ -25,7 +25,7 @@ public class IndexingOperations {
         guard let client = client else { throw NetworkError("Client deallocated") }
 
         let path = "/graphql/\(pathSegment(subgroveId))"
-        return try await client.postVerbatim(base: client.indexerBaseURL(), path: path, body: request)
+        return try await client.postVerbatim(base: client.indexerBaseURL(), path: path, body: request, limit: ResponseLimit.large)
     }
 
     /// Executes a GraphQL query against the API without asking for a proof
@@ -37,7 +37,7 @@ public class IndexingOperations {
         requestNoProof.includeProof = false
 
         let path = "/graphql/\(pathSegment(subgroveId))"
-        return try await client.postVerbatim(path: path, body: requestNoProof)
+        return try await client.postVerbatim(path: path, body: requestNoProof, limit: ResponseLimit.large)
     }
 
     /// Convenience method for executing GraphQL queries.
@@ -61,7 +61,7 @@ public class IndexingOperations {
         let request = SqlRequest(query: query, includeProof: includeProof)
         let base = client.indexerBaseURL()
         let path = "/sql/\(pathSegment(subgroveId))"
-        let response: SqlResponse = try await client.postToBase(base: base, path: path, body: request)
+        let response: SqlResponse = try await client.postToBase(base: base, path: path, body: request, limit: ResponseLimit.large)
         return response
     }
 
@@ -88,7 +88,7 @@ public class IndexingOperations {
     public func listSubgroves() async throws -> [SubgroveInfo] {
         guard let client = client else { throw NetworkError("Client deallocated") }
 
-        return try await client.getData(path: "/subgroves/indexed", "subgroves")
+        return try await client.getData(path: "/subgroves/indexed", "subgroves", limit: ResponseLimit.large)
     }
 
     /// Retrieves information about a specific subgrove (`GET /subgroves/{id}`).
@@ -104,7 +104,7 @@ public class IndexingOperations {
     public func listIndexers() async throws -> [IndexerInfo] {
         guard let client = client else { throw NetworkError("Client deallocated") }
 
-        return try await client.getData(path: "/indexers", "indexers")
+        return try await client.getData(path: "/indexers", "indexers", limit: ResponseLimit.large)
     }
 
     /// Retrieves information about a specific indexer (`GET /indexers/{did}`).

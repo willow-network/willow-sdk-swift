@@ -69,7 +69,7 @@ public class RegistrationOperations {
     public func listSubgroves() async throws -> [SubgroveRegistration] {
         guard let client = client else { throw NetworkError("Client deallocated") }
 
-        return try await client.getData(path: "/subgroves", "subgroves")
+        return try await client.getData(path: "/subgroves", "subgroves", limit: ResponseLimit.large)
     }
 
     /// Updates an existing subgrove.
@@ -110,7 +110,7 @@ public class RegistrationOperations {
     public func getPermissions(did: String) async throws -> [Permission] {
         guard let client = client else { throw NetworkError("Client deallocated") }
 
-        let response: ApiResponse<[Permission]> = try await client.get(path: "/did/\(pathSegment(did))/permissions")
+        let response: ApiResponse<[Permission]> = try await client.get(path: "/did/\(pathSegment(did))/permissions", limit: ResponseLimit.large)
         return try client.unwrap(response, "permissions")
     }
 

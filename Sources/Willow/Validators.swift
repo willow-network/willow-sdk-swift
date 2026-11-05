@@ -14,7 +14,7 @@ public class ValidatorOperations {
     public func list() async throws -> [ValidatorInfo] {
         guard let client = client else { throw NetworkError("Client deallocated") }
 
-        return try await client.getData(path: "/validators", "validators")
+        return try await client.getData(path: "/validators", "validators", limit: ResponseLimit.large)
     }
 
     /// Retrieves one validator by its DID (`GET /validators/{did}`).

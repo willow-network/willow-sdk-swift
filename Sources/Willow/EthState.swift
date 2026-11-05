@@ -149,7 +149,7 @@ public actor EthOperations {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        let (data, resp) = try await session.data(for: request)
+        let (data, resp) = try await HTTPBody.read(session, request, limit: ResponseLimit.large)
         guard let httpResp = resp as? HTTPURLResponse else {
             throw EthStateError.http(0, "non-http response")
         }

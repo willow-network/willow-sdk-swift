@@ -70,7 +70,8 @@ public class DataOperations {
 
         let value = try await fetchValue(subgroveId: subgroveId, key: key, client: client)
 
-        let proofResponse: ApiResponse<ServedProof> = try await client.get(path: "/proof/\(pathSegment(subgroveId))/\(pathSegment(key))")
+        let proofResponse: ApiResponse<ServedProof> = try await client.get(
+            path: "/proof/\(pathSegment(subgroveId))/\(pathSegment(key))", limit: ResponseLimit.proof)
         let served = try client.unwrap(proofResponse, "proof")
         let cleanHex = served.proof.hasPrefix("0x") ? String(served.proof.dropFirst(2)) : served.proof
         guard let proofBytes = Data(hexString: cleanHex), !proofBytes.isEmpty else {
@@ -118,7 +119,8 @@ public class DataOperations {
     /// The value `GET /data/{subgroveId}/{key}` serves: the stored JSON object
     /// (or `{"hex": ...}` for bytes that are not JSON).
     private func fetchValue(subgroveId: String, key: String, client: WillowClient) async throws -> [String: AnyCodable] {
-        let response: ApiResponse<AnyCodable> = try await client.get(path: "/data/\(pathSegment(subgroveId))/\(pathSegment(key))")
+        let response: ApiResponse<AnyCodable> = try await client.get(
+            path: "/data/\(pathSegment(subgroveId))/\(pathSegment(key))", limit: ResponseLimit.tx)
         let value = try client.unwrap(response, "Data")
         guard let object = value.value as? [String: Any] else {
             throw SerializationError("The value at \(subgroveId)/\(key) is not a JSON object")
@@ -257,7 +259,8 @@ public class DataOperations {
         // read as the node reads them, and these bytes are sent.
         let body = try queryWithProof.nodeBody()
         let plan = try NodeQueryPlan(body: body)
-        let envelope: ApiResponse<ServedQueryProof> = try await client.postData(path: "/query/\(pathSegment(subgroveId))", body: body)
+        let envelope: ApiResponse<ServedQueryProof> = try await client.postData(
+            path: "/query/\(pathSegment(subgroveId))", body: body, limit: ResponseLimit.large)
         let served = try client.unwrap(envelope, "query result")
 
         guard let proofHex = served.proof else {
@@ -454,7 +457,8 @@ public class DataOperations {
     public func queryUnverified(subgroveId: String, query: QueryRequest) async throws -> QueryResponse {
         guard let client = client else { throw NetworkError("Client deallocated") }
 
-        let envelope: ApiResponse<QueryResponse> = try await client.postData(path: "/query/\(pathSegment(subgroveId))", body: try query.nodeBody())
+        let envelope: ApiResponse<QueryResponse> = try await client.postData(
+            path: "/query/\(pathSegment(subgroveId))", body: try query.nodeBody(), limit: ResponseLimit.large)
         var response = try client.unwrap(envelope, "query result")
 
         // Apply computed fields if registered
@@ -572,7 +576,7 @@ public class DataOperations {
         guard let client = client else { throw NetworkError("Client deallocated") }
 
         let path = "/historical/query/\(pathSegment(subgroveId))/\(pathSegment(checkpointId))"
-        return try await client.post(path: path, body: request)
+        return try await client.post(path: path, body: request, limit: ResponseLimit.large)
     }
 
     /// Queries historical data with proof verification: not supported.

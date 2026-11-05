@@ -351,7 +351,7 @@ public class PrivacyOperations {
         try client.requireAuth()
 
         let path = "/key-grants/\(pathSegment(subgroveId))"
-        return try await client.getData(path: path, "key grantees")
+        return try await client.getData(path: path, "key grantees", limit: ResponseLimit.large)
     }
 
     /// Gets the GroveDB Merkle proof for a key grant.

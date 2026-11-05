@@ -919,7 +919,7 @@ public class ConsensusClient {
             throw ConsensusClientError("Invalid indexer URL for matched-logs")
         }
 
-        let (data, response) = try await session.data(from: url)
+        let (data, response) = try await HTTPBody.read(session, from: url, limit: ResponseLimit.large)
         guard let httpResponse = response as? HTTPURLResponse else {
             throw ConsensusClientError("Invalid response")
         }
@@ -1036,7 +1036,7 @@ public class ConsensusClient {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = body
 
-        let (data, response) = try await session.data(for: request)
+        let (data, response) = try await HTTPBody.read(session, request, limit: ResponseLimit.small)
         guard let httpResponse = response as? HTTPURLResponse else {
             throw ConsensusClientError("Invalid response")
         }
@@ -1052,7 +1052,12 @@ public class ConsensusClient {
         }
     }
 
+    /// A CometBFT JSON-RPC call's `result`, read under the cap for `method`
+    /// (12 MiB for `tx`, 4 MiB for the rest), in at most `maxRetries + 1`
+    /// attempts (the config's retries unless given). An answer past its cap
+    /// isn't retried.
     private func rpcRequest(method: String, params: [String: Any], maxRetries: Int? = nil) async throws -> [String: Any] {
+        let limit = method == "tx" ? ResponseLimit.tx : ResponseLimit.small
         let rpcBody: [String: Any] = [
             "jsonrpc": "2.0",
             "id": 1,
@@ -1074,7 +1079,7 @@ public class ConsensusClient {
                 request.setValue("application/json", forHTTPHeaderField: "Content-Type")
                 request.httpBody = try JSONSerialization.data(withJSONObject: rpcBody)
 
-                let (data, response) = try await session.data(for: request)
+                let (data, response) = try await HTTPBody.read(session, request, limit: limit)
 
                 guard let httpResponse = response as? HTTPURLResponse else {
                     throw ConsensusClientError("Invalid response")
@@ -1095,6 +1100,8 @@ public class ConsensusClient {
 
                 return json["result"] as? [String: Any] ?? [:]
 
+            } catch let error as WillowError where error.type == .responseTooLarge {
+                throw error
             } catch {
                 lastError = error
                 if attempt < maxRetries {
@@ -1119,7 +1126,7 @@ public class ConsensusClient {
             throw ConsensusClientError("Invalid API URL")
         }
 
-        let (data, response) = try await session.data(from: url)
+        let (data, response) = try await HTTPBody.read(session, from: url, limit: ResponseLimit.small)
 
         guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
             throw ConsensusClientError("Failed to fetch nonce")

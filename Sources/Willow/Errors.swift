@@ -24,6 +24,18 @@ public enum WillowErrorType: String {
     case consensus = "consensus"
     case transaction = "transaction"
     case insufficientFunds = "insufficient_funds"
+    /// An answer longer than the SDK's cap for its route, refused before any
+    /// of it is decoded and not retried. The caps: 4 MiB for answers of a
+    /// fixed shape (an account's nonce, a balance, a subgrove's entry, a
+    /// file's manifest, a `/tx/submit` answer, CometBFT's status, commit,
+    /// validators, and ABCI queries); 2 MiB and 64 KiB for a `/proof` of one
+    /// key; 2 MiB for a file chunk (less when the manifest's chunk is
+    /// smaller); 12 MiB for a `/data` value and CometBFT's `tx`; 64 MiB for
+    /// queries, GraphQL, SQL, historical queries, matched logs, Ethereum
+    /// state and call answers, and the lists the node doesn't page
+    /// (subgroves, indexers, validators, key grantees, permissions). A query
+    /// past its cap asks for less (a lower limit, a narrower query).
+    case responseTooLarge = "response_too_large"
 }
 
 /// Main error type for the Willow SDK.

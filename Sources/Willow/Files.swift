@@ -220,7 +220,7 @@ public class FileOperations {
             request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
             request.httpBody = chunk
 
-            let (_, response) = try await client.storageSession.data(for: request)
+            let (_, response) = try await HTTPBody.read(client.storageSession, request, limit: ResponseLimit.small)
             guard let httpResponse = response as? HTTPURLResponse,
                   (200...299).contains(httpResponse.statusCode) else {
                 throw NetworkError("Failed to upload chunk \(i)")
@@ -249,9 +249,11 @@ public class FileOperations {
     /// The manifest comes from the API (`GET /files/{subgroveId}/{fileKey}`),
     /// unverified. One the chain would refuse (see `checkManifest`) is refused
     /// with a validation error before any chunk is fetched. The chunks come
-    /// from `storageNodeEndpoint`; more bytes than the manifest's total size
-    /// are refused as they arrive, and the file must be exactly that size,
-    /// with the manifest's chunk Merkle root and content hash.
+    /// from `storageNodeEndpoint`, each read as it arrives and refused with a
+    /// validation error once it passes the manifest's chunk size or the bytes
+    /// the file has left (or with `ResponseTooLargeError` past 2 MiB, the
+    /// most a storage node stores in a chunk). The file must be exactly the
+    /// manifest's size, with its chunk Merkle root and content hash.
     public func download(
         subgroveId: String,
         fileKey: String,
@@ -268,13 +270,21 @@ public class FileOperations {
         var fileData = Data()
         var chunkHashes: [Data] = []
         for (i, url) in urls.enumerated() {
-            let (chunkData, response) = try await client.storageSession.data(from: url)
+            // The most this chunk holds: the manifest's chunk size, or what
+            // the file has left (both at most 1 GiB, as checked above).
+            let expected = Int(min(UInt64(manifest.chunkSize), manifest.totalSize - UInt64(fileData.count)))
+            let limit = min(ResponseLimit.chunk, expected)
+            let chunkData: Data
+            let response: URLResponse
+            do {
+                (chunkData, response) = try await HTTPBody.read(client.storageSession, from: url, limit: limit)
+            } catch let error as WillowError where error.type == .responseTooLarge && limit == expected {
+                throw ValidationError(
+                    "The storage node served more than chunk \(i) holds: the manifest's \(manifest.chunkSize)-byte chunks of \(manifest.totalSize) bytes")
+            }
             guard let httpResponse = response as? HTTPURLResponse,
                   (200...299).contains(httpResponse.statusCode) else {
                 throw NetworkError("Failed to download chunk \(i)")
-            }
-            guard UInt64(chunkData.count) <= manifest.totalSize - UInt64(fileData.count) else {
-                throw ValidationError("The storage node served more than the manifest's \(manifest.totalSize) bytes")
             }
             chunkHashes.append(Data(SHA256.hash(data: chunkData)))
             fileData.append(chunkData)

@@ -423,7 +423,7 @@ public class Erc8004Client {
         guard let url = URL(string: baseURL + path) else {
             throw URLError(.badURL)
         }
-        let (data, response) = try await session.data(from: url)
+        let (data, response) = try await HTTPBody.read(session, from: url, limit: ResponseLimit.small)
         guard let httpResponse = response as? HTTPURLResponse,
               (200...299).contains(httpResponse.statusCode) else {
             throw URLError(.badServerResponse)
