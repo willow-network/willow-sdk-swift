@@ -760,9 +760,15 @@ public class ConsensusClient {
     // MARK: - Transaction Status
 
     /// Get the status of a transaction.
+    /// The status of the transaction whose hash is `txHash` (the hex the API
+    /// returns as `tx_hash`, with or without `0x`), from the consensus RPC's
+    /// `tx`: `.notFound` until a block holds it (or when the RPC can't be
+    /// reached), then `.success` or `.failed` by its result code. A hash that
+    /// isn't 32 bytes of hex is refused with a validation error.
     public func getTransactionStatus(txHash: String) async throws -> TransactionStatus {
+        let hash = try ConsensusClient.txHashParameter(txHash)
         do {
-            let result = try await queryTransaction(txHash: txHash)
+            let result = try await queryTransaction(hash: hash)
             if result == nil {
                 return .notFound
             }
@@ -773,7 +779,9 @@ public class ConsensusClient {
         }
     }
 
-    /// Wait for a transaction to be confirmed.
+    /// Waits for the transaction whose hash is `txHash` to land in a block,
+    /// polling `getTransactionStatus` every `pollInterval` seconds: `.success`
+    /// or `.failed` once it has, `.pending` if `timeoutSecs` pass first.
     public func waitForTransaction(
         txHash: String,
         timeoutSecs: TimeInterval = 60,
@@ -1067,12 +1075,25 @@ public class ConsensusClient {
         return (try parseTxSubmitResponse(data: data, statusCode: httpResponse.statusCode), httpResponse.statusCode)
     }
 
-    private func queryTransaction(txHash: String) async throws -> [String: Any]? {
+    /// The RPC's `tx` result for the transaction whose hash, as `tx`'s
+    /// parameter, is `hash`; nil when the RPC doesn't find it or can't answer.
+    private func queryTransaction(hash: String) async throws -> [String: Any]? {
         do {
-            return try await rpcRequest(method: "tx", params: ["hash": txHash, "prove": false])
+            return try await rpcRequest(method: "tx", params: ["hash": hash, "prove": false])
         } catch {
             return nil
         }
+    }
+
+    /// A transaction hash as CometBFT's JSON-RPC `tx` takes it: the hash's 32
+    /// bytes in base64 (the RPC reads a byte array's JSON as base64), from the
+    /// hex the API returns, with or without `0x`.
+    internal static func txHashParameter(_ txHash: String) throws -> String {
+        let hex = txHash.hasPrefix("0x") || txHash.hasPrefix("0X") ? String(txHash.dropFirst(2)) : txHash
+        guard hex.utf8.count == 64, hex.unicodeScalars.allSatisfy({ $0.properties.isASCIIHexDigit }), let bytes = Data(hexString: hex) else {
+            throw ValidationError("A transaction hash is 32 bytes of hex; got \(txHash)")
+        }
+        return bytes.base64EncodedString()
     }
 
     /// A CometBFT JSON-RPC call's `result`, read under the cap for `method`
