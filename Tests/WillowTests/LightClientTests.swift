@@ -38,8 +38,8 @@ final class LightClientTests: XCTestCase {
     func testTrustThresholdValidateEdgeCases() {
         let threshold = TrustThreshold(numerator: 2, denominator: 3)
 
-        // Zero total power
-        XCTAssertTrue(threshold.validate(votingPower: 0, totalPower: 0))
+        // No power at all meets no threshold.
+        XCTAssertFalse(threshold.validate(votingPower: 0, totalPower: 0))
 
         // Full voting power
         XCTAssertTrue(threshold.validate(votingPower: 100, totalPower: 100))
@@ -670,19 +670,25 @@ struct StubChain {
     let headers: [Int64: (appHash: String, time: Date)]
     let validators: Int
     let latest: Int64?
+    /// Each validator's voting power, as `/validators` writes it.
+    let votingPower: String
 
-    init(chainId: String = "willow-chain", headers: [Int64: (appHash: String, time: Date)], validators: Int = 1, latest: Int64? = nil) {
+    init(
+        chainId: String = "willow-chain", headers: [Int64: (appHash: String, time: Date)], validators: Int = 1,
+        latest: Int64? = nil, votingPower: String = "10"
+    ) {
         self.chainId = chainId
         self.headers = headers
         self.validators = validators
         self.latest = latest
+        self.votingPower = votingPower
     }
 
-    /// CometBFT's `/status` answer for a chain at `height`.
-    static func status(_ height: Int64) -> (Int, String) {
+    /// CometBFT's `/status` answer for the chain `chainId` at `height`.
+    static func status(_ height: Int64, chainId: String = "willow-chain") -> (Int, String) {
         let hash = String(repeating: "E3", count: 32)
         return (200, #"""
-        {"jsonrpc":"2.0","id":-1,"result":{"node_info":{"network":"willow-chain"},"sync_info":{"latest_block_hash":"\#(hash)","latest_app_hash":"\#(hash)","latest_block_height":"\#(height)","catching_up":false},"validator_info":{"voting_power":"10"}}}
+        {"jsonrpc":"2.0","id":-1,"result":{"node_info":{"network":"\#(chainId)"},"sync_info":{"latest_block_hash":"\#(hash)","latest_app_hash":"\#(hash)","latest_block_height":"\#(height)","catching_up":false},"validator_info":{"voting_power":"10"}}}
         """#)
     }
 
@@ -699,7 +705,7 @@ struct StubChain {
 
     func answer(_ request: ReceivedRequest) -> (Int, String) {
         if request.path == "/status" {
-            return Self.status(latest ?? headers.keys.max() ?? 0)
+            return Self.status(latest ?? headers.keys.max() ?? 0, chainId: chainId)
         }
         let items = URLComponents(url: request.url, resolvingAgainstBaseURL: false)?.queryItems ?? []
         func item(_ name: String) -> Int? { return items.first { $0.name == name }?.value.flatMap { Int($0) } }
@@ -723,7 +729,7 @@ struct StubChain {
             let perPage = item("per_page") ?? 30
             let slice = (0..<validators).dropFirst((page - 1) * perPage).prefix(perPage)
             let entries = slice.map { index in
-                #"{"address":"\#(Self.address(index))","pub_key":{"type":"tendermint/PubKeyEd25519","value":"AAAA"},"voting_power":"10","proposer_priority":"0"}"#
+                #"{"address":"\#(Self.address(index))","pub_key":{"type":"tendermint/PubKeyEd25519","value":"AAAA"},"voting_power":"\#(votingPower)","proposer_priority":"0"}"#
             }
             return (200, #"{"jsonrpc":"2.0","id":-1,"result":{"block_height":"\#(height)","validators":[\#(entries.joined(separator: ","))],"count":"\#(entries.count)","total":"\#(validators)"}}"#)
         default:

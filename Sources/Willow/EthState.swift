@@ -442,11 +442,7 @@ func rlpDecodeList(_ data: Data) throws -> [Data] {
             throw EthStateError.decode("rlp: list length overflow")
         }
         payloadStart = 1 + lenOfLen
-        var l = 0
-        for b in data[1..<(1 + lenOfLen)] {
-            l = (l << 8) | Int(b)
-        }
-        payloadLen = l
+        payloadLen = try rlpLength(data[1..<(1 + lenOfLen)], atMost: data.count - payloadStart)
     }
     if payloadStart + payloadLen > data.count {
         throw EthStateError.decode("rlp: list payload truncated")
@@ -460,6 +456,23 @@ func rlpDecodeList(_ data: Data) throws -> [Data] {
         pos += advance
     }
     return out
+}
+
+/// A long RLP string's or list's length, from its big-endian length bytes
+/// (at most 8), refused when it is more than `limit`, the bytes left in the
+/// input, so adding it to an index can't overflow.
+private func rlpLength(_ bytes: Data, atMost limit: Int) throws -> Int {
+    var length: UInt64 = 0
+    for byte in bytes {
+        guard length >> 56 == 0 else {
+            throw EthStateError.decode("rlp: length too long")
+        }
+        length = length << 8 | UInt64(byte)
+    }
+    guard limit >= 0, length <= UInt64(limit) else {
+        throw EthStateError.decode("rlp: length \(length) past the end of the input")
+    }
+    return Int(length)
 }
 
 private func rlpDecodeItem(_ data: Data) throws -> (Data, Int) {
@@ -483,10 +496,7 @@ private func rlpDecodeItem(_ data: Data) throws -> (Data, Int) {
         if 1 + lenOfLen > data.count {
             throw EthStateError.decode("rlp: item length overflow")
         }
-        var l = 0
-        for b in data[(base + 1)..<(base + 1 + lenOfLen)] {
-            l = (l << 8) | Int(b)
-        }
+        let l = try rlpLength(data[(base + 1)..<(base + 1 + lenOfLen)], atMost: data.count - 1 - lenOfLen)
         if 1 + lenOfLen + l > data.count {
             throw EthStateError.decode("rlp: long item truncated")
         }

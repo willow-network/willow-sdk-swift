@@ -72,7 +72,7 @@ public final class LightClient: @unchecked Sendable {
         // Validate the trusted state hasn't expired
         let age = Date().timeIntervalSince(trustedState.header.trustingPeriodStart)
         if age > config.trustingPeriod {
-            throw LightClientError("Trusted header has expired (age: \(Int(age))s, max: \(Int(config.trustingPeriod))s)")
+            throw LightClientError("Trusted header has expired (age: \(LightClient.seconds(age)) s, max: \(LightClient.seconds(config.trustingPeriod)) s)")
         }
 
         self.config = config
@@ -93,6 +93,11 @@ public final class LightClient: @unchecked Sendable {
     /// (decimal strings) and RFC 3339 times themselves.
     private static func makeDecoder() -> JSONDecoder {
         return JSONDecoder()
+    }
+
+    /// `interval` in whole seconds, as text (any `Double`, without trapping).
+    internal static func seconds(_ interval: TimeInterval) -> String {
+        return String(format: "%.0f", interval)
     }
 
     private func locked<T>(_ body: () throws -> T) rethrows -> T {
@@ -307,7 +312,7 @@ public final class LightClient: @unchecked Sendable {
         }
 
         // For adjacent blocks, verify validators_hash matches next_validators_hash
-        if block.header.height == trustedState.header.height + 1 {
+        if trustedState.header.height < Int64.max, block.header.height == trustedState.header.height + 1 {
             if let expectedValidatorsHash = trustedState.header.nextValidatorsHash,
                let actualValidatorsHash = block.header.validatorsHash {
                 guard expectedValidatorsHash == actualValidatorsHash else {
@@ -321,22 +326,38 @@ public final class LightClient: @unchecked Sendable {
             }
         }
 
-        // Verify signatures
-        let totalPower = block.validatorSet.getTotalVotingPower()
+        // Count the voting power of the validators whose commit signatures
+        // are present. The signatures are not verified. A set CometBFT
+        // refuses (a negative power, a repeated address, a total above its
+        // bound) is refused, so no sum overflows, and each validator counts
+        // once however many signatures name it.
+        let totalPower: Int64
+        do {
+            totalPower = try block.validatorSet.checkedTotalVotingPower()
+        } catch {
+            return LightClientVerificationResult(
+                verified: false,
+                height: block.header.height,
+                appHash: block.header.appHash,
+                error: (error as? WillowError)?.message ?? "\(error)"
+            )
+        }
         var signedPower: Int64 = 0
         var signatureCount = 0
-
-        if let signatures = block.commit.signatures {
-            for sig in signatures {
-                if sig.isCommit {
-                    // Find validator by address
-                    if let validatorAddress = sig.validatorAddress,
-                       let validator = block.validatorSet.validators.first(where: { $0.address == validatorAddress }) {
-                        signedPower += validator.votingPower
-                        signatureCount += 1
-                    }
-                }
+        var counted = Set<String>()
+        for sig in block.commit.signatures ?? [] where sig.isCommit {
+            guard let address = sig.validatorAddress, counted.insert(address.uppercased()).inserted,
+                  let validator = block.validatorSet.validators.first(where: { $0.address == address }) else {
+                continue
             }
+            let (sum, overflow) = signedPower.addingReportingOverflow(validator.votingPower)
+            guard !overflow else {
+                return LightClientVerificationResult(
+                    verified: false, height: block.header.height, appHash: block.header.appHash,
+                    error: "The signed voting power overflows")
+            }
+            signedPower = sum
+            signatureCount += 1
         }
 
         // Check minimum validators
@@ -590,7 +611,7 @@ public final class LightClient: @unchecked Sendable {
                 return block
             } catch let error as HeaderNotYetAvailable {
                 guard Date() < deadline else {
-                    throw LightClientError("The header at height \(height) did not appear within \(Int(config.headerWaitTimeout)) s: \(error.detail)")
+                    throw LightClientError("The header at height \(height) did not appear within \(LightClient.seconds(config.headerWaitTimeout)) s: \(error.detail)")
                 }
                 try await Task.sleep(nanoseconds: 250_000_000)
             }
@@ -657,6 +678,10 @@ public final class LightClient: @unchecked Sendable {
 
     private func fetchLightBlockFrom(endpoint: String, height: Int64?) async throws -> LightBlock {
         let commit = try await fetchCommit(from: endpoint, height: height)
+        // A CometBFT height is at least 1.
+        guard commit.header.height >= 1 else {
+            throw LightClientError("The RPC endpoint served a header at height \(commit.header.height)")
+        }
         // The validators of the header's own height, which signed its commit.
         let validators = try await fetchValidators(from: endpoint, height: commit.header.height)
         return LightBlock(
@@ -777,8 +802,8 @@ public final class LightClient: @unchecked Sendable {
             let result = try decoder.decode(ValidatorsResponse.self, from: data).result
 
             for v in result.validators {
-                guard let power = Int64(v.votingPower) else {
-                    throw LightClientError("The validator \(v.address) has voting power \(v.votingPower), not an integer")
+                guard let power = Int64(v.votingPower), power >= 0 else {
+                    throw LightClientError("The validator \(v.address) has voting power \(v.votingPower), not an integer from 0 to \(Int64.max)")
                 }
                 validators.append(LightClientValidator(address: v.address, publicKey: v.pubKey.value, votingPower: power))
             }

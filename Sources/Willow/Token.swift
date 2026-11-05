@@ -48,7 +48,9 @@ public class TokenOperations {
     public func estimateStorageFee(dataSizeBytes: UInt64) async throws -> String {
         let schedule = try await getFeeSchedule()
         guard let costPerByte = UInt64(schedule.costPerByte) else { return "0" }
-        return String(dataSizeBytes * costPerByte)
+        // The full 128-bit product: a fee schedule's price can't overflow it.
+        let fee = dataSizeBytes.multipliedFullWidth(by: costPerByte)
+        return U128(high: fee.high, low: fee.low).description
     }
 
     /// Estimates the query fee.
@@ -62,6 +64,11 @@ public class TokenOperations {
         let schedule = try await getFeeSchedule()
         guard let baseTxCost = UInt64(schedule.baseTxCost),
               let costPerByte = UInt64(schedule.costPerByte) else { return "0" }
-        return String(baseTxCost + dataSizeBytes * costPerByte)
+        // At most (2^64 - 1)^2 + 2^64 - 1, which fits in 128 bits.
+        let perByte = dataSizeBytes.multipliedFullWidth(by: costPerByte)
+        guard let fee = U128(high: perByte.high, low: perByte.low).adding(U128(baseTxCost)) else {
+            throw ValidationError("The transaction fee doesn't fit in 128 bits")
+        }
+        return fee.description
     }
 }

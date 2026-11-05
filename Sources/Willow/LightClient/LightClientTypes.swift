@@ -12,11 +12,18 @@ public struct TrustThreshold {
         self.denominator = denominator
     }
 
-    /// Validates that voting power meets the threshold.
+    /// Whether `votingPower` is at least `numerator / denominator` of
+    /// `totalPower`, compared exactly (the products are 128-bit, so no power
+    /// overflows). False for a negative power or numerator, a total that
+    /// isn't positive, or a denominator that isn't positive.
     public func validate(votingPower: Int64, totalPower: Int64) -> Bool {
-        // votingPower / totalPower >= numerator / denominator
+        guard numerator >= 0, denominator > 0, votingPower >= 0, totalPower > 0 else {
+            return false
+        }
         // votingPower * denominator >= numerator * totalPower
-        return votingPower * Int64(denominator) >= Int64(numerator) * totalPower
+        let signed = votingPower.multipliedFullWidth(by: Int64(denominator))
+        let needed = totalPower.multipliedFullWidth(by: Int64(numerator))
+        return (signed.high, signed.low) >= (needed.high, needed.low)
     }
 }
 
@@ -122,12 +129,41 @@ public struct ValidatorSet: Codable {
         self.totalVotingPower = totalVotingPower
     }
 
-    /// Gets the total voting power, calculating if not stored.
+    /// The total voting power: `totalVotingPower` when it is positive, else
+    /// the sum of the validators' powers, or `Int64.max` when that sum can't
+    /// be taken (see `checkedTotalVotingPower()`). It never traps.
     public func getTotalVotingPower() -> Int64 {
         if let total = totalVotingPower, total > 0 {
             return total
         }
-        return validators.reduce(0) { $0 + $1.votingPower }
+        return (try? checkedTotalVotingPower()) ?? Int64.max
+    }
+
+    /// CometBFT's bound on a validator set's total voting power
+    /// (`MaxTotalVotingPower`, `Int64.max / 8`).
+    internal static let maxTotalVotingPower: Int64 = Int64.max / 8
+
+    /// The sum of the validators' voting powers. Throws a light client error
+    /// for a set CometBFT refuses: a negative power, two validators with one
+    /// address (compared without case), or a total above
+    /// `maxTotalVotingPower`.
+    internal func checkedTotalVotingPower() throws -> Int64 {
+        var total: Int64 = 0
+        var addresses = Set<String>()
+        for validator in validators {
+            guard validator.votingPower >= 0 else {
+                throw LightClientError("The validator \(validator.address) has negative voting power \(validator.votingPower)")
+            }
+            guard addresses.insert(validator.address.uppercased()).inserted else {
+                throw LightClientError("The validator set lists \(validator.address) twice")
+            }
+            let (sum, overflow) = total.addingReportingOverflow(validator.votingPower)
+            guard !overflow, sum <= Self.maxTotalVotingPower else {
+                throw LightClientError("The validator set's total voting power exceeds \(Self.maxTotalVotingPower)")
+            }
+            total = sum
+        }
+        return total
     }
 }
 
