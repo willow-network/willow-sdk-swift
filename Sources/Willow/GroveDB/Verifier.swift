@@ -427,6 +427,14 @@ public class GroveDBVerifier {
 
     /// Lower layers nest at most this deep; a real path is a few segments.
     private static let maxLayerDepth = 64
+    /// The most layers a proof's envelope holds in all. A proof of one key
+    /// or of one tree holds one layer for each segment of its path and one
+    /// for the tree; a proof of many layers is refused before any is hashed.
+    internal static let maxLayers = 1024
+    /// The most bytes of a proof of one key (the API's `/proof`): a few KiB
+    /// of hashes along its path, and the item (under 64 KiB, as a Merk node
+    /// carries it).
+    internal static let maxSingleKeyProofBytes = 1 << 20
 
     public init() {}
 
@@ -459,14 +467,15 @@ public class GroveDBVerifier {
     }
 
     /// Decodes a GroveDB proof (only the V0 variant exists), refusing
-    /// trailing bytes.
+    /// trailing bytes, and an envelope of more than 1,024 layers in all.
     public static func decodeGroveDBProof(_ proofBytes: Data) throws -> GroveDBProof {
         var reader = ProofReader(proofBytes)
         let version = try reader.varint()
         guard version == 0 else {
             throw VerificationError("Unsupported proof version: \(version)")
         }
-        let rootLayer = try decodeLayerProof(&reader, depth: 0)
+        var layers = 0
+        let rootLayer = try decodeLayerProof(&reader, depth: 0, layers: &layers)
         let options = ProveOptions(decreaseLimitOnEmptySubQueryResult: try reader.bool())
         guard reader.atEnd else {
             throw VerificationError("Proof has \(reader.bytes.count - reader.offset) trailing bytes")
@@ -474,17 +483,26 @@ public class GroveDBVerifier {
         return GroveDBProof(version: 0, proof: GroveDBProofV0(rootLayer: rootLayer, proveOptions: options))
     }
 
-    private static func decodeLayerProof(_ reader: inout ProofReader, depth: Int) throws -> LayerProof {
+    private static func decodeLayerProof(_ reader: inout ProofReader, depth: Int, layers: inout Int) throws -> LayerProof {
         guard depth <= maxLayerDepth else {
             throw VerificationError("Layer proof nesting too deep")
         }
+        layers += 1
+        guard layers <= maxLayers else {
+            throw VerificationError("The proof holds more than \(maxLayers) layers")
+        }
         let merkProof = try reader.byteVector()
+        // Each lower layer is a layer more: refuse a count past the cap
+        // before decoding any of them.
         let count = try reader.varint()
+        guard count <= UInt64(maxLayers - layers) else {
+            throw VerificationError("The proof holds more than \(maxLayers) layers")
+        }
         var lowerLayers: [String: LayerProof] = [:]
         for _ in 0..<count {
             let key = try reader.byteVector()
             let keyHex = Data(key).hexString
-            let nested = try decodeLayerProof(&reader, depth: depth + 1)
+            let nested = try decodeLayerProof(&reader, depth: depth + 1, layers: &layers)
             guard lowerLayers.updateValue(nested, forKey: keyHex) == nil else {
                 throw VerificationError("Proof repeats the lower layer \(keyHex)")
             }
@@ -632,8 +650,15 @@ public class GroveDBVerifier {
     /// it must belong to a tree element its layer proves, and hash, combined
     /// with the element's bytes, to the value hash the layer commits.
     private static func checkOffPathLayers(_ layer: LayerProof, _ merk: MerkExecutionResult, except segmentHex: String) throws {
+        guard layer.lowerLayers.contains(where: { $0.key != segmentHex }) else { return }
+        // The layer's nodes by key, the first of each as a scan finds it,
+        // indexed once rather than scanned for each lower layer.
+        var nodes: [Data: ProvedKeyValue] = [:]
+        for proved in merk.resultSet where nodes[proved.key] == nil {
+            nodes[proved.key] = proved
+        }
         for (keyHex, lower) in layer.lowerLayers where keyHex != segmentHex {
-            guard let owner = merk.resultSet.first(where: { $0.key.hexString == keyHex }), let element = owner.value,
+            guard let key = Data(hexString: keyHex), let owner = nodes[key], let element = owner.value,
                   owner.nodeType == .kvValueHash || owner.nodeType == .kvValueHashFeatureType,
                   let rootKey = groveTreeRootKey(element).rootKey, !rootKey.isEmpty else {
                 throw VerificationError("Proof has a lower layer for key \(keyHex), which its layer doesn't prove as a tree element")

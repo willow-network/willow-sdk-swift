@@ -77,6 +77,10 @@ public class DataOperations {
         guard let proofBytes = Data(hexString: cleanHex), !proofBytes.isEmpty else {
             throw ProofError("The API returned no proof for \(subgroveId)/\(key)")
         }
+        guard proofBytes.count <= GroveDBVerifier.maxSingleKeyProofBytes else {
+            throw ProofError(
+                "The API returned a proof of \(proofBytes.count) bytes for \(subgroveId)/\(key), over the 1 MiB a proof of one key holds")
+        }
         guard let height = served.height, height > 0 else {
             throw ProofError("The API returned the proof for \(subgroveId)/\(key) without the height of its state")
         }
