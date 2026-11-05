@@ -27,6 +27,9 @@ public struct LightClientConfig {
     public let chainId: String
     public let validatorEndpoints: [String]
     public let trustThreshold: TrustThreshold
+    /// How long a trusted header can be used to accept others, and a header
+    /// to match a proof's root, counted from the header's block time (from
+    /// when it was trusted, for a header given without its block time).
     public let trustingPeriod: TimeInterval
     /// How far ahead of this clock a header's time may be. A header may be
     /// any age: the header after a proof's block may be read long after it
@@ -312,7 +315,10 @@ public struct LightBlock: Codable {
 public struct TrustedHeader: Codable {
     public let height: Int64
     public let appHash: String
+    /// When this process (or the one that exported it) trusted the header.
     public let trustedAt: Date
+    /// The header's block time. The trusting period runs from it; without
+    /// it, from `trustedAt`.
     public let headerTime: Date?
     public let nextValidatorsHash: String?
     public let lastBlockId: BlockID?
@@ -333,6 +339,12 @@ public struct TrustedHeader: Codable {
         self.headerTime = headerTime
         self.nextValidatorsHash = nextValidatorsHash
         self.lastBlockId = lastBlockId
+    }
+
+    /// Where the trusting period runs from: the header's block time, or when
+    /// it was trusted if that isn't known.
+    internal var trustingPeriodStart: Date {
+        return headerTime ?? trustedAt
     }
 }
 

@@ -466,6 +466,50 @@ final class LightClientTests: XCTestCase {
         XCTAssertTrue(future.error?.contains("Clock drift") ?? false, future.error ?? "")
     }
 
+    /// A header trusted now whose block is older than the trusting period is
+    /// expired: the period runs from the block's time, not from when this
+    /// process took the header.
+    func testTheTrustingPeriodRunsFromTheHeadersBlockTime() async throws {
+        let config = LightClientConfig(chainId: "c", validatorEndpoints: ["http://rpc.test"], trustingPeriod: 3600, autoSync: false)
+        let old = TrustedState(
+            header: TrustedHeader(height: 10, appHash: "aa", trustedAt: Date(), headerTime: Date().addingTimeInterval(-7200)),
+            validatorSet: ValidatorSet(validators: []))
+        XCTAssertThrowsError(try LightClient(config, trustedState: old)) { error in
+            XCTAssertTrue((error as? WillowError)?.message.contains("expired") ?? false, "\(error)")
+        }
+        let lc = try LightClient(config)
+        XCTAssertThrowsError(try lc.importTrustedState(old))
+
+        let signature = try JSONDecoder().decode(CommitSig.self, from: Data(#"{"block_id_flag":2,"validator_address":"v"}"#.utf8))
+        let next = LightBlock(
+            header: Header(chainId: "c", height: 11, time: Date().addingTimeInterval(-60), appHash: "bb"),
+            validatorSet: ValidatorSet(validators: [LightClientValidator(address: "v", publicKey: "p", votingPower: 10)]),
+            commit: Commit(height: 11, round: 0, signatures: [signature]))
+        let refused = try lc.verify(block: next, trustedState: old)
+        XCTAssertFalse(refused.verified)
+        XCTAssertEqual(refused.error, "Trusted state expired")
+        // A recent block, trusted long ago, is still within the period.
+        let recent = TrustedState(
+            header: TrustedHeader(
+                height: 10, appHash: "aa", trustedAt: Date().addingTimeInterval(-7200), headerTime: Date().addingTimeInterval(-120)),
+            validatorSet: ValidatorSet(validators: []))
+        XCTAssertTrue(try lc.verify(block: next, trustedState: recent).verified)
+
+        // A header accepted within the period is used until its block's
+        // time, not the time it was accepted, is past it.
+        let short = LightClientConfig(chainId: "c", validatorEndpoints: ["http://rpc.test"], trustingPeriod: 2, autoSync: false)
+        let pinned = try LightClient(short, trustedState: TrustedState(
+            header: TrustedHeader(height: 50, appHash: "aa", trustedAt: Date(), headerTime: Date().addingTimeInterval(-1.5)),
+            validatorSet: ValidatorSet(validators: [])))
+        try await Task.sleep(nanoseconds: 800_000_000)
+        do {
+            _ = try await pinned.verifiedAppHash(atHeight: 50)
+            XCTFail("the trusted header's block is older than the trusting period")
+        } catch let error as WillowError {
+            XCTAssertTrue(error.message.contains("trusting period"), error.message)
+        }
+    }
+
     func testHeadersAreAcceptedOutOfOrderAndAgainAtTheSameHeight() async throws {
         let now = Date()
         let chain = StubChain(headers: [

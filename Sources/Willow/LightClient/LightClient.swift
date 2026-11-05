@@ -64,7 +64,7 @@ public final class LightClient: @unchecked Sendable {
         }
 
         // Validate the trusted state hasn't expired
-        let age = Date().timeIntervalSince(trustedState.header.trustedAt)
+        let age = Date().timeIntervalSince(trustedState.header.trustingPeriodStart)
         if age > config.trustingPeriod {
             throw LightClientError("Trusted header has expired (age: \(Int(age))s, max: \(Int(config.trustingPeriod))s)")
         }
@@ -232,7 +232,9 @@ public final class LightClient: @unchecked Sendable {
     // MARK: - Verification
 
     /// Checks a light block against trusted state: the chain ID, that height
-    /// and time move forward, the trusting period, that the header's time is
+    /// and time move forward, that the trusted header is within the trusting
+    /// period (from its block time, or from when it was trusted if its block
+    /// time isn't known), that the header's time is
     /// less than `maxClockDrift` ahead of this clock (a header may be any age:
     /// the header after a proof's block may be read long after it was made),
     /// for the next height that its validators hash is the trusted header's
@@ -273,8 +275,8 @@ public final class LightClient: @unchecked Sendable {
             }
         }
 
-        // Check trusting period
-        let headerAge = Date().timeIntervalSince(trustedState.header.trustedAt)
+        // Check the trusting period, from the trusted header's block time
+        let headerAge = Date().timeIntervalSince(trustedState.header.trustingPeriodStart)
         guard headerAge < config.trustingPeriod else {
             return LightClientVerificationResult(
                 verified: false,
@@ -386,7 +388,7 @@ public final class LightClient: @unchecked Sendable {
         let state = try await currentTrustedState()
 
         // Check if trusted state is still valid
-        let age = Date().timeIntervalSince(state.header.trustedAt)
+        let age = Date().timeIntervalSince(state.header.trustingPeriodStart)
         if age > config.trustingPeriod {
             try await sync()
             guard let newState = locked({ trustedState }) else {
@@ -409,7 +411,7 @@ public final class LightClient: @unchecked Sendable {
     /// one this client has accepted can't be checked, so it throws.
     public func verifiedAppHash(atHeight height: Int64) async throws -> String {
         let state = try await currentTrustedState()
-        guard Date().timeIntervalSince(state.header.trustedAt) <= config.trustingPeriod else {
+        guard Date().timeIntervalSince(state.header.trustingPeriodStart) <= config.trustingPeriod else {
             throw LightClientError("The trusted header at height \(state.header.height) has outlived the trusting period")
         }
         let (known, lowest): (TrustedState?, Int64?) = locked { (accepted[height], accepted.keys.min()) }
@@ -441,8 +443,8 @@ public final class LightClient: @unchecked Sendable {
     /// header from H+1 up to and including the header of the next block with
     /// transactions, and in no other. This takes:
     ///
-    /// - a header this client has accepted, at H+1 or above and accepted
-    ///   within the trusting period, that carries `appHash`;
+    /// - a header this client has accepted, at H+1 or above and within the
+    ///   trusting period (from its block time), that carries `appHash`;
     /// - otherwise the header at H+1, from `verifiedAppHash(atHeight:)`
     ///   (fetched and checked if this client hasn't accepted it), which must
     ///   carry `appHash`: a proof error if it doesn't.
@@ -462,7 +464,7 @@ public final class LightClient: @unchecked Sendable {
             accepted.values
                 .filter {
                     $0.header.height >= next && $0.header.appHash.lowercased() == wanted
-                        && now.timeIntervalSince($0.header.trustedAt) <= config.trustingPeriod
+                        && now.timeIntervalSince($0.header.trustingPeriodStart) <= config.trustingPeriod
                 }
                 .map { $0.header.height }
                 .min()
@@ -511,7 +513,7 @@ public final class LightClient: @unchecked Sendable {
     /// the imported header becomes the only one this client has accepted.
     public func importTrustedState(_ state: TrustedState) throws {
         // Validate the state
-        let age = Date().timeIntervalSince(state.header.trustedAt)
+        let age = Date().timeIntervalSince(state.header.trustingPeriodStart)
         if age > config.trustingPeriod {
             throw LightClientError("Imported state has expired")
         }
