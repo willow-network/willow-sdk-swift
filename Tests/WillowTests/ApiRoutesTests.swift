@@ -185,6 +185,7 @@ final class ApiRoutesTests: XCTestCase {
         XCTAssertTrue(try verify(algorithm: .ed25519, publicKey: identity.keyPair.publicKey, message: Data(message.utf8), signature: Data(tx.signature)))
     }
 
+    @available(*, deprecated)
     func testRegisterSubgroveRefusesWhatItCantSign() async throws {
         let stub = Self.writeStub(nextNonce: 1)
         let client = try stub.client(baseURL: "http://api.test")

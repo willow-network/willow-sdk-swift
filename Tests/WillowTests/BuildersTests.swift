@@ -56,6 +56,7 @@ final class BuildersTests: XCTestCase {
         XCTAssertEqual(request.readers.count, 2)
     }
 
+    @available(*, deprecated)
     func testSubgroveBuilderWithRewardRate() {
         let request = SubgroveBuilder(subgroveId: "users", name: "Users")
             .rewardRate(1000)
@@ -145,6 +146,7 @@ final class BuildersTests: XCTestCase {
         XCTAssertEqual(schema.fields[0].type, "object")
     }
 
+    @available(*, deprecated)
     func testSchemaBuilderAddIndex() {
         let schema = SchemaBuilder(name: "users")
             .index("email_idx", fields: ["email"], type: .hash, unique: true)
@@ -157,6 +159,7 @@ final class BuildersTests: XCTestCase {
         XCTAssertTrue(schema.indexes[0].unique)
     }
 
+    @available(*, deprecated)
     func testSchemaBuilderHashIndex() {
         let schema = SchemaBuilder(name: "test")
             .hashIndex("email_idx", fields: ["email"])
@@ -166,6 +169,7 @@ final class BuildersTests: XCTestCase {
         XCTAssertFalse(schema.indexes[0].unique)
     }
 
+    @available(*, deprecated)
     func testSchemaBuilderRangeIndex() {
         let schema = SchemaBuilder(name: "test")
             .rangeIndex("created_idx", fields: ["created_at"])
@@ -174,6 +178,7 @@ final class BuildersTests: XCTestCase {
         XCTAssertEqual(schema.indexes[0].type, .range)
     }
 
+    @available(*, deprecated)
     func testSchemaBuilderFullTextIndex() {
         let schema = SchemaBuilder(name: "test")
             .fullTextIndex("content_idx", fields: ["title", "body"])
@@ -183,6 +188,7 @@ final class BuildersTests: XCTestCase {
         XCTAssertEqual(schema.indexes[0].fields, ["title", "body"])
     }
 
+    @available(*, deprecated)
     func testSchemaBuilderUniqueIndex() {
         let schema = SchemaBuilder(name: "test")
             .uniqueIndex("email_unique", fields: ["email"])
@@ -192,6 +198,7 @@ final class BuildersTests: XCTestCase {
         XCTAssertTrue(schema.indexes[0].unique)
     }
 
+    @available(*, deprecated)
     func testSchemaBuilderComplex() {
         let schema = SchemaBuilder(name: "users")
             .description("User profiles")

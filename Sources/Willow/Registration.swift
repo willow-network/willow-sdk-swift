@@ -192,14 +192,20 @@ public class SubgroveBuilder {
         return self
     }
 
-    /// Sets the reward rate for indexers.
+    /// Sets the reward rate for indexers. It belongs to a BlockchainIndexing
+    /// registration, which this SDK can't build, so
+    /// `registration.registerSubgrove` refuses a request that sets it.
+    @available(*, deprecated, message: "registration.registerSubgrove refuses a reward rate: it belongs to BlockchainIndexing, which this SDK can't register.")
     @discardableResult
     public func rewardRate(_ rate: UInt64) -> SubgroveBuilder {
         request.rewardRate = rate
         return self
     }
 
-    /// Sets the retention window for indexed data.
+    /// Sets the retention window for indexed data. It belongs to a
+    /// BlockchainIndexing registration, which this SDK can't build, so
+    /// `registration.registerSubgrove` refuses a request that sets it.
+    @available(*, deprecated, message: "registration.registerSubgrove refuses a retention window: it belongs to BlockchainIndexing, which this SDK can't register.")
     @discardableResult
     public func retentionWindow(_ window: RetentionWindow) -> SubgroveBuilder {
         request.retentionWindow = window
@@ -284,7 +290,11 @@ public class SchemaBuilder {
         return field(name, type: "object", required: required)
     }
 
-    /// Adds an index to the schema.
+    /// Adds an index to the schema. The node refuses a DataStorage or
+    /// FileStorage schema that declares indexes, so
+    /// `registration.registerSubgrove` refuses a schema with one before
+    /// signing.
+    @available(*, deprecated, message: "The node refuses a DataStorage or FileStorage schema that declares indexes.")
     @discardableResult
     public func index(_ name: String, fields: [String], type: IndexType, unique: Bool = false) -> SchemaBuilder {
         var indexes = schema.indexes
@@ -299,24 +309,28 @@ public class SchemaBuilder {
     }
 
     /// Adds a hash index.
+    @available(*, deprecated, message: "The node refuses a DataStorage or FileStorage schema that declares indexes.")
     @discardableResult
     public func hashIndex(_ name: String, fields: [String]) -> SchemaBuilder {
         return index(name, fields: fields, type: .hash)
     }
 
     /// Adds a range index.
+    @available(*, deprecated, message: "The node refuses a DataStorage or FileStorage schema that declares indexes.")
     @discardableResult
     public func rangeIndex(_ name: String, fields: [String]) -> SchemaBuilder {
         return index(name, fields: fields, type: .range)
     }
 
     /// Adds a full-text index.
+    @available(*, deprecated, message: "The node refuses a DataStorage or FileStorage schema that declares indexes.")
     @discardableResult
     public func fullTextIndex(_ name: String, fields: [String]) -> SchemaBuilder {
         return index(name, fields: fields, type: .fulltext)
     }
 
     /// Adds a unique index.
+    @available(*, deprecated, message: "The node refuses a DataStorage or FileStorage schema that declares indexes.")
     @discardableResult
     public func uniqueIndex(_ name: String, fields: [String]) -> SchemaBuilder {
         return index(name, fields: fields, type: .hash, unique: true)

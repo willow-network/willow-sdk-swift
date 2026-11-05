@@ -9,7 +9,13 @@ public struct ClientConfig {
     public let indexerURL: URL?
     public let timeout: TimeInterval
     public let retryConfig: RetryConfig
-    public let autoVerify: Bool
+    /// Never read: `data.get` and `data.query` always verify, and
+    /// `getUnverified` and `queryUnverified` never do, whatever this says.
+    @available(*, deprecated, message: "Never read: data.get and data.query always verify; getUnverified and queryUnverified never do.")
+    public var autoVerify: Bool {
+        return storedAutoVerify
+    }
+    private let storedAutoVerify: Bool
     /// Managed-tier API key (`wk_…`). When set, the SDK sends
     /// `X-API-Key: <apiKey>` on every request via the URLSession's
     /// `httpAdditionalHeaders`. Mint a key at
@@ -45,7 +51,7 @@ public struct ClientConfig {
         self.indexerURL = indexerURL
         self.timeout = timeout
         self.retryConfig = retryConfig
-        self.autoVerify = autoVerify
+        self.storedAutoVerify = autoVerify
         self.apiKey = apiKey
         self.consensusRpcURL = consensusRpcURL
         self.chainId = chainId
@@ -98,7 +104,8 @@ public class WillowClient {
     ///   - baseURL: Base URL of the Willow validator API.
     ///   - indexerURL: Optional indexer node URL for routing GraphQL/SQL queries.
     ///   - timeout: Request timeout in seconds.
-    ///   - autoVerify: Whether to automatically verify proofs.
+    ///   - autoVerify: Ignored: `data.get` and `data.query` always verify,
+    ///     and `getUnverified` and `queryUnverified` never do.
     ///   - apiKey: Managed-tier API key (see `ClientConfig.apiKey`).
     ///   - consensusRpcURL: The CometBFT RPC of a consensus node you run or
     ///     trust, which verified reads take their headers from (see
