@@ -517,10 +517,17 @@ public class ConsensusClient {
 
     public init(_ config: ConsensusConfig) {
         self.config = config
+        self.session = ConsensusClient.makeSession(config)
+        self.nonces = .shared
+    }
+
+    /// A session whose requests wait at most `requestTimeoutSecs` for data
+    /// and twice that in all.
+    internal static func makeSession(_ config: ConsensusConfig) -> URLSession {
         let sessionConfig = URLSessionConfiguration.default
         sessionConfig.timeoutIntervalForRequest = config.requestTimeoutSecs
-        self.session = URLSession(configuration: sessionConfig)
-        self.nonces = .shared
+        sessionConfig.timeoutIntervalForResource = config.requestTimeoutSecs * 2
+        return URLSession(configuration: sessionConfig)
     }
 
     /// Testing seam: supply a `URLSession` (e.g. backed by a stub `URLProtocol`)

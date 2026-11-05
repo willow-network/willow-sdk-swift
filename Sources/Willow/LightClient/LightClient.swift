@@ -92,10 +92,12 @@ public final class LightClient: @unchecked Sendable {
         return makeSession(rpcTimeout: config.rpcTimeout)
     }
 
-    /// A session for RPC requests that time out after `rpcTimeout`.
+    /// A session for RPC requests that wait at most `rpcTimeout` for data
+    /// and `rpcTimeout * 2` in all.
     internal static func makeSession(rpcTimeout: TimeInterval) -> URLSession {
         let sessionConfig = URLSessionConfiguration.default
         sessionConfig.timeoutIntervalForRequest = rpcTimeout
+        sessionConfig.timeoutIntervalForResource = rpcTimeout * 2
         return URLSession(configuration: sessionConfig)
     }
 

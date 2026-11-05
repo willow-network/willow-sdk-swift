@@ -142,4 +142,18 @@ final class HostileAnswerTests: XCTestCase {
         // (2^64 - 1) * 86400000000000 + (2^64 - 1)
         XCTAssertEqual(transaction, "1593798687968523706280073709551615")
     }
+
+    /// Every session the SDK makes bounds a request's whole time, not only
+    /// the wait between bytes (`URLSession`'s default resource timeout is 7
+    /// days), so an endpoint that trickles an answer can't hold a read.
+    func testEverySessionHasAResourceTimeout() {
+        XCTAssertEqual(LightClient.makeSession(rpcTimeout: 10).configuration.timeoutIntervalForResource, 20)
+        XCTAssertEqual(LightClient.makeSession(rpcTimeout: 10).configuration.timeoutIntervalForRequest, 10)
+        let consensus = ConsensusClient.makeSession(ConsensusConfig(consensusRpcUrl: "http://rpc.test", requestTimeoutSecs: 7))
+        XCTAssertEqual(consensus.configuration.timeoutIntervalForResource, 14)
+        XCTAssertEqual(consensus.configuration.timeoutIntervalForRequest, 7)
+        XCTAssertEqual(WillowClient.makeSession(timeout: 30).configuration.timeoutIntervalForResource, 60)
+        let client = WillowClient(config: ClientConfig(baseURL: URL(string: "http://api.test")!, timeout: 5), session: URLSession.shared)
+        XCTAssertEqual(client.storageSession.configuration.timeoutIntervalForResource, 10)
+    }
 }
