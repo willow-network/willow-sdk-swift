@@ -10,7 +10,7 @@ final class HostileAnswerTests: XCTestCase {
     }
 
     static func commitSig(_ address: String) throws -> CommitSig {
-        let json = #"{"block_id_flag":2,"validator_address":"\#(address)","timestamp":"2025-01-01T00:00:00Z","signature":"c2ln"}"#
+        let json = #"{"block_id_flag":2,"validator_address":"\#(address)","timestamp":"\#(StubChain.rfc3339(Date()))","signature":"c2ln"}"#
         return try JSONDecoder().decode(CommitSig.self, from: Data(json.utf8))
     }
 

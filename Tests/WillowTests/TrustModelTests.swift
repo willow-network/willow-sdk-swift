@@ -100,7 +100,7 @@ final class TrustModelTests: XCTestCase {
         let now = Date()
         let before = VerifiedReadsTests.dataTree([(Self.bob, #"{"balance":250}"#)])
         let after = VerifiedReadsTests.dataTree([(Self.bob, #"{"balance":300}"#)])
-        let chainId = "willow-devnet-7"
+        let chainId = "example-chain-7"
         // Block 41 changed the state; block 42 carries transactions too.
         let first = StubChain(chainId: chainId, headers: [42: (before.hash.hexString, now.addingTimeInterval(-20))])
         let second = StubChain(chainId: chainId, headers: [
