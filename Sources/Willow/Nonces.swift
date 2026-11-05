@@ -288,13 +288,24 @@ internal final class NonceAllocator {
     /// returns the outcome for the nonce with the result. A transaction that
     /// can't be built gives its nonce back. One whose lease another write took
     /// while it was built (building took over 120 s) is built again under a
-    /// new nonce, up to `attempts` times.
+    /// new nonce, up to `attempts` times. Errors are thrown as `send` throws
+    /// them.
     func submit<T>(
         _ account: NonceAccount,
         chain: ChainNonces,
         build: (Int) throws -> Data,
         submit: (Data) async throws -> (T, NonceOutcome)
     ) async throws -> T {
+        return try await signAndSend(account, chain: chain, build: build, submit: submit).result
+    }
+
+    /// `submit`, returning the transaction sent with the result.
+    func signAndSend<T>(
+        _ account: NonceAccount,
+        chain: ChainNonces,
+        build: (Int) throws -> Data,
+        submit: (Data) async throws -> (T, NonceOutcome)
+    ) async throws -> (result: T, submission: SignedSubmission) {
         var attempt = 0
         var reservation: NonceReservation
         var body: Data
@@ -315,12 +326,76 @@ internal final class NonceAllocator {
                 throw error
             }
         } while !confirm(reservation)
+        let submission = SignedSubmission(did: account.did, nonce: Int(reservation.nonce), body: body, token: reservation.token)
+        return (try await send(reservation, submission, submit), submission)
+    }
+
+    /// Sends `submission` again under its own nonce, holding the nonce while
+    /// it is in flight as for a new write, and settles it as `send` does.
+    /// Nothing is sent, and a transaction error is thrown, when the chain
+    /// shows the nonce used (some transaction under it landed: the write's
+    /// earlier copy, or another one its DID signed) or when another write
+    /// from this process now holds it (the write's 120 s hold lapsed and the
+    /// nonce was handed out again).
+    func resubmit<T>(
+        _ submission: SignedSubmission,
+        on account: NonceAccount,
+        submit: (Data) async throws -> (T, NonceOutcome)
+    ) async throws -> T {
+        guard account.did == submission.did, submission.nonce > 0 else {
+            throw ValidationError("The submission is not one of \(account.did)'s transactions")
+        }
+        let reservation = NonceReservation(account: account, nonce: UInt64(submission.nonce), token: submission.token)
+        lock.lock()
+        var state = accounts[account] ?? Account()
+        let nonce = reservation.nonce
+        let at = now()
+        let other = state.leases[nonce].map { $0.token != submission.token && at - $0.since < Self.lease } ?? false
+        let used = nonce <= state.base || state.used.contains(nonce)
+        if !other && !used {
+            state.leases[nonce] = Lease(since: at, token: submission.token)
+            accounts[account] = state
+        }
+        lock.unlock()
+        if used {
+            throw WillowError(
+                type: .transaction,
+                message: "Nonce \(nonce) of \(account.did) is used: a transaction under it has landed (this write's earlier copy, "
+                    + "or another one signed by the same DID). Read what the write wrote to learn whether it took effect")
+        }
+        if other {
+            throw WillowError(
+                type: .transaction,
+                message: "Nonce \(nonce) of \(account.did) was handed to another write after this one's hold lapsed, "
+                    + "so it isn't resubmitted. Read what the write wrote to learn whether it took effect")
+        }
+        return try await send(reservation, submission, submit)
+    }
+
+    /// Submits `submission`'s body and settles its nonce with the outcome.
+    /// A CheckTx refusal is thrown as a `TransactionError` carrying the
+    /// submission; a failure whose outcome is unknown (a network error, a
+    /// 5xx, a 408) as a `TransactionSubmitError` carrying it; anything else
+    /// as thrown.
+    private func send<T>(
+        _ reservation: NonceReservation,
+        _ submission: SignedSubmission,
+        _ submit: (Data) async throws -> (T, NonceOutcome)
+    ) async throws -> T {
         let result: T
         let outcome: NonceOutcome
         do {
-            (result, outcome) = try await submit(body)
+            (result, outcome) = try await submit(submission.body)
         } catch {
-            settle(reservation, NonceOutcome.submission(error: error))
+            let outcome = NonceOutcome.submission(error: error)
+            settle(reservation, outcome)
+            if let refused = error as? TransactionError {
+                throw TransactionError(
+                    message: refused.message, txHash: refused.txHash, errorCode: refused.errorCode, submission: submission)
+            }
+            if outcome == .unknown {
+                throw TransactionSubmitError(submission: submission, cause: error)
+            }
             throw error
         }
         settle(reservation, outcome)

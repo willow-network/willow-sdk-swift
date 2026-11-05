@@ -69,16 +69,20 @@ public struct HTTPError: Error, LocalizedError {
 
 // MARK: - Transaction Error
 
-/// Transaction-specific error.
+/// Transaction-specific error: CheckTx refused the transaction.
 public struct TransactionError: Error, LocalizedError {
     public let message: String
     public let txHash: String?
     public let errorCode: Int
+    /// The signed transaction refused, for a write the SDK signed under a
+    /// nonce it chose (see `SignedSubmission`).
+    public let submission: SignedSubmission?
 
-    public init(message: String, txHash: String? = nil, errorCode: Int = 0) {
+    public init(message: String, txHash: String? = nil, errorCode: Int = 0, submission: SignedSubmission? = nil) {
         self.message = message
         self.txHash = txHash
         self.errorCode = errorCode
+        self.submission = submission
     }
 
     public var errorDescription: String? {
@@ -86,6 +90,37 @@ public struct TransactionError: Error, LocalizedError {
             return "transaction error (code \(errorCode), tx \(txHash)): \(message)"
         }
         return "transaction error (code \(errorCode)): \(message)"
+    }
+}
+
+// MARK: - Transaction Submit Error
+
+/// A write whose outcome is unknown: its submission failed in transit (a
+/// network error), or the API answered a 5xx, a 408, or a 2xx that isn't
+/// JSON. The transaction may have reached the node and may still land, so
+/// its nonce stays held.
+///
+/// Retry it only with `resubmit(_:)` on the client that sent it, which
+/// sends `submission`, the identical signed transaction, again under the
+/// same nonce: whichever copy lands first spends the nonce and the other is
+/// refused, so the write runs at most once. Calling the write again would
+/// sign it under a fresh nonce, and both could run. To learn whether it
+/// took effect, read what it wrote.
+public struct TransactionSubmitError: Error, LocalizedError {
+    /// The signed transaction sent.
+    public let submission: SignedSubmission
+    /// What failed: a `URLError`, an `HTTPError`, or the API's answer.
+    public let cause: Error
+
+    public init(submission: SignedSubmission, cause: Error) {
+        self.submission = submission
+        self.cause = cause
+    }
+
+    public var errorDescription: String? {
+        return "the transaction under nonce \(submission.nonce) of \(submission.did) may have reached the node "
+            + "(\(cause.localizedDescription)); resubmit it under the same nonce with resubmit(_:), "
+            + "not as a new write, or it may run twice"
     }
 }
 

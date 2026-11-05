@@ -57,6 +57,8 @@ final class NonceTests: XCTestCase {
         private var usedAbove: Set<UInt64>
         private var refusals: [UInt64: String] = [:]
         private var plainAnswers: [UInt64: (Int, String)] = [:]
+        private var lostAnswers: [UInt64: (Int, String)] = [:]
+        private var mempool: Set<Data> = []
         private var submitted: [UInt64] = []
         var pending = false
         /// Whether the RPC answers `/store/account_nonce_state` (else only the API's base is read).
@@ -87,6 +89,15 @@ final class NonceTests: XCTestCase {
         func refuseBodyOnce(_ nonce: UInt64, status: Int, _ text: String) {
             lock.lock()
             plainAnswers[nonce] = (status, text)
+            lock.unlock()
+        }
+
+        /// Takes the next transaction under `nonce` as any other (it lands,
+        /// or is pending), then answers HTTP `status` and `text`: the answer
+        /// is lost, not the transaction.
+        func loseAnswerOnce(_ nonce: UInt64, status: Int, _ text: String) {
+            lock.lock()
+            lostAnswers[nonce] = (status, text)
             lock.unlock()
         }
 
@@ -124,6 +135,10 @@ final class NonceTests: XCTestCase {
             if let answer = plainAnswers.removeValue(forKey: nonce) {
                 return answer
             }
+            // CometBFT refuses bytes its mempool already holds.
+            if mempool.contains(request.body) {
+                return (502, #"{"success":false,"data":null,"error":"CometBFT RPC error -32603: Internal error tx already exists in cache"}"#)
+            }
             let refusal: String?
             if let log = refusals.removeValue(forKey: nonce) {
                 refusal = log
@@ -139,8 +154,13 @@ final class NonceTests: XCTestCase {
             if let refusal = refusal {
                 return (200, #"{"success":true,"data":{"tx_hash":"AB","code":1,"log":"\#(refusal)"},"error":null}"#)
             }
-            if !pending {
+            if pending {
+                mempool.insert(request.body)
+            } else {
                 land(nonce)
+            }
+            if let lost = lostAnswers.removeValue(forKey: nonce) {
+                return lost
             }
             return (200, #"{"success":true,"data":{"tx_hash":"AB","code":0,"log":""},"error":null}"#)
         }
@@ -643,5 +663,138 @@ final class NonceTests: XCTestCase {
         )
         try await client.registration.deleteSubgrove(subgroveId: "notes")
         XCTAssertEqual(chain.sent, Array(6...12))
+    }
+
+    // MARK: - Writes whose outcome is unknown
+
+    /// A store whose answer is lost (a 502 after the transaction reached the
+    /// mempool) throws `TransactionSubmitError` carrying its nonce and body.
+    /// `resubmit` sends those exact bytes under that nonce: the node holds
+    /// them, so it counts as accepted, and the next write takes the next
+    /// nonce. Once the chain shows the nonce used, resubmitting sends nothing.
+    func testAWriteWhoseOutcomeIsUnknownIsResubmittedUnderItsOwnNonce() async throws {
+        let chain = FakeChain(base: 5)
+        chain.pending = true
+        chain.loseAnswerOnce(6, status: 502, #"{"success":false,"data":null,"error":"Failed to reach CometBFT RPC: timed out"}"#)
+        let stub = Self.stub(chain)
+        let client = try stub.client(baseURL: "http://api.test")
+        let identity = try Self.identity()
+        client.setIdentity(identity)
+
+        var lost: SignedSubmission?
+        do {
+            try await store(client, "a")
+            XCTFail("a lost answer must throw")
+        } catch let error as TransactionSubmitError {
+            lost = error.submission
+            XCTAssertEqual((error.cause as? HTTPError)?.statusCode, 502)
+        }
+        let submission = try XCTUnwrap(lost)
+        XCTAssertEqual(submission.did, identity.did)
+        XCTAssertEqual(submission.nonce, 6)
+        XCTAssertEqual(submission.body, stub.requests.last { $0.path == "/tx/submit" }?.body)
+
+        let again = try await client.resubmit(submission)
+        XCTAssertTrue(again.success)
+        XCTAssertNil(again.txHash)
+        XCTAssertEqual(again.submission, submission)
+        XCTAssertEqual(stub.requests.last { $0.path == "/tx/submit" }?.body, submission.body)
+        let next = try await client.data.store(subgroveId: "sg", key: "b", data: ["k": "b"])
+        XCTAssertEqual(next.submission?.nonce, 7)
+        XCTAssertEqual(chain.sent, [6, 6, 7])
+
+        chain.use(6)
+        try await store(client, "c")
+        let before = stub.requests.count
+        do {
+            _ = try await client.resubmit(submission)
+            XCTFail("a nonce the chain shows used is not resubmitted")
+        } catch let error as WillowError {
+            XCTAssertEqual(error.type, .transaction)
+            XCTAssertTrue(error.message.contains("is used"), error.message)
+        }
+        XCTAssertEqual(stub.requests.count, before)
+    }
+
+    /// A transfer whose answer is lost after it landed: it throws rather than
+    /// returning a refusal, and resubmitting it is refused as a used nonce, so
+    /// the transfer runs once.
+    func testATransferWhoseOutcomeIsUnknownRunsOnce() async throws {
+        let keyPair = try SignedMessagesTests.keyPair(.ed25519)
+        let chain = FakeChain(base: 5)
+        chain.loseAnswerOnce(6, status: 502, #"{"success":false,"data":null,"error":"Failed to parse CometBFT RPC response"}"#)
+        let stub = Self.stub(chain)
+        let consensus = Self.consensus(stub, NonceAllocator())
+        let sign: (Data, Data) throws -> Data = { message, _ in try keyPair.sign(message) }
+
+        var lost: SignedSubmission?
+        do {
+            let result = try await consensus.transfer(
+                fromDid: "did:willow:a", toDid: "did:willow:b", amount: 5, privateKey: Data(),
+                publicKeyId: "did:willow:a#key-1", signFunction: sign)
+            XCTFail("a lost answer must throw, not return \(result)")
+        } catch let error as TransactionSubmitError {
+            lost = error.submission
+        }
+        let submission = try XCTUnwrap(lost)
+        XCTAssertEqual(submission.did, "did:willow:a")
+        XCTAssertEqual(submission.nonce, 6)
+
+        let result = try await consensus.resubmit(submission)
+        XCTAssertFalse(result.success)
+        XCTAssertTrue(result.errorMessage?.contains("<= base nonce") ?? false, result.errorMessage ?? "")
+        XCTAssertEqual(result.submission, submission)
+        XCTAssertEqual(chain.sent, [6, 6])
+        XCTAssertEqual(stub.requests.filter { $0.path == "/tx/submit" }.map { $0.body }, [submission.body, submission.body])
+
+        // A transfer CheckTx refuses carries its submission too.
+        chain.refuseOnce(7, "Insufficient balance")
+        let refused = try await consensus.transfer(
+            fromDid: "did:willow:a", toDid: "did:willow:b", amount: 5, privateKey: Data(),
+            publicKeyId: "did:willow:a#key-1", signFunction: sign)
+        XCTAssertFalse(refused.success)
+        XCTAssertEqual(refused.submission?.nonce, 7)
+    }
+
+    /// A write's hold lapses and its nonce goes to another write: resubmitting
+    /// it sends nothing, so it can't take the other write's nonce.
+    func testAResubmissionNeverTakesANonceAnotherWriteHolds() async throws {
+        let clock = Clock()
+        let chain = FakeChain(base: 5)
+        chain.pending = true
+        chain.loseAnswerOnce(6, status: 504, "")
+        let stub = Self.stub(chain)
+        let client = try stub.client(baseURL: "http://api.test", nonces: NonceAllocator(now: { clock.now }))
+        client.setIdentity(try Self.identity())
+
+        var lost: SignedSubmission?
+        do {
+            try await store(client, "a")
+            XCTFail("a lost answer must throw")
+        } catch let error as TransactionSubmitError {
+            lost = error.submission
+        }
+        let submission = try XCTUnwrap(lost)
+        clock.advance(NonceAllocator.lease)
+        try await store(client, "b")
+        XCTAssertEqual(chain.sent, [6, 6])
+        let before = stub.requests.count
+        do {
+            _ = try await client.resubmit(submission)
+            XCTFail("the nonce is another write's")
+        } catch let error as WillowError {
+            XCTAssertEqual(error.type, .transaction)
+            XCTAssertTrue(error.message.contains("another write"), error.message)
+        }
+        XCTAssertEqual(stub.requests.count, before)
+
+        // A CheckTx refusal carries the submission.
+        chain.refuseOnce(7, "Insufficient balance for the write fee")
+        do {
+            try await store(client, "c")
+            XCTFail("refused")
+        } catch let error as TransactionError {
+            XCTAssertEqual(error.submission?.nonce, 7)
+        }
     }
 }

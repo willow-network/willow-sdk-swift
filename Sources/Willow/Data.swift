@@ -483,11 +483,18 @@ public class DataOperations {
     /// the nonce is held by a pending transaction, already used, or spent. A
     /// write refused in its block after its signature and nonce verify spends
     /// its nonce, so calling again signs under another. One whose submission
-    /// failed in transit (a network error or a 5xx) may still land, so its
-    /// nonce stays held for 120 s: read the key to see whether it landed
-    /// before storing it again. Read it too after a refusal that says the
-    /// nonce is already used: an earlier attempt may have landed under that
-    /// nonce, and storing again under a fresh one would write twice.
+    /// failed in transit (a network error, a 5xx, or a 408) may still land,
+    /// so its nonce stays held for 120 s and it throws a
+    /// `TransactionSubmitError`: retry it only with
+    /// `client.resubmit(error.submission)`, which sends the same signed
+    /// transaction under the same nonce, so it runs at most once. Calling
+    /// `store` again would sign it under a fresh nonce. After a refusal that
+    /// says the nonce is already used, read the key: an earlier attempt may
+    /// have landed under that nonce, and storing again under a fresh one would
+    /// write twice.
+    ///
+    /// It returns once CheckTx admits the transaction, before it is in a
+    /// block: the item is readable once that block is committed.
     @discardableResult
     public func store(subgroveId: String, key: String, data: [String: Any]) async throws -> BroadcastResult {
         guard let client = client else { throw NetworkError("Client deallocated") }

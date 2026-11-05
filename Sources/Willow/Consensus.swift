@@ -61,6 +61,11 @@ public struct BroadcastResult {
     public let errorCode: Int?
     public let errorMessage: String?
     public let rawLog: String?
+    /// The signed transaction as it was sent (its DID, nonce, and body), on
+    /// the result of a write the SDK signed under a nonce it chose. Pass it
+    /// to `resubmit(_:)` to send the identical transaction again under the
+    /// same nonce.
+    public let submission: SignedSubmission?
 
     public init(
         success: Bool,
@@ -68,7 +73,8 @@ public struct BroadcastResult {
         height: Int64? = nil,
         errorCode: Int? = nil,
         errorMessage: String? = nil,
-        rawLog: String? = nil
+        rawLog: String? = nil,
+        submission: SignedSubmission? = nil
     ) {
         self.success = success
         self.txHash = txHash
@@ -76,7 +82,37 @@ public struct BroadcastResult {
         self.errorCode = errorCode
         self.errorMessage = errorMessage
         self.rawLog = rawLog
+        self.submission = submission
     }
+
+    /// This result, carrying `submission`.
+    internal func with(_ submission: SignedSubmission) -> BroadcastResult {
+        return BroadcastResult(
+            success: success, txHash: txHash, height: height, errorCode: errorCode, errorMessage: errorMessage,
+            rawLog: rawLog, submission: submission)
+    }
+}
+
+/// A signed transaction as the SDK sent it to `POST /tx/submit`: the DID
+/// whose nonce it carries, the nonce, and the exact body sent.
+///
+/// A write whose outcome is unknown (its submission failed in transit, or
+/// the API answered a 5xx or a 408) may have reached the node and may still
+/// land. Retry it only by sending this same transaction again under the same
+/// nonce (`WillowClient.resubmit(_:)` or `ConsensusClient.resubmit(_:)`):
+/// whichever copy lands first spends the nonce and the other is refused, so
+/// the write runs at most once. Signing the write again under a fresh nonce
+/// could run it twice.
+public struct SignedSubmission: Equatable {
+    /// The DID whose nonce the transaction carries.
+    public let did: String
+    /// The transaction's nonce.
+    public let nonce: Int
+    /// The `/tx/submit` body sent: the signed transaction as JSON.
+    public let body: Data
+    /// The reservation that took the nonce, so a resubmission renews its
+    /// own lease and not another write's.
+    internal let token: UInt64
 }
 
 // MARK: - Transaction Types
@@ -594,7 +630,18 @@ public class ConsensusClient {
         return try await registerSubgrove(registration, privateKey: privateKey, signFunction: signFunction)
     }
 
-    /// Transfer tokens between DIDs.
+    /// Transfer tokens between DIDs, under the lowest nonce of `fromDid`
+    /// above its base that the chain doesn't show used and no other write in
+    /// flight from this process holds.
+    ///
+    /// A transfer whose outcome is unknown (its submission failed in transit,
+    /// or the API answered a 5xx or a 408) throws a `TransactionSubmitError`.
+    /// It may have reached the node and may still land: retry it only with
+    /// `resubmit(error.submission)`, which sends the same signed transfer
+    /// under the same nonce, so it runs at most once. Calling `transfer`
+    /// again would sign a second transfer under a fresh nonce, and both could
+    /// run. A transfer CheckTx refuses is returned with `success` false and
+    /// `submission` set.
     public func transfer(
         fromDid: String,
         toDid: String,
@@ -634,7 +681,12 @@ public class ConsensusClient {
     /// The nonce is the lowest one above the account's base that the chain
     /// doesn't show used and no other write in flight from this process holds.
     /// A write refused in its block after its signature and nonce verify still
-    /// spends its nonce; calling again signs anew under another.
+    /// spends its nonce; calling again signs anew under another. A write whose
+    /// outcome is unknown (a network error, a 5xx, or a 408) throws a
+    /// `TransactionSubmitError`: it may still land, so retry it only with
+    /// `resubmit(_:)`, which sends the same transaction under the same nonce.
+    /// Calling `storeData` again would sign it under a fresh nonce, and both
+    /// could run.
     public func storeData(
         subgroveId: String,
         key: String,
@@ -883,15 +935,63 @@ public class ConsensusClient {
     /// transaction, already used, or spent. A submission whose fate is unknown
     /// (a network error or a 5xx) may still land, so its nonce stays held for
     /// 120 s (the node holds a pending transaction's nonce for 3 blocks or
-    /// 120 s, whichever ends first). A body the API refuses in plain text (a
-    /// 4xx) never reached CheckTx, so its nonce is given back.
+    /// 120 s, whichever ends first), and it is thrown as a
+    /// `TransactionSubmitError` carrying the signed transaction, to
+    /// `resubmit(_:)`. A body the API refuses in plain text (a 4xx) never
+    /// reached CheckTx, so its nonce is given back. The result carries the
+    /// signed transaction.
     internal func submitUnderNextNonce(did: String, _ build: (Int) throws -> Data) async throws -> BroadcastResult {
         let submitURL = try txSubmitURL()
         let account = NonceAccount(did: did, api: config.apiUrl ?? "")
-        return try await nonces.submit(account, chain: try await accountNonces(did: did), build: build) { body in
-            let (result, status) = try await self.broadcastBody(body, to: submitURL)
-            return (result, NonceOutcome.submission(status: status, result: result))
+        let (result, submission) = try await nonces.signAndSend(account, chain: try await accountNonces(did: did), build: build) { body in
+            try await self.broadcast(body, to: submitURL)
         }
+        return result.with(submission)
+    }
+
+    /// Sends a write again under its own nonce: `submission` is the signed
+    /// transaction a `TransactionSubmitError` or a `BroadcastResult` carries.
+    /// Its body is sent unchanged, so whichever copy lands first spends the
+    /// nonce and the other is refused: the write runs at most once. This is
+    /// how to retry a write whose outcome is unknown
+    /// (`TransactionSubmitError`); calling the write again would sign it
+    /// under a fresh nonce, and both could run.
+    ///
+    /// The nonce is held while it is in flight, as for a new write. When the
+    /// node already holds the identical transaction ("tx already exists in
+    /// cache"), that counts as accepted: a successful result with no
+    /// transaction hash. A CheckTx refusal is returned as for a write (one
+    /// saying the nonce is already used means some transaction under it
+    /// landed, perhaps this write's earlier copy: read what it wrote), and an
+    /// unknown outcome is thrown again as a `TransactionSubmitError`. Throws a
+    /// transaction error and sends nothing when this process has seen the
+    /// nonce used, or has handed it to another write after this one's 120 s
+    /// hold lapsed.
+    public func resubmit(_ submission: SignedSubmission) async throws -> BroadcastResult {
+        let submitURL = try txSubmitURL()
+        let account = NonceAccount(did: submission.did, api: config.apiUrl ?? "")
+        let result = try await nonces.resubmit(submission, on: account) { body in
+            try await self.broadcast(body, to: submitURL, resubmission: true)
+        }
+        return result.with(submission)
+    }
+
+    /// Posts a `/tx/submit` body and reads the outcome for its nonce. An
+    /// answer that leaves the transaction's fate unknown (a 5xx or a 408,
+    /// even in JSON) is thrown as an `HTTPError`, so the write throws a
+    /// `TransactionSubmitError`. For a resubmission, the node already holding
+    /// the identical transaction counts as accepted.
+    private func broadcast(_ body: Data, to url: URL, resubmission: Bool = false) async throws -> (BroadcastResult, NonceOutcome) {
+        let (result, status) = try await broadcastBody(body, to: url)
+        let message = result.errorMessage ?? result.rawLog ?? "HTTP \(status)"
+        if resubmission, !result.success, message.contains("tx already exists in cache") {
+            return (BroadcastResult(success: true, rawLog: message), .accepted)
+        }
+        let outcome = NonceOutcome.submission(status: status, result: result)
+        if outcome == .unknown {
+            throw HTTPError(statusCode: status, message: message)
+        }
+        return (result, outcome)
     }
 
     /// `did`'s nonce state: the base and the nonces used above it from the

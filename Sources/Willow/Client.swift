@@ -357,14 +357,49 @@ public class WillowClient {
     /// A transaction the API refuses (CheckTx, or a 4xx before it) gives its
     /// nonce back, unless the refusal says the nonce is held by a pending
     /// transaction, already used, or spent. A submission whose fate is unknown
-    /// (a network error or a 5xx) may still land, so its nonce stays held for
-    /// 120 s (the node holds a pending transaction's nonce for 3 blocks or
-    /// 120 s, whichever ends first).
+    /// (a network error, a 5xx, or a 408) may still land, so its nonce stays
+    /// held for 120 s (the node holds a pending transaction's nonce for 3
+    /// blocks or 120 s, whichever ends first), and it is thrown as a
+    /// `TransactionSubmitError` carrying the signed transaction, to
+    /// `resubmit(_:)`. The result, and a CheckTx refusal (`TransactionError`),
+    /// carry it too.
     internal func submitUnderNextNonce(did: String, _ build: (Int) throws -> Data) async throws -> BroadcastResult {
         let account = NonceAccount(did: did, api: config.baseURL.absoluteString)
-        return try await nonces.submit(account, chain: try await accountNonces(did: did), build: build) { body in
+        let (result, submission) = try await nonces.signAndSend(account, chain: try await accountNonces(did: did), build: build) { body in
             (try await self.submitTransaction(body), .accepted)
         }
+        return result.with(submission)
+    }
+
+    /// Sends a write again under its own nonce: `submission` is the signed
+    /// transaction a `TransactionSubmitError`, a `TransactionError`, or a
+    /// `BroadcastResult` carries. Its body is sent unchanged, so whichever
+    /// copy lands first spends the nonce and the other is refused: the write
+    /// runs at most once. This is how to retry a write whose outcome is
+    /// unknown (`TransactionSubmitError`); calling the write again would sign
+    /// it under a fresh nonce, and both could run.
+    ///
+    /// The nonce is held while it is in flight, as for a new write. When the
+    /// node already holds the identical transaction ("tx already exists in
+    /// cache"), that counts as accepted: a successful result with no
+    /// transaction hash. Throws as the write does: `TransactionSubmitError`
+    /// when the outcome is again unknown (resubmit it again),
+    /// `TransactionError` when CheckTx refuses it (a refusal saying the nonce
+    /// is already used means some transaction under it landed, perhaps this
+    /// write's earlier copy: read what it wrote). Throws a transaction error
+    /// and sends nothing when this client has seen the nonce used, or has
+    /// handed it to another write after this one's 120 s hold lapsed.
+    public func resubmit(_ submission: SignedSubmission) async throws -> BroadcastResult {
+        let account = NonceAccount(did: submission.did, api: config.baseURL.absoluteString)
+        let result = try await nonces.resubmit(submission, on: account) { body -> (BroadcastResult, NonceOutcome) in
+            do {
+                return (try await self.submitTransaction(body), .accepted)
+            } catch let error as HTTPError where error.message.contains("tx already exists in cache") {
+                // The node's mempool holds these exact bytes: it is pending.
+                return (BroadcastResult(success: true, rawLog: error.message), .accepted)
+            }
+        }
+        return result.with(submission)
     }
 
     // MARK: - Root Hash
@@ -457,11 +492,12 @@ public class WillowClient {
     /// to the API's `POST /tx/submit`, which hands it to CheckTx.
     ///
     /// The API answers HTTP 200 with a nonzero `code` when CheckTx refuses the
-    /// transaction; that is thrown as a `TransactionError`. It is sent once: a
-    /// 5xx can follow a transaction that reached the mempool, and resending it
-    /// would be refused as a replay. A write refused in its block after its
-    /// signature and nonce verify still spends its nonce, so a retry is signed
-    /// again under a nonce not yet used.
+    /// transaction; that is thrown as a `TransactionError`. It is sent once,
+    /// with no automatic retry: a 5xx can follow a transaction that reached
+    /// the mempool. Such a write is retried with `resubmit(_:)`, under the
+    /// same nonce. A write refused in its block after its signature and nonce
+    /// verify spends its nonce, so a retry of that one is signed again under a
+    /// nonce not yet used.
     @discardableResult
     internal func submitTransaction(_ body: Data) async throws -> BroadcastResult {
         let (data, status) = try await sendRaw(method: "POST", base: config.baseURL, path: "/tx/submit", body: body, retry: false)
