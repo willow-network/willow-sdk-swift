@@ -91,6 +91,50 @@ final class TrustModelTests: XCTestCase {
         XCTAssertEqual(Set(stub.requests.filter { $0.url.host == "rpc.test" }.map { $0.path }), ["/status", "/commit", "/validators"])
     }
 
+    /// The default light client follows the chain the consensus RPC
+    /// reports. Two reads with a block carrying transactions between them:
+    /// the second's header is checked against the first's, chain ID
+    /// included, so a chain ID that isn't the RPC's fails every read after
+    /// the first header change.
+    func testTheDefaultLightClientFollowsTheChainTheRPCReports() async throws {
+        let now = Date()
+        let before = VerifiedReadsTests.dataTree([(Self.bob, #"{"balance":250}"#)])
+        let after = VerifiedReadsTests.dataTree([(Self.bob, #"{"balance":300}"#)])
+        let chainId = "willow-devnet-7"
+        // Block 41 changed the state; block 42 carries transactions too.
+        let first = StubChain(chainId: chainId, headers: [42: (before.hash.hexString, now.addingTimeInterval(-20))])
+        let second = StubChain(chainId: chainId, headers: [
+            42: (before.hash.hexString, now.addingTimeInterval(-20)), 43: (after.hash.hexString, now.addingTimeInterval(-10)),
+        ])
+        let tree = Locked((before, #"{"balance":250}"#, Int64(41)))
+        let chain = Locked(first)
+        let stub = Self.server(tree: tree, chain: chain)
+        let client = try stub.client(baseURL: "https://api.test", consensusRpcURL: "https://rpc.test")
+
+        let one = try await client.data.get(subgroveId: "sg", key: Self.bob)
+        XCTAssertEqual(one.data["balance"]?.value as? Int, 250)
+        XCTAssertEqual(one.proof?.header.height, 42)
+
+        tree.value = (after, #"{"balance":300}"#, 42)
+        chain.value = second
+        let two = try await client.data.get(subgroveId: "sg", key: Self.bob)
+        XCTAssertEqual(two.data["balance"]?.value as? Int, 300)
+        XCTAssertEqual(two.proof?.header.height, 43)
+        XCTAssertTrue(stub.requests.contains { $0.target == "/commit?height=43" })
+
+        // A chain ID the caller sets is required of the RPC.
+        let pinnedConfig = ClientConfig(
+            baseURL: URL(string: "https://api.test")!, consensusRpcURL: URL(string: "https://rpc.test"), chainId: "willow-chain")
+        let pinnedClient = WillowClient(config: pinnedConfig, session: stub.session, rpcSession: stub.session)
+        do {
+            _ = try await pinnedClient.data.get(subgroveId: "sg", key: Self.bob)
+            XCTFail("an RPC serving another chain was followed")
+        } catch let error as WillowError {
+            XCTAssertEqual(error.type, .lightClient, error.message)
+            XCTAssertTrue(error.message.contains(chainId), error.message)
+        }
+    }
+
     /// Only an API on this machine at port 3031 has its node's RPC derived
     /// (port 26657); any other API needs `consensusRpcURL`.
     func testOnlyALocalAPIsRPCIsDerived() throws {

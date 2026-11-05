@@ -89,8 +89,13 @@ public final class LightClient: @unchecked Sendable {
     }
 
     private static func makeSession(_ config: LightClientConfig) -> URLSession {
+        return makeSession(rpcTimeout: config.rpcTimeout)
+    }
+
+    /// A session for RPC requests that time out after `rpcTimeout`.
+    internal static func makeSession(rpcTimeout: TimeInterval) -> URLSession {
         let sessionConfig = URLSessionConfiguration.default
-        sessionConfig.timeoutIntervalForRequest = config.rpcTimeout
+        sessionConfig.timeoutIntervalForRequest = rpcTimeout
         return URLSession(configuration: sessionConfig)
     }
 
@@ -170,10 +175,13 @@ public final class LightClient: @unchecked Sendable {
         try locked {
             latestKnownHeight = max(latestKnownHeight, lightBlock.header.height)
             if trustedState == nil {
-                // WARNING: this trusts the first header received from the
-                // network. For production use, initialize the light client
-                // with a known trusted header using
-                // init(_:trustedHeader:validatorSet:) or init(_:trustedState:).
+                // The first header is taken as the endpoint serves it: the
+                // light client trusts the endpoints it reads. It must be of
+                // the configured chain.
+                guard lightBlock.header.chainId == config.chainId else {
+                    throw LightClientError(
+                        "The RPC endpoint serves the chain \(lightBlock.header.chainId), not \(config.chainId), the chain this light client is configured for")
+                }
                 rememberLocked(LightClient.trustedState(of: lightBlock))
             } else {
                 try acceptLocked(lightBlock)
@@ -697,6 +705,49 @@ public final class LightClient: @unchecked Sendable {
             validatorSet: validators,
             commit: commit.commit
         )
+    }
+
+    /// The chain ID of the CometBFT RPC at `endpoint`: the network its
+    /// `/status` reports (`node_info.network`), or, if it reports none, the
+    /// chain ID of its latest header (`/commit`).
+    internal static func chainId(at endpoint: String, session: URLSession) async throws -> String {
+        struct StatusResponse: Decodable {
+            struct Result: Decodable {
+                struct NodeInfo: Decodable {
+                    let network: String?
+                }
+                let node_info: NodeInfo?
+            }
+            let result: Result?
+        }
+        struct CommitResponse: Decodable {
+            struct Result: Decodable {
+                struct SignedHeader: Decodable {
+                    struct ChainHeader: Decodable {
+                        let chain_id: String
+                    }
+                    let header: ChainHeader
+                }
+                let signed_header: SignedHeader
+            }
+            let result: Result
+        }
+        guard let status = URL(string: "\(endpoint)/status"), let commit = URL(string: "\(endpoint)/commit") else {
+            throw LightClientError("Invalid endpoint URL: \(endpoint)")
+        }
+        let (statusData, _) = try await session.data(from: status)
+        try throwRPCError(statusData)
+        if let network = (try? JSONDecoder().decode(StatusResponse.self, from: statusData))?.result?.node_info?.network,
+           !network.isEmpty {
+            return network
+        }
+        let (commitData, _) = try await session.data(from: commit)
+        try throwRPCError(commitData)
+        let chainId = try JSONDecoder().decode(CommitResponse.self, from: commitData).result.signed_header.header.chain_id
+        guard !chainId.isEmpty else {
+            throw LightClientError("The RPC endpoint \(endpoint) reports no chain ID")
+        }
+        return chainId
     }
 
     /// The latest height an endpoint's CometBFT `/status` reports.

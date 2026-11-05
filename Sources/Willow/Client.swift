@@ -26,6 +26,10 @@ public struct ClientConfig {
     /// throw before sending anything. Never point it at the API: a header
     /// the API serves can't vouch for a proof the API serves.
     public let consensusRpcURL: URL?
+    /// The chain the default light client follows. Nil (the default) takes
+    /// the chain the consensus RPC reports (`/status` `node_info.network`);
+    /// set, a consensus RPC serving another chain is refused.
+    public let chainId: String?
 
     public init(
         baseURL: URL,
@@ -34,7 +38,8 @@ public struct ClientConfig {
         retryConfig: RetryConfig = .default,
         autoVerify: Bool = true,
         apiKey: String? = nil,
-        consensusRpcURL: URL? = nil
+        consensusRpcURL: URL? = nil,
+        chainId: String? = nil
     ) {
         self.baseURL = baseURL
         self.indexerURL = indexerURL
@@ -43,6 +48,7 @@ public struct ClientConfig {
         self.autoVerify = autoVerify
         self.apiKey = apiKey
         self.consensusRpcURL = consensusRpcURL
+        self.chainId = chainId
     }
 }
 
@@ -94,9 +100,11 @@ public class WillowClient {
     ///   - consensusRpcURL: The CometBFT RPC of a consensus node you run or
     ///     trust, which verified reads take their headers from (see
     ///     `ClientConfig.consensusRpcURL`).
+    ///   - chainId: The chain verified reads follow; nil takes the one the
+    ///     consensus RPC reports (see `ClientConfig.chainId`).
     public convenience init(
         baseURL: String, indexerURL: String? = nil, timeout: TimeInterval = 30, autoVerify: Bool = true, apiKey: String? = nil,
-        consensusRpcURL: String? = nil
+        consensusRpcURL: String? = nil, chainId: String? = nil
     ) throws {
         guard let url = URL(string: baseURL) else {
             throw ConfigError("Invalid base URL: \(baseURL)")
@@ -124,7 +132,7 @@ public class WillowClient {
 
         let config = ClientConfig(
             baseURL: url, indexerURL: parsedIndexerURL, timeout: timeout, autoVerify: autoVerify, apiKey: apiKey,
-            consensusRpcURL: parsedRpcURL
+            consensusRpcURL: parsedRpcURL, chainId: chainId
         )
 
         let sessionConfig = URLSessionConfiguration.default
@@ -186,9 +194,11 @@ public class WillowClient {
     /// It trusts that node, as a client trusts its own node: it takes the
     /// first header the node serves as served, and checks later ones only as
     /// `LightClient.verify(block:trustedState:)` does, without verifying
-    /// validator signatures. With neither, it throws a config error before
-    /// sending anything: a header the API serves can't vouch for a proof the
-    /// API serves.
+    /// validator signatures. It follows the chain `ClientConfig.chainId`
+    /// names, or, without one, the chain the RPC reports (its `/status`
+    /// `node_info.network`, else its latest header's chain ID). With no RPC,
+    /// it throws a config error before sending anything: a header the API
+    /// serves can't vouch for a proof the API serves.
     public func getOrCreateLightClient() async throws -> LightClient {
         // Return existing light client if available
         if let existing = lightClient {
@@ -208,10 +218,18 @@ public class WillowClient {
         }
 
         // Start initialization
-        let rpcSession = self.rpcSession
+        let session = self.rpcSession
+        let configuredChainId = config.chainId
         let task = Task<LightClient, Error> {
+            let rpcSession = session ?? LightClient.makeSession(rpcTimeout: LightClientConfig.default.rpcTimeout)
+            let chainId: String
+            if let configured = configuredChainId {
+                chainId = configured
+            } else {
+                chainId = try await LightClient.chainId(at: rpc, session: rpcSession)
+            }
             let lightClientConfig = LightClientConfig(
-                chainId: "willow-chain",
+                chainId: chainId,
                 validatorEndpoints: [rpc],
                 trustThreshold: TrustThreshold(numerator: 2, denominator: 3),
                 trustingPeriod: 86400, // 24 hours
@@ -220,9 +238,7 @@ public class WillowClient {
             )
 
             let lc = try LightClient(lightClientConfig)
-            if let rpcSession = rpcSession {
-                lc.session = rpcSession
-            }
+            lc.session = rpcSession
 
             // Take the consensus node's latest header as served.
             try await lc.sync()
