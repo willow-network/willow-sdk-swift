@@ -544,7 +544,7 @@ public class GroveDBVerifier {
         return GroveDBVerificationResult(
             rootHash: rootHash.hexString,
             results: tree.entries.map {
-                GroveDBQueryResult(path: expectedPath, key: $0.key, value: $0.value, isValueBound: $0.isValueBound)
+                GroveDBQueryResult(path: expectedPath, key: $0.key, value: $0.value, isValueBound: $0.isValueBound, nodeType: $0.nodeType)
             },
             coversWholeTree: tree.complete
         )
@@ -728,7 +728,7 @@ public class GroveDBVerifier {
                 }
             } else if let value = proved.value {
                 let bound = try checkLeafValue(proved, value)
-                results.append(GroveDBQueryResult(path: currentPath, key: proved.key, value: value, isValueBound: bound))
+                results.append(GroveDBQueryResult(path: currentPath, key: proved.key, value: value, isValueBound: bound, nodeType: proved.nodeType))
             }
         }
 

@@ -305,12 +305,17 @@ public struct GroveDBQueryResult {
     /// doesn't carry, so only the key is bound, and the bytes are whatever the
     /// proof says (they may not even be a tree's: the key may hold an item).
     public let isValueBound: Bool
+    /// The kind of Merk node that carried the result. An item is carried by
+    /// a `.kv` node; a reference by a `.kvRefValueHash` node, whose `value`
+    /// is the element it points to, not the element stored at `key`.
+    public let nodeType: MerkNodeType
 
-    public init(path: [[UInt8]], key: Data, value: Data, isValueBound: Bool = true) {
+    public init(path: [[UInt8]], key: Data, value: Data, isValueBound: Bool = true, nodeType: MerkNodeType = .kv) {
         self.path = path
         self.key = key
         self.value = value
         self.isValueBound = isValueBound
+        self.nodeType = nodeType
     }
 }
 

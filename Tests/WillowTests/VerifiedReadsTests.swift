@@ -193,6 +193,32 @@ final class VerifiedReadsTests: XCTestCase {
         XCTAssertThrowsError(try DataOperations.requireProven(subgroveId: "sg", key: "k", value: served, in: forged))
     }
 
+    /// A reference at the key: its node (KVRefValueHash) carries the element
+    /// it points to, an item, and binds it, but the key holds a reference.
+    func testAVerifiedGetRefusesAReferenceNode() throws {
+        let key: [UInt8] = Array("k".utf8)
+        let item = ProofBuilder.item(#"{"n":1}"#)
+        // Element::Reference's own bytes, which its node commits to only by
+        // their value hash.
+        let referenceHash = Willow.valueHash(Data([0x01, 0x00, 0x01, 0x01, 0x6b, 0x00, 0x00]))
+        let kv = kvDigestToKvHash(key: Data(key), valueHash: combineHash(referenceHash, Willow.valueHash(Data(item))))
+        let data = ProofBuilder.Built(
+            merk: [0x06, UInt8(key.count)] + key + [0, UInt8(item.count)] + item + referenceHash.bytes,
+            hash: computeNodeHash(kvHash: kv, leftHash: nullHash, rightHash: nullHash), rootKey: key, lower: [])
+        let root = ProofBuilder.layer(trees: [("subgroves", ProofBuilder.layer(trees: [("sg", ProofBuilder.layer(trees: [("data", data)]))]))])
+
+        let result = try GroveDBVerifier.verifyProof(proofBytes: root.proof, expectedPath: DataOperations.dataPath("sg"))
+        XCTAssertEqual(result.rootHash, root.hash.hexString)
+        XCTAssertEqual(result.results.map { $0.nodeType }, [.kvRefValueHash])
+        XCTAssertEqual(result.results.map { $0.isValueBound }, [true])
+        XCTAssertThrowsError(try DataOperations.requireProven(subgroveId: "sg", key: "k", value: ["n": AnyCodable(1)], in: result)) { error in
+            XCTAssertEqual((error as? WillowError)?.type, .proof)
+            XCTAssertTrue("\(error)".contains("not an item"), "\(error)")
+        }
+        // The query route refuses it too.
+        XCTAssertThrowsError(try DataOperations.answer(QueryRequest(), proof: root.proof, path: DataOperations.dataPath("sg")))
+    }
+
     func testAnEmptyTreeAtThePathIsProvenEmpty() throws {
         let root = ProofBuilder.layer(trees: [("subgroves", ProofBuilder.layer(trees: [
             ("notes", ProofBuilder.layer(trees: [("data", .empty)])),

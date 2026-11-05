@@ -16,8 +16,9 @@ public class DataOperations {
     ///
     /// Reads the value from `GET /data/{subgroveId}/{key}` and its proof
     /// from `GET /proof/{subgroveId}/{key}`. The proof must prove, in the
-    /// subgrove's data tree (`subgroves/{subgroveId}/data`), the key with the
-    /// value served, and its root must be the chain's app hash after the
+    /// subgrove's data tree (`subgroves/{subgroveId}/data`), the key holding
+    /// an item (a KV node; a reference is refused) with the value served, and
+    /// its root must be the chain's app hash after the
     /// block the proof's state is from. The proof is served with that
     /// block's height H; a header at H+1 carries the state after block H,
     /// and so does every later header up to and including the header of the
@@ -104,14 +105,16 @@ public class DataOperations {
     }
 
     /// Requires that `result` proves `key` in the subgrove's data tree with an
-    /// item whose bytes are the JSON of `value` (compared as JSON, since the API
-    /// re-serializes it), and returns the proven value.
+    /// item, carried by a KV node as grovedb proves one (a reference's node
+    /// carries the element it points to, not what the key holds), whose bytes
+    /// are the JSON of `value` (compared as JSON, since the API re-serializes
+    /// it), and returns the proven value.
     internal static func requireProven(subgroveId: String, key: String, value: [String: AnyCodable], in result: GroveDBVerificationResult) throws -> [String: AnyCodable] {
         let path = dataPath(subgroveId)
         guard let proved = result.results.first(where: { $0.path == path && $0.key == Data(key.utf8) }) else {
             throw ProofError("The proof does not prove key \(key) in \(subgroveId)'s data")
         }
-        guard proved.isValueBound, let itemBytes = groveItemBytes(proved.value) else {
+        guard proved.nodeType == .kv, proved.isValueBound, let itemBytes = groveItemBytes(proved.value) else {
             throw ProofError("The proven element for \(key) is not an item")
         }
         let served = NSDictionary(dictionary: value.mapValues { $0.value })
