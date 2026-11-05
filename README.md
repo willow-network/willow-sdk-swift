@@ -146,7 +146,7 @@ Owner: <owner DID>
 Nonce: <nonce>
 ```
 
-- StoreData carries its value, a JSON object, as the UTF-8 bytes of its JSON text, and `DataHash` is over those bytes. Anything but a JSON object is refused before signing.
+- StoreData carries its value, a JSON object, as the UTF-8 bytes of its JSON text, and `DataHash` is over those bytes. The SDK writes that text with sorted keys and each `Double` in its shortest form (`0.1`, not `JSONSerialization`'s `0.10000000000000001`), the text the node keeps, so a value it stores reads back verified, and `equals(field, 0.1)` matches a stored `0.1` (the node compares numbers by their text). Anything but a JSON object is refused before signing.
 - `Encryption` is `none` for a manifest with no encryption, else `<key epoch>:<hex 24-byte nonce>`.
 
 ### Registrations, key grants, and storage nodes

@@ -257,7 +257,7 @@ public class DataOperations {
         queryWithProof.includeProof = true
         // The body is written once: the query is answered from these bytes,
         // read as the node reads them, and these bytes are sent.
-        let body = try WillowClient.verbatimBody(queryWithProof)
+        let body = try queryWithProof.nodeBody()
         let plan = try NodeQueryPlan(body: body)
         let envelope: ApiResponse<ServedQueryProof> = try await client.postData(path: "/query/\(pathSegment(subgroveId))", body: body)
         let served = try client.unwrap(envelope, "query result")
@@ -297,7 +297,7 @@ public class DataOperations {
     /// the node's query route does (see `query(subgroveId:query:)`).
     internal static func answer(_ query: QueryRequest, proof: Data, path: [[UInt8]]) throws -> (rootHash: String, results: [QueryResult], total: Int) {
         try query.validateForNode()
-        return try answer(NodeQueryPlan(body: WillowClient.verbatimBody(query)), proof: proof, path: path)
+        return try answer(NodeQueryPlan(body: query.nodeBody()), proof: proof, path: path)
     }
 
     internal static func answer(_ plan: NodeQueryPlan, proof: Data, path: [[UInt8]]) throws -> (rootHash: String, results: [QueryResult], total: Int) {
@@ -450,8 +450,7 @@ public class DataOperations {
     public func queryUnverified(subgroveId: String, query: QueryRequest) async throws -> QueryResponse {
         guard let client = client else { throw NetworkError("Client deallocated") }
 
-        try query.validateForNode()
-        let envelope: ApiResponse<QueryResponse> = try await client.postVerbatim(path: "/query/\(pathSegment(subgroveId))", body: query)
+        let envelope: ApiResponse<QueryResponse> = try await client.postData(path: "/query/\(pathSegment(subgroveId))", body: try query.nodeBody())
         var response = try client.unwrap(envelope, "query result")
 
         // Apply computed fields if registered
@@ -468,9 +467,13 @@ public class DataOperations {
     /// identity and submitted to `POST /tx/submit` (the API serves no data
     /// write route: writes go through consensus).
     ///
-    /// `data` is serialized once, with sorted keys; the transaction carries
-    /// that JSON text's UTF-8 bytes under the identity's next nonce, signed
-    /// over `storeDataMessage`. A subgrove ID, key, or DID holding a line
+    /// `data` is serialized once, with sorted keys and each `Double` in its
+    /// shortest form (`0.1` as `0.1`, which `JSONSerialization` would write
+    /// as `0.10000000000000001`): the text the node keeps, which `get` and
+    /// `query` return as that same `Double`, and which an equality filter on
+    /// the same `Double` matches. The transaction carries that JSON text's
+    /// UTF-8 bytes under the identity's next nonce, signed over
+    /// `storeDataMessage`. A subgrove ID, key, or DID holding a line
     /// break is refused with a validation error before anything is signed.
     ///
     /// The nonce is the lowest one above the account's base that the client

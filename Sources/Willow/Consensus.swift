@@ -621,8 +621,10 @@ public class ConsensusClient {
 
     /// Store data on the blockchain as a `StoreData` transaction.
     ///
-    /// `data` (a JSON object) is serialized once, with sorted keys; the
-    /// transaction carries that JSON text's UTF-8 bytes. `signFunction` signs
+    /// `data` (a JSON object) is serialized once, with sorted keys and each
+    /// `Double` in its shortest form, the text the node keeps and a verified
+    /// read returns as that same `Double`; the transaction carries that JSON
+    /// text's UTF-8 bytes. `signFunction` signs
     /// `storeDataMessage` over the subgrove ID, key, owner DID, the SHA-256 of
     /// those bytes, and the transaction's nonce. Anything but a JSON object
     /// (the node refuses it in the block, spending the nonce), or a subgrove
@@ -1170,18 +1172,15 @@ internal func deregisterSubgroveMessage(subgroveId: String, ownerDid: String, no
 }
 
 /// `data` as the JSON text a StoreData transaction carries: serialized once,
-/// with sorted keys. Refuses anything but a JSON object.
+/// with sorted keys, each number written as `WireJSON.foundation` writes it
+/// (a `Double` in its shortest form), which is the text the node stores and
+/// a verified read returns as that same value. Refuses anything but a JSON
+/// object.
 internal func storeDataText(_ data: Any) throws -> String {
-    // JSONSerialization raises an Objective-C exception, which Swift cannot
-    // catch, for anything it can't write, so check first.
-    guard data is [String: Any], JSONSerialization.isValidJSONObject(data) else {
+    guard data is [String: Any] else {
         throw ValidationError("data must be a JSON object")
     }
-    let jsonData = try JSONSerialization.data(withJSONObject: data, options: .sortedKeys)
-    guard let text = String(data: jsonData, encoding: .utf8) else {
-        throw ValidationError("data did not serialize as UTF-8")
-    }
-    return text
+    return String(decoding: try WireJSON.foundation(data).serialized, as: UTF8.self)
 }
 
 /// A StoreData transaction under `nonce`, signed with `sign` over

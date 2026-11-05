@@ -611,6 +611,34 @@ public struct QueryRequest: Codable {
         try container.encode(includeProof, forKey: .includeProof)
     }
 
+    /// The body `data.query` and `data.queryUnverified` send: the node's form,
+    /// as `encode(to:)` writes it, with sorted keys and the filter's value
+    /// written as `data.store` writes a value (`WireJSON.foundation`: a
+    /// `Double` in its shortest form), so `equals(field, 0.1)` sends the text
+    /// a stored `0.1` holds and the node's comparison of number text matches
+    /// it. Throws for a request the node can't run (`validateForNode()`).
+    internal func nodeBody() throws -> Data {
+        try validateForNode()
+        var members: [WireJSON.Member] = []
+        if let filter = filters.first {
+            members.append(WireJSON.Member("filters", .object([WireJSON.Member(filter.field, try WireJSON.foundation(filter.value.value))])))
+        }
+        members.append(WireJSON.Member("include_proof", .bool(includeProof)))
+        if let limit = limit {
+            members.append(WireJSON.Member("limit", .number(String(limit))))
+        }
+        if let offset = offset {
+            members.append(WireJSON.Member("offset", .number(String(offset))))
+        }
+        if let sort = sort {
+            members.append(WireJSON.Member("sort", .object([
+                WireJSON.Member("field", .string(sort.field)),
+                WireJSON.Member("order", .string(sort.ascending ? "asc" : "desc")),
+            ])))
+        }
+        return WireJSON.object(members).serialized
+    }
+
     /// Throws a validation error for a request the node's query route can't
     /// run as asked: more than one filter, a filter other than `eq` or whose
     /// value is a JSON object (the node would drop it), a search, or a

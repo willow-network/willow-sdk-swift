@@ -44,8 +44,9 @@ struct Note: Identifiable, Codable, Equatable {
             "content": content,
             "category": category.rawValue,
             "tags": tags,
-            "created": created.timeIntervalSince1970 * 1000,
-            "updated": updated.timeIntervalSince1970 * 1000,
+            // Whole milliseconds since 1970, stored as integers.
+            "created": Int64((created.timeIntervalSince1970 * 1000).rounded()),
+            "updated": Int64((updated.timeIntervalSince1970 * 1000).rounded()),
             "pinned": pinned
         ]
     }
@@ -61,8 +62,9 @@ struct Note: Identifiable, Codable, Equatable {
         let categoryRaw = dict["category"] as? String ?? "personal"
         let category = NoteCategory(rawValue: categoryRaw) ?? .personal
         let tags = dict["tags"] as? [String] ?? []
-        let createdMs = dict["created"] as? Double ?? Date().timeIntervalSince1970 * 1000
-        let updatedMs = dict["updated"] as? Double ?? Date().timeIntervalSince1970 * 1000
+        // An integer (or, from an older note, a fractional number) of milliseconds.
+        let createdMs = (dict["created"] as? NSNumber)?.doubleValue ?? Date().timeIntervalSince1970 * 1000
+        let updatedMs = (dict["updated"] as? NSNumber)?.doubleValue ?? Date().timeIntervalSince1970 * 1000
         let pinned = dict["pinned"] as? Bool ?? false
 
         return Note(

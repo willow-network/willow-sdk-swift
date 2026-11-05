@@ -467,10 +467,11 @@ final class VerifiedReadsTests: XCTestCase {
         XCTAssertEqual(try keys(QueryBuilder().equals("n", 100).build()), [], "1E2 is kept as 1e+2, not 100")
         XCTAssertEqual(try keys(QueryBuilder().equals("n", NSNumber(value: 1)).build()), ["a"], "an NSNumber 1 is a number, not true")
 
-        // A Double goes out as the encoder writes it, and is compared as that text.
+        // A Double goes out in its shortest form, 1.0 as 1.0, as data.store
+        // writes it, and is compared as that text.
         let request = QueryBuilder().equals("n", 1.0).build()
-        let sent = try XCTUnwrap(String(data: WillowClient.verbatimBody(request), encoding: .utf8))
-        XCTAssertEqual(try keys(request), sent.contains(#""n":1}"#) ? ["a"] : ["b"], sent)
+        XCTAssertEqual(String(decoding: try request.nodeBody(), as: UTF8.self), #"{"filters":{"n":1.0},"include_proof":false}"#)
+        XCTAssertEqual(try keys(request), ["b"])
         let one = try DataOperations.answer(QueryBuilder().equals("n", 1).build(), proof: root.proof, path: path)
         XCTAssertEqual(one.results.first?.data["n"]?.value as? Int, 1)
         XCTAssertEqual(one.total, 1)

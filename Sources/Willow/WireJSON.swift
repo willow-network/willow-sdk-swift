@@ -447,3 +447,85 @@ extension WireJSON {
         }
     }
 }
+
+// MARK: - Foundation Values
+
+extension WireJSON {
+    /// A Foundation JSON value (what `JSONSerialization` takes or makes, or
+    /// Swift's numbers, strings, arrays, and dictionaries), written so the
+    /// node keeps each number's text and the SDK's verified reads return the
+    /// value written:
+    ///
+    /// - an object's keys sorted;
+    /// - a `Double` (or `Float`, or an `NSNumber` holding one) as its
+    ///   shortest decimal form, `Double.description`, which reads back as the
+    ///   same `Double` (`0.1` is `0.1`, not `0.10000000000000001`; `5.0` is
+    ///   `5.0`);
+    /// - an integer as its decimal digits, a `Decimal` as written, and an
+    ///   `NSNumber` that is a `CFBoolean` (or a Swift `Bool`) as a boolean.
+    ///
+    /// Refuses a value that isn't JSON: a number that isn't finite, a
+    /// dictionary whose keys aren't strings, or any other type.
+    static func foundation(_ value: Any) throws -> WireJSON {
+        if let bool = AnyCodable.boolean(value) {
+            return .bool(bool)
+        }
+        switch value {
+        case is NSNull:
+            return .null
+        case let text as String:
+            return .string(text)
+        case let array as [Any]:
+            return .array(try array.map { try foundation($0) })
+        case let object as [String: Any]:
+            return .object(try object.keys.sorted().map { Member($0, try foundation(object[$0]!)) })
+        default:
+            return .number(try numberText(value))
+        }
+    }
+
+    /// A number's JSON text: Swift's own number types by their exact type
+    /// (a Swift `Double` in an `Any` also casts to `Int` when it is whole,
+    /// so the type is checked, not the cast), then an `NSNumber` by what it
+    /// holds.
+    private static func numberText(_ value: Any) throws -> String {
+        let type = Swift.type(of: value)
+        func double(_ number: Double) throws -> String {
+            guard number.isFinite else {
+                throw ValidationError("\(number) isn't a JSON number")
+            }
+            return number.description
+        }
+        switch type {
+        case is Double.Type: return try double(value as! Double)
+        case is Float.Type: return try double(Double(value as! Float))
+        case is Int.Type: return String(value as! Int)
+        case is Int8.Type: return String(value as! Int8)
+        case is Int16.Type: return String(value as! Int16)
+        case is Int32.Type: return String(value as! Int32)
+        case is Int64.Type: return String(value as! Int64)
+        case is UInt.Type: return String(value as! UInt)
+        case is UInt8.Type: return String(value as! UInt8)
+        case is UInt16.Type: return String(value as! UInt16)
+        case is UInt32.Type: return String(value as! UInt32)
+        case is UInt64.Type: return String(value as! UInt64)
+        case is Decimal.Type: return try decimal((value as! Decimal).description)
+        default: break
+        }
+        if let number = value as? NSDecimalNumber {
+            return try decimal(number.description)
+        }
+        if let number = value as? NSNumber {
+            return CFNumberIsFloatType(number) ? try double(number.doubleValue) : number.stringValue
+        }
+        throw ValidationError("A value of type \(type) isn't a JSON value")
+    }
+
+    /// A `Decimal`'s text, which must be one JSON number.
+    private static func decimal(_ text: String) throws -> String {
+        guard (try? NodeJSON.numberText(Array(text.utf8))) != nil else {
+            throw ValidationError("\(text) isn't a JSON number")
+        }
+        return text
+    }
+}
