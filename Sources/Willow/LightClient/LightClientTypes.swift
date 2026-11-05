@@ -42,7 +42,16 @@ public struct LightClientConfig {
     /// any age: the header after a proof's block may be read long after it
     /// was made.
     public let maxClockDrift: TimeInterval
+    /// How many of a header's validators must have a commit signature
+    /// present (the signatures aren't verified) for the header to be
+    /// accepted. Default 1: a chain of one validator has one.
     public let minValidatorsForConsensus: Int
+    /// How many of `validatorEndpoints` must answer `/status` for
+    /// `LightClient.latestChainHeight()`, which every verified read asks, to
+    /// report the chain's latest height (at least 1). Default 1, so one
+    /// trusted RPC serves verified reads; raise it to require that several
+    /// endpoints agree.
+    public let minEndpointsForLatestHeight: Int
     public let autoSync: Bool
     public let syncInterval: TimeInterval
     public let rpcTimeout: TimeInterval
@@ -70,7 +79,8 @@ public struct LightClientConfig {
         rpcTimeout: TimeInterval = 10,
         maxRetries: Int = 3,
         headerWaitTimeout: TimeInterval = 30,
-        maxProofLagBlocks: Int64 = 20
+        maxProofLagBlocks: Int64 = 20,
+        minEndpointsForLatestHeight: Int = 1
     ) {
         self.chainId = chainId
         self.validatorEndpoints = validatorEndpoints
@@ -84,6 +94,7 @@ public struct LightClientConfig {
         self.maxRetries = maxRetries
         self.headerWaitTimeout = headerWaitTimeout
         self.maxProofLagBlocks = maxProofLagBlocks
+        self.minEndpointsForLatestHeight = minEndpointsForLatestHeight
     }
 
     public static var `default`: LightClientConfig {

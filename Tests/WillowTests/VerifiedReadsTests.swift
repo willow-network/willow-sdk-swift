@@ -943,9 +943,10 @@ final class VerifiedReadsTests: XCTestCase {
             guard request.path == "/status", let height = heights[request.url.host ?? ""] else { return (404, "") }
             return height > 0 ? StubChain.status(height) : (500, "")
         }
-        func latest(_ hosts: [String], needed: Int = 1, pinned: Int64 = 1) async throws -> Int64 {
+        func latest(_ hosts: [String], needed: Int = 1, pinned: Int64 = 1, validators: Int = 1) async throws -> Int64 {
             let config = LightClientConfig(
-                chainId: "willow-chain", validatorEndpoints: hosts.map { "http://\($0)" }, minValidatorsForConsensus: needed, autoSync: false)
+                chainId: "willow-chain", validatorEndpoints: hosts.map { "http://\($0)" }, minValidatorsForConsensus: validators,
+                autoSync: false, minEndpointsForLatestHeight: needed)
             let lc = try LightClient(config, trustedState: TrustedState(
                 header: TrustedHeader(height: pinned, appHash: "00"), validatorSet: ValidatorSet(validators: [])))
             lc.session = stub.session
@@ -961,6 +962,10 @@ final class VerifiedReadsTests: XCTestCase {
         XCTAssertEqual(one, 5_000)
         let three = try await latest(["a.test", "b.test", "c.test"], needed: 3)
         XCTAssertEqual(three, 100)
+        // How many validators must sign a header doesn't set how many
+        // endpoints must answer: one trusted RPC serves the latest height.
+        let oneRPC = try await latest(["a.test"], validators: 3)
+        XCTAssertEqual(oneRPC, 100)
         // The highest accepted header, if higher.
         let pinned = try await latest(["a.test"], pinned: 150)
         XCTAssertEqual(pinned, 150)

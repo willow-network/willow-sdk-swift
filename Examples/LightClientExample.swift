@@ -19,25 +19,31 @@ struct LightClientExample {
         print()
 
         do {
-            // 1. Configure light client with multiple validators
+            // 1. Configure a light client on the local node's consensus RPC,
+            //    following the chain that RPC reports. List more endpoints
+            //    (and raise minEndpointsForLatestHeight) to require that
+            //    several agree on the chain's latest height.
             print("1. Configuring light client...")
+            let rpc = "http://localhost:26657"
+            let status = try await ConsensusClient(ConsensusConfig(consensusRpcUrl: rpc)).getStatus()
+            guard let chainId = (status["node_info"] as? [String: Any])?["network"] as? String else {
+                print("   The RPC at \(rpc) reports no chain ID")
+                return
+            }
             let lcConfig = LightClientConfig(
-                chainId: "willow-testnet",
-                validatorEndpoints: [
-                    "http://localhost:26657",
-                    "http://localhost:26757",
-                    "http://localhost:26857"
-                ],
+                chainId: chainId,
+                validatorEndpoints: [rpc],
                 trustThreshold: TrustThreshold(numerator: 2, denominator: 3),
                 trustingPeriod: 24 * 60 * 60, // 24 hours
                 maxClockDrift: 10, // 10 seconds
-                minValidatorsForConsensus: 2,
+                minValidatorsForConsensus: 1,
                 autoSync: true,
-                syncInterval: 5 * 60 // 5 minutes
+                syncInterval: 5 * 60, // 5 minutes
+                minEndpointsForLatestHeight: 1
             )
 
-            print("   Chain ID: willow-testnet")
-            print("   Validators: 3 endpoints configured")
+            print("   Chain ID: \(chainId)")
+            print("   Endpoints: \(lcConfig.validatorEndpoints.joined(separator: ", "))")
             print("   Trust threshold: 2/3")
             print("   Trusting period: 24 hours")
             print()

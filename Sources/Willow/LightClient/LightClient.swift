@@ -586,7 +586,7 @@ public final class LightClient: @unchecked Sendable {
 
     /// The chain's latest height as the configured endpoints report it
     /// (CometBFT's `/status`): the highest height that a majority of the
-    /// endpoints that answer, and at least `minValidatorsForConsensus` of
+    /// endpoints that answer, and at least `minEndpointsForLatestHeight` of
     /// them, have reached (the lower median of their heights), or the highest
     /// header this client has accepted if that is higher. An endpoint
     /// reporting a height far above or below the others' moves it only with
@@ -595,7 +595,7 @@ public final class LightClient: @unchecked Sendable {
     /// `verifyAppHash(_:forStateAfter:)`).
     ///
     /// Throws a light client error when fewer than
-    /// `minValidatorsForConsensus` endpoints (and at least one) answer.
+    /// `minEndpointsForLatestHeight` endpoints (and at least one) answer.
     public func latestChainHeight() async throws -> Int64 {
         let endpoints = config.validatorEndpoints
         let answers: [Int64] = await withTaskGroup(of: Int64?.self) { group in
@@ -611,7 +611,7 @@ public final class LightClient: @unchecked Sendable {
             return heights
         }
         let heights = answers.sorted(by: >)
-        let needed = max(1, config.minValidatorsForConsensus)
+        let needed = max(1, config.minEndpointsForLatestHeight)
         guard heights.count >= needed else {
             throw LightClientError(
                 "Only \(heights.count) of \(endpoints.count) endpoints reported the chain's latest height; \(needed) are needed")
