@@ -72,7 +72,9 @@ class NotesViewModel: ObservableObject {
             let response: QueryResponse
             do {
                 // Checked against a GroveDB proof of the whole notes tree and
-                // the light client's header; throws when it can't be checked.
+                // the header of the consensus node the client reads (for the
+                // local API, its node's RPC at port 26657); throws when it
+                // can't be checked.
                 response = try await client.data.query(subgroveId: appState.collectionId, query: request)
                 listVerified = true
                 verificationNote = nil
