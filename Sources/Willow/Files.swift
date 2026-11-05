@@ -221,6 +221,9 @@ public class FileOperations {
                 try await client.submitTransaction(body)
             } catch let refused as TransactionError {
                 throw refused
+            } catch let refused as HTTPError where (400...499).contains(refused.statusCode) && refused.statusCode != 408 {
+                // The API refused the body before CheckTx: nothing can land.
+                throw refused
             } catch {
                 unknownOutcome = error
             }
@@ -241,7 +244,8 @@ public class FileOperations {
         // Upload chunks to the storage node, which takes one only once the
         // manifest is on chain: it answers 403 until then, and 503 while it
         // can't read the chain.
-        let deadline = Date().addingTimeInterval(landingTimeout)
+        var deadline = Date().addingTimeInterval(landingTimeout)
+        let pause = pollInterval.isFinite ? min(max(0, pollInterval), 60) : 1
         for (i, chunk) in chunks.enumerated() {
             var request = URLRequest(url: chunkURLs[i])
             request.httpMethod = "POST"
@@ -256,12 +260,17 @@ public class FileOperations {
                 } catch is URLError {
                     status = nil
                 }
-                if let status = status, (200...299).contains(status) { break }
+                if let status = status, (200...299).contains(status) {
+                    // A chunk taken shows the manifest is on chain: the next
+                    // chunks get their own landing time for a passing refusal.
+                    deadline = Date().addingTimeInterval(landingTimeout)
+                    break
+                }
                 guard status == nil || status == 403 || status == 503, Date() < deadline else {
                     if let unknownOutcome = unknownOutcome { throw unknownOutcome }
                     throw NetworkError("Failed to upload chunk \(i)")
                 }
-                try await Task.sleep(nanoseconds: UInt64(max(0, pollInterval) * 1_000_000_000))
+                try await Task.sleep(nanoseconds: UInt64(pause * 1_000_000_000))
             }
         }
 

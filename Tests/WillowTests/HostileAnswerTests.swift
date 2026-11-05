@@ -232,4 +232,22 @@ final class HostileAnswerTests: XCTestCase {
         }.value
         XCTAssertEqual(errors, [.notVerifiable, .notVerifiable])
     }
+
+    /// The decoders read UTF-16 and UTF-32 JSON, whose bytes the nesting scan
+    /// would misread (a character's `22 01` closes no string): an answer
+    /// holding a NUL byte is refused before decoding.
+    func testAnAnswerNotInUTF8IsRefusedBeforeDecoding() throws {
+        let deep = #"{"success":true,"data":{"a":["\#u{0122}","# + String(repeating: "[", count: 505) + "0"
+            + String(repeating: "]", count: 505) + "]}}"
+        let utf16 = Data(deep.utf16.flatMap { [UInt8($0 & 0xff), UInt8($0 >> 8)] })
+        XCTAssertThrowsError(try HTTPBody.checkNesting(utf16))
+        XCTAssertNoThrow(try HTTPBody.checkNesting(Data(#"{"a":[[1]]}"#.utf8)))
+    }
+
+    /// CometBFT's `block` answer carries a block of up to 21 MiB in base64.
+    func testABlockIsReadUnderItsOwnCap() {
+        XCTAssertEqual(ConsensusClient.rpcAnswerLimit("block"), 32 << 20)
+        XCTAssertEqual(ConsensusClient.rpcAnswerLimit("tx"), 12 << 20)
+        XCTAssertEqual(ConsensusClient.rpcAnswerLimit("status"), 4 << 20)
+    }
 }

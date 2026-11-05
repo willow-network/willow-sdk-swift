@@ -33,6 +33,9 @@ internal enum ResponseLimit {
     /// `tx` (a transaction of at most `max_tx_bytes`, 4 MiB, is 5.4 MiB in
     /// base64, with its result beside it).
     static let tx = 12 << 20
+    /// CometBFT's `block`: a block of at most `block.max_bytes`, 21 MiB, carries
+    /// its transactions in base64, 28 MiB, with its header and last commit.
+    static let block = 32 << 20
     /// Answers whose size the request sets, or that the node doesn't bound:
     /// a `/query` page (100 documents unless the query sets a limit), GraphQL
     /// and SQL answers, a historical query, a block's matched logs, Ethereum
@@ -94,12 +97,19 @@ internal enum HTTPBody {
     /// `maxJSONDepth` deep, with `ResponseTooLargeError`, before it is
     /// decoded: a scan of its bytes that counts `[` and `{` against `]` and
     /// `}`, skipping what is inside strings (a `\` escapes the byte after
-    /// it). Text that isn't JSON is left for the decoder to refuse.
+    /// it). Text that isn't JSON is left for the decoder to refuse. A NUL byte
+    /// is refused too: UTF-8 JSON never holds one, and the decoders also read
+    /// UTF-16 and UTF-32 text, whose bytes this scan would misread.
     static func checkNesting<Bytes: Sequence>(_ text: Bytes) throws where Bytes.Element == UInt8 {
         var depth = 0
         var inString = false
         var escaped = false
         for byte in text {
+            if byte == 0 {
+                throw WillowError(
+                    type: .responseTooLarge,
+                    message: "The answer isn't UTF-8 JSON (it holds a NUL byte); the SDK reads only UTF-8")
+            }
             if inString {
                 if escaped {
                     escaped = false

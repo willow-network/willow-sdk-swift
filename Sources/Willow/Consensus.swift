@@ -1097,11 +1097,20 @@ public class ConsensusClient {
     }
 
     /// A CometBFT JSON-RPC call's `result`, read under the cap for `method`
-    /// (12 MiB for `tx`, 4 MiB for the rest), in at most `maxRetries + 1`
+    /// (12 MiB for `tx`, 32 MiB for `block`, 4 MiB for the rest), in at most `maxRetries + 1`
     /// attempts (the config's retries unless given). An answer past its cap
     /// isn't retried.
+    /// The cap on a CometBFT JSON-RPC answer to `method`.
+    static func rpcAnswerLimit(_ method: String) -> Int {
+        switch method {
+        case "tx": return ResponseLimit.tx
+        case "block": return ResponseLimit.block
+        default: return ResponseLimit.small
+        }
+    }
+
     private func rpcRequest(method: String, params: [String: Any], maxRetries: Int? = nil) async throws -> [String: Any] {
-        let limit = method == "tx" ? ResponseLimit.tx : ResponseLimit.small
+        let limit = Self.rpcAnswerLimit(method)
         let rpcBody: [String: Any] = [
             "jsonrpc": "2.0",
             "id": 1,
