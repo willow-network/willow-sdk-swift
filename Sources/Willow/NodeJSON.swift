@@ -111,10 +111,11 @@ internal indirect enum NodeJSON: Equatable {
     }
 
     /// The value as Foundation types: `NSNull`, `Bool`, `Int` for an integer
-    /// that fits, `Double` for any other number, `String`, `[Any]`, and
-    /// `[String: Any]`. Throws `unsupported` for a number outside `Double`'s
-    /// range, and for an object two of whose keys are different bytes but
-    /// the same Swift `String` (Unicode canonical equivalents).
+    /// that fits, `Double` for any other number that a `Double` carries
+    /// exactly, `String`, `[Any]`, and `[String: Any]`. Throws `unsupported`
+    /// for any other number (see `exactDouble(_:)`), and for an object two of
+    /// whose keys are different bytes but the same Swift `String` (Unicode
+    /// canonical equivalents).
     func foundationValue() throws -> Any {
         switch self {
         case .null:
@@ -125,8 +126,8 @@ internal indirect enum NodeJSON: Equatable {
             if !text.contains("."), !text.contains("e"), let int = Int(text) {
                 return int
             }
-            guard let double = Double(text), double.isFinite else {
-                throw ReadError.unsupported("the number \(text) is outside Double's range")
+            guard let double = NodeJSON.exactDouble(text) else {
+                throw ReadError.unsupported("the number \(text) can't be returned exactly: a Double would round it")
             }
             return double
         case .string(let bytes):
@@ -143,6 +144,82 @@ internal indirect enum NodeJSON: Equatable {
                 out[name] = try object[key]!.foundationValue()
             }
             return out
+        }
+    }
+
+    /// The `Double` that is the number `text` writes: one whose shortest
+    /// decimal form (the digits Swift prints, which read back as the same
+    /// `Double`) is that number. So `0.1` and `1e+19` have one, and
+    /// `0.12345678901234567890`, `18446744073709551615`, and `1e+400` (out of
+    /// range) don't: a `Double` would round them, and another number's text
+    /// would give the same `Double`.
+    static func exactDouble(_ text: String) -> Double? {
+        guard let double = Double(text), double.isFinite,
+              let written = DecimalValue(text), let held = DecimalValue(double.description), written == held else {
+            return nil
+        }
+        return double
+    }
+
+    /// A decimal number written as JSON or as Swift prints a `Double`: its
+    /// sign, its significant digits (without leading or trailing zeros; none
+    /// for zero), and the power of ten of the last of them.
+    private struct DecimalValue: Equatable {
+        let negative: Bool
+        let digits: [UInt8]
+        let exponent: Int
+
+        init?(_ text: String) {
+            var rest = Array(text.utf8)[...]
+            negative = rest.first == UInt8(ascii: "-")
+            if negative {
+                rest = rest.dropFirst()
+            }
+            var all: [UInt8] = []
+            var fractionDigits = 0
+            var inFraction = false
+            while let byte = rest.first {
+                if (0x30...0x39).contains(byte) {
+                    all.append(byte)
+                    fractionDigits += inFraction ? 1 : 0
+                } else if byte == UInt8(ascii: "."), !inFraction {
+                    inFraction = true
+                } else {
+                    break
+                }
+                rest = rest.dropFirst()
+            }
+            guard !all.isEmpty else { return nil }
+            var power = 0
+            if let byte = rest.first, byte == UInt8(ascii: "e") || byte == UInt8(ascii: "E") {
+                rest = rest.dropFirst()
+                let minus = rest.first == UInt8(ascii: "-")
+                if minus || rest.first == UInt8(ascii: "+") {
+                    rest = rest.dropFirst()
+                }
+                guard !rest.isEmpty, rest.allSatisfy({ (0x30...0x39).contains($0) }) else { return nil }
+                // Past a Double's range either way; held at a bound that
+                // can't overflow.
+                for byte in rest {
+                    power = min(power * 10 + Int(byte - 0x30), 100_000_000)
+                }
+                power = minus ? -power : power
+                rest = rest.dropFirst(rest.count)
+            }
+            guard rest.isEmpty else { return nil }
+            guard let first = all.firstIndex(where: { $0 != 0x30 }) else {
+                digits = []
+                exponent = 0
+                return
+            }
+            var significant = Array(all[first...])
+            power -= fractionDigits
+            while significant.last == 0x30 {
+                significant.removeLast()
+                power += 1
+            }
+            digits = significant
+            exponent = power
         }
     }
 

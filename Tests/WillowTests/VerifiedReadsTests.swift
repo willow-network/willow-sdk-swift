@@ -503,6 +503,67 @@ final class VerifiedReadsTests: XCTestCase {
         }
     }
 
+    /// A verified result carries a number only as an `Int`, or as the
+    /// `Double` that is the number; one a `Double` would round isn't returned.
+    func testAVerifiedResultRefusesANumberADoubleWouldRound() throws {
+        let numbers: [(String, String)] = [
+            ("a", "0.1"), ("b", "0.12345678901234567890"), ("c", "18446744073709551615"), ("d", "1E19"),
+            ("e", "9223372036854775807"), ("f", "9223372036854775808"), ("g", "0.30000000000000004"), ("h", "-0.0"),
+        ]
+        let root = Self.dataTree(numbers.map { ($0.0, #"{"k":"\#($0.0)","n":\#($0.1)}"#) })
+        let path = DataOperations.dataPath("sg")
+        func n(_ key: String) throws -> Any? {
+            let answer = try DataOperations.answer(QueryBuilder().equals("k", key).build(), proof: root.proof, path: path)
+            XCTAssertEqual(answer.results.map { $0.key }, [key])
+            return answer.results.first?.data["n"]?.value
+        }
+        XCTAssertEqual(try n("a") as? Double, 0.1)
+        XCTAssertEqual(try n("d") as? Double, 1e19)
+        XCTAssertEqual(try n("e") as? Int, Int.max)
+        XCTAssertEqual(try n("g") as? Double, 0.1 + 0.2)
+        XCTAssertEqual((try n("h") as? Double)?.sign, .minus)
+        for rounded in ["b", "c", "f"] {
+            XCTAssertThrowsError(try n(rounded), rounded) { error in
+                XCTAssertEqual((error as? WillowError)?.type, .notVerifiable, "\(rounded): \(error)")
+            }
+        }
+        // The sort still orders every item by its number's value; only the
+        // results returned must be exact.
+        let page = try DataOperations.answer(QueryBuilder().sortDesc("n").offset(1).limit(1).build(), proof: root.proof, path: path)
+        XCTAssertEqual(page.results.map { $0.key }, ["d"])
+        XCTAssertEqual(page.total, numbers.count)
+
+        // data.get reads the proven value the same way.
+        func get(_ json: String, served: [String: Any]) throws -> [String: AnyCodable] {
+            let tree = Self.dataTree([("k", json)])
+            let result = try GroveDBVerifier.verifyProof(proofBytes: tree.proof, expectedPath: path)
+            return try DataOperations.requireProven(subgroveId: "sg", key: "k", value: served.mapValues { AnyCodable($0) }, in: result)
+        }
+        let exact = try get(#"{"n":0.1,"m":250}"#, served: ["n": 0.1, "m": 250])
+        XCTAssertEqual(exact["n"]?.value as? Double, 0.1)
+        XCTAssertEqual(exact["m"]?.value as? Int, 250)
+        for (json, served) in [
+            (#"{"n":0.12345678901234567890}"#, 0.12345678901234568),
+            (#"{"n":18446744073709551615}"#, 18446744073709551615.0),
+        ] {
+            XCTAssertThrowsError(try get(json, served: ["n": served]), json) { error in
+                XCTAssertEqual((error as? WillowError)?.type, .notVerifiable, "\(json): \(error)")
+            }
+        }
+    }
+
+    func testExactDoubles() {
+        XCTAssertEqual(NodeJSON.exactDouble("0.1"), 0.1)
+        XCTAssertEqual(NodeJSON.exactDouble("123.4500"), 123.45)
+        XCTAssertEqual(NodeJSON.exactDouble("1e+19"), 1e19)
+        XCTAssertEqual(NodeJSON.exactDouble("5e-324"), 5e-324)
+        XCTAssertEqual(NodeJSON.exactDouble("0e+99999999999999999999"), 0)
+        XCTAssertEqual(NodeJSON.exactDouble("-0.0")?.sign, .minus)
+        for rounded in ["0.12345678901234567890", "18446744073709551615", "9223372036854775808", "1e+400", "1e-400", "2.5e-324"] {
+            XCTAssertNil(NodeJSON.exactDouble(rounded), rounded)
+        }
+    }
+
     func testASortTheNodeDoesntOrderIsNotVerified() throws {
         let root = Self.dataTree([("a", #"{"r":2,"t":"x"}"#), ("b", #"{"r":"z","t":"y"}"#), ("c", #"{"r":1,"t":"x"}"#), ("d", #"{"t":"x"}"#)])
         let path = DataOperations.dataPath("sg")

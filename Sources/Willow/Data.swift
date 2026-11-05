@@ -29,8 +29,12 @@ public class DataOperations {
     /// at H+1 or later that carries the root, or else the header at H+1,
     /// waiting for it if the chain hasn't produced it yet. The proof is
     /// checked with Merk's hash rules (BLAKE3) and grovedb's proof encoding.
-    /// It returns the value the proof proves; any failure throws, and the
-    /// value is never returned unverified.
+    /// It returns the value the proof proves, read as the node reads it; any
+    /// failure throws, and the value is never returned unverified. Numbers
+    /// are `Int` when they are integers that fit, else the `Double` that is
+    /// the number; a value holding a number a `Double` would round (such as
+    /// `0.12345678901234567890` or `18446744073709551615`) throws
+    /// `NotVerifiableError` (store such numbers as strings).
     ///
     /// The app hash is only as trustworthy as the light client's header: see
     /// `LightClient`, whose header check does not verify commit signatures.
@@ -106,9 +110,16 @@ public class DataOperations {
 
     /// Requires that `result` proves `key` in the subgrove's data tree with an
     /// item, carried by a KV node as grovedb proves one (a reference's node
-    /// carries the element it points to, not what the key holds), whose bytes
-    /// are the JSON of `value` (compared as JSON, since the API re-serializes
-    /// it), and returns the proven value.
+    /// carries the element it points to, not what the key holds), and returns
+    /// the value the item holds as the node's reader reads it: its JSON
+    /// (serde_json with arbitrary precision; see `query`), or `{"hex": ...}`
+    /// for bytes that reader refuses, as `GET /data` serves them. `value`, the
+    /// value served, must equal it (compared as JSON, since the API
+    /// re-serializes it).
+    ///
+    /// A value holding a number a `Double` would round, or an object with keys
+    /// that differ only as Unicode canonical equivalents, can't be returned
+    /// exactly: it throws `NotVerifiableError`.
     internal static func requireProven(subgroveId: String, key: String, value: [String: AnyCodable], in result: GroveDBVerificationResult) throws -> [String: AnyCodable] {
         let path = dataPath(subgroveId)
         guard let proved = result.results.first(where: { $0.path == path && $0.key == Data(key.utf8) }) else {
@@ -117,13 +128,18 @@ public class DataOperations {
         guard proved.nodeType == .kv, proved.isValueBound, let itemBytes = groveItemBytes(proved.value) else {
             throw ProofError("The proven element for \(key) is not an item")
         }
-        let served = NSDictionary(dictionary: value.mapValues { $0.value })
         let proven: Any
-        if let json = try? JSONSerialization.jsonObject(with: itemBytes, options: [.fragmentsAllowed]) {
-            proven = json
+        if let json = try? NodeJSON.parse(itemBytes) {
+            do {
+                proven = try json.foundationValue()
+            } catch NodeJSON.ReadError.unsupported(let why) {
+                throw NotVerifiableError(
+                    "The value at \(subgroveId)/\(key) can't be verified: \(why). getUnverified returns the API's answer, unchecked")
+            }
         } else {
             proven = ["hex": itemBytes.hexString]
         }
+        let served = NSDictionary(dictionary: value.mapValues { $0.value })
         guard let provenObject = proven as? [String: Any], served.isEqual(to: provenObject) else {
             throw ProofError("The value served for \(key) is not the value the proof proves")
         }
@@ -185,15 +201,18 @@ public class DataOperations {
     /// documents it serves are not used. Every result is a proven item, with
     /// its key, and `totalCount` counts the proven items that pass the
     /// filter. Numbers in the results are `Int` when they are integers that
-    /// fit, else `Double`. Any failure throws.
+    /// fit, else the `Double` whose shortest decimal form is the number. Any
+    /// failure throws.
     ///
     /// Where the node's answer can't be reproduced, the query isn't verified.
     /// It throws `NotVerifiableError` (type `.notVerifiable`, not `.proof`:
     /// nothing shows the answer is wrong) when the sort field holds, across
     /// the matching items, numbers or strings that differ alongside values of
     /// another kind (or no value), which the node's sort doesn't put in one
-    /// order; and when a result holds a number outside `Double`'s range or an
-    /// object two of whose keys differ only as Unicode canonical equivalents.
+    /// order; and when a result holds a number a `Double` would round (such
+    /// as `0.12345678901234567890`, `18446744073709551615`, or `1e400`; store
+    /// such numbers as strings) or an object two of whose keys differ only as
+    /// Unicode canonical equivalents.
     /// `queryUnverified` returns the node's answer to such a query, unchecked.
     ///
     /// The app hash is only as trustworthy as the light client's header: see
