@@ -373,13 +373,45 @@ final class VerifiedReadsTests: XCTestCase {
         XCTAssertNoThrow(try Self.node(String(repeating: "[", count: 127) + String(repeating: "]", count: 127)))
         XCTAssertThrowsError(try Self.node(String(repeating: "[", count: 128) + String(repeating: "]", count: 128)))
         XCTAssertNoThrow(try Self.node(" \t\r\n{\"a\" : [ true , false , null ] } \n"))
+    }
 
-        // An object whose first key is one of serde_json's private tokens
-        // isn't read as an object; the SDK doesn't guess how.
-        XCTAssertThrowsError(try Self.node(#"{"$serde_json::private::Number":"1"}"#)) { error in
-            guard case NodeJSON.ReadError.unsupported = error else { return XCTFail("\(error)") }
+    /// serde_json, built with arbitrary precision and raw values as the node
+    /// is, reads an object whose first key is one of its private tokens as
+    /// the number, or the JSON, its string holds.
+    func testSerdesPrivateTokensAreReadAsTheNodeReadsThem() throws {
+        let number = "$serde_json::private::Number"
+        let raw = "$serde_json::private::RawValue"
+        XCTAssertEqual(try Self.node(#"{"\#(number)":"1"}"#), .number("1"))
+        XCTAssertEqual(try Self.node(#" { "\#(number)" : "1E5" } "#), .number("1e+5"))
+        XCTAssertEqual(try Self.node(#"{"\#(number)":"-0"}"#), .number("0"))
+        XCTAssertEqual(try Self.node(#"{"\#(number)":"18446744073709551616"}"#), .number("18446744073709551616"))
+        XCTAssertEqual(try Self.node(#"{"$serde_json::private::Number":"2"}"#), .number("2"), "the key is compared unescaped")
+        XCTAssertEqual(try Self.node(#"{"n":{"\#(number)":"5"}}"#), try Self.node(#"{"n":5}"#))
+        XCTAssertEqual(try Self.node(#"{"\#(raw)":" [1,{\"a\":2}] "}"#), try Self.node(#"[1,{"a":2}]"#))
+        XCTAssertEqual(try Self.node(#"{"\#(raw)":"{\"\#(number)\":\"7\"}"}"#), .number("7"))
+        // Only as the first key.
+        XCTAssertEqual(
+            try Self.node(#"{"a":1,"\#(number)":"1"}"#).value(atPath: Array(number.utf8)), .string(Array("1".utf8)))
+
+        // serde_json refuses these, so the node skips such an item.
+        for refused in [
+            #"{"\#(number)":1}"#, #"{"\#(number)":"x"}"#, #"{"\#(number)":" 1"}"#, #"{"\#(number)":"1 "}"#,
+            #"{"\#(number)":"01"}"#, #"{"\#(number)":""}"#, #"{"\#(number)":"1","a":2}"#, #"{"\#(number)":"1"}x"#,
+            #"{"\#(raw)":"[1,"}"#, #"{"\#(raw)":"1 2"}"#, #"{"\#(raw)":{}}"#,
+        ] {
+            XCTAssertThrowsError(try Self.node(refused), refused) { error in
+                guard case NodeJSON.ReadError.notJSON = error else { return XCTFail("\(refused): \(error)") }
+            }
         }
-        XCTAssertNoThrow(try Self.node(#"{"a":1,"$serde_json::private::Number":"1"}"#))
+
+        // A query is answered over such items as the node answers it.
+        let root = Self.dataTree([
+            ("a", #"{"n":{"\#(number)":"5"}}"#), ("b", #"{"\#(number)":"x"}"#), ("c", #"{"n":5}"#), ("d", #"{"n":6}"#),
+        ])
+        let answer = try DataOperations.answer(QueryBuilder().equals("n", 5).build(), proof: root.proof, path: DataOperations.dataPath("sg"))
+        XCTAssertEqual(answer.results.map { $0.key }, ["a", "c"])
+        XCTAssertEqual(answer.results.first?.data["n"]?.value as? Int, 5)
+        XCTAssertEqual(try DataOperations.answer(QueryRequest(), proof: root.proof, path: DataOperations.dataPath("sg")).total, 3)
     }
 
     func testSortOrderFollowsTheNode() throws {

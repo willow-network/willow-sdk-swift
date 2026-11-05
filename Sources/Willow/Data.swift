@@ -167,7 +167,10 @@ public class DataOperations {
     /// after the block the proof's state is from, as in `get`. The SDK then
     /// answers the query itself over those items, as the node does, reading
     /// the items and the request body it sends as the node's JSON reader
-    /// does (`serde_json` with arbitrary precision):
+    /// does (`serde_json` with arbitrary precision and raw values, so an
+    /// object whose first key is `$serde_json::private::Number` or
+    /// `$serde_json::private::RawValue` is read as the number or JSON its
+    /// string holds):
     ///
     /// - the items that parse as JSON, in key order;
     /// - the filter: the value at the field's dotted path (object keys
@@ -187,12 +190,10 @@ public class DataOperations {
     /// Where the node's answer can't be reproduced, the query isn't verified:
     /// it throws a proof error when the sort field holds, across the matching
     /// items, numbers or strings that differ alongside values of another kind
-    /// (or no value), which the node's sort doesn't put in one order; when a
-    /// proven item has an object whose first key is one of serde_json's
-    /// private tokens; and when a result holds a number outside `Double`'s
-    /// range or an object two of whose keys differ only as Unicode canonical
-    /// equivalents. `queryUnverified` returns the node's answer to such a
-    /// query, unchecked.
+    /// (or no value), which the node's sort doesn't put in one order; and when
+    /// a result holds a number outside `Double`'s range or an object two of
+    /// whose keys differ only as Unicode canonical equivalents.
+    /// `queryUnverified` returns the node's answer to such a query, unchecked.
     ///
     /// The app hash is only as trustworthy as the light client's header: see
     /// `LightClient`. A request the node can't run (see `QueryRequest`) is
@@ -263,13 +264,8 @@ public class DataOperations {
         // It skips an item its JSON reader refuses.
         var documents: [(key: Data, value: NodeJSON)] = []
         for item in items {
-            do {
-                documents.append((item.key, try NodeJSON.parse(item.bytes)))
-            } catch NodeJSON.ReadError.notJSON {
-                continue
-            } catch NodeJSON.ReadError.unsupported(let why) {
-                throw unverifiable("the item at key \(item.key.hexString) can't be read as the node reads it: \(why)")
-            }
+            guard let document = try? NodeJSON.parse(item.bytes) else { continue }
+            documents.append((item.key, document))
         }
 
         if let filter = plan.filter {

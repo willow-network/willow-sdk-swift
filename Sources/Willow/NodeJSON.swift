@@ -15,6 +15,8 @@ import Foundation
 /// - A string is its UTF-8 bytes, compared byte for byte.
 /// - An object maps keys, compared as UTF-8 bytes, to values; a repeated key
 ///   keeps its last value.
+/// - An object whose first key is one of serde_json's private tokens is read
+///   as serde_json reads it (see `PrivateToken`).
 internal indirect enum NodeJSON: Equatable {
     case null
     case bool(Bool)
@@ -23,18 +25,50 @@ internal indirect enum NodeJSON: Equatable {
     case array([NodeJSON])
     case object(NodeJSONObject)
 
-    /// Why bytes can't be read as the node reads them.
+    /// Why bytes can't be read as the node reads them, or a value can't be
+    /// returned exactly.
     enum ReadError: Error {
         /// The node's reader refuses the bytes, so the node skips such an item.
         case notJSON(String)
-        /// The node reads these bytes in a way the SDK doesn't reproduce.
+        /// The value can't be returned as Foundation values exactly.
         case unsupported(String)
+    }
+
+    /// The keys serde_json reserves. Its `Value` reader, built with arbitrary
+    /// precision and raw values (the node is built with both), reads an
+    /// object whose first key (unescaped) is one of them as something other
+    /// than an object: the key's value must be a string, and the object's
+    /// only member.
+    enum PrivateToken: CustomStringConvertible {
+        /// `$serde_json::private::Number`: the string is read as
+        /// `Number::from_str` reads it, one JSON number and nothing else, and
+        /// the object is that number.
+        case number
+        /// `$serde_json::private::RawValue`: the string is read as a whole
+        /// JSON text (`serde_json::from_str`, with its own nesting limit), and
+        /// the object is that value.
+        case rawValue
+
+        init?(_ key: [UInt8]) {
+            switch key {
+            case Array(PrivateToken.number.description.utf8): self = .number
+            case Array(PrivateToken.rawValue.description.utf8): self = .rawValue
+            default: return nil
+            }
+        }
+
+        var description: String {
+            switch self {
+            case .number: return "$serde_json::private::Number"
+            case .rawValue: return "$serde_json::private::RawValue"
+            }
+        }
     }
 
     /// Reads `bytes` as `serde_json::from_slice::<Value>` does: strict JSON,
     /// whitespace only around values, strings of valid UTF-8 with paired
-    /// surrogate escapes and no raw control characters, and at most 127
-    /// nested arrays and objects.
+    /// surrogate escapes and no raw control characters, at most 127 nested
+    /// arrays and objects, and serde_json's private tokens.
     static func parse(_ bytes: [UInt8]) throws -> NodeJSON {
         var reader = Reader(bytes: bytes)
         reader.skipWhitespace()
@@ -48,6 +82,20 @@ internal indirect enum NodeJSON: Equatable {
 
     static func parse(_ data: Data) throws -> NodeJSON {
         return try parse([UInt8](data))
+    }
+
+    /// A number's text as serde_json's `Number::from_str` reads `bytes`: one
+    /// JSON number, with nothing around it.
+    static func numberText(_ bytes: [UInt8]) throws -> String {
+        guard let first = bytes.first, first == UInt8(ascii: "-") || (0x30...0x39).contains(first) else {
+            throw ReadError.notJSON("\(PrivateToken.number) holds \(String(decoding: bytes, as: UTF8.self)), not a number")
+        }
+        var reader = Reader(bytes: bytes)
+        let text = try reader.number()
+        guard reader.index == bytes.count else {
+            throw ReadError.notJSON("\(PrivateToken.number) holds \(String(decoding: bytes, as: UTF8.self)), not only a number")
+        }
+        return text
     }
 
     /// The value at a dotted field path, as the node's query engine reads
@@ -122,7 +170,7 @@ internal indirect enum NodeJSON: Equatable {
             switch bytes[index] {
             case UInt8(ascii: "{"):
                 guard depth < Self.maxDepth else { throw notJSON("nested too deeply") }
-                return .object(try object(depth: depth + 1))
+                return try object(depth: depth + 1)
             case UInt8(ascii: "["):
                 guard depth < Self.maxDepth else { throw notJSON("nested too deeply") }
                 return .array(try array(depth: depth + 1))
@@ -152,27 +200,33 @@ internal indirect enum NodeJSON: Equatable {
             index += expected.count
         }
 
-        mutating func object(depth: Int) throws -> NodeJSONObject {
+        /// An object, or what serde_json makes of one whose first key is a
+        /// private token (see `PrivateToken`).
+        mutating func object(depth: Int) throws -> NodeJSON {
             index += 1
             var object = NodeJSONObject()
             skipWhitespace()
             if index < bytes.count, bytes[index] == UInt8(ascii: "}") {
                 index += 1
-                return object
+                return .object(object)
             }
             while true {
                 skipWhitespace()
                 guard index < bytes.count, bytes[index] == UInt8(ascii: "\"") else { throw notJSON("expected a key") }
                 let key = try string()
-                if object.keys.isEmpty, NodeJSON.privateKeys.contains(key) {
-                    // serde_json reads an object whose first key is one of
-                    // its private tokens as something other than an object.
-                    throw ReadError.unsupported("an object's first key is serde_json's private token \(String(decoding: key, as: UTF8.self))")
-                }
                 skipWhitespace()
                 guard index < bytes.count, bytes[index] == UInt8(ascii: ":") else { throw notJSON("expected ':'") }
                 index += 1
                 skipWhitespace()
+                if object.keys.isEmpty, let token = PrivateToken(key) {
+                    let value = try tokenValue(token)
+                    skipWhitespace()
+                    guard index < bytes.count, bytes[index] == UInt8(ascii: "}") else {
+                        throw notJSON("\(token) is not its object's only member")
+                    }
+                    index += 1
+                    return value
+                }
                 object.set(key, try value(depth: depth))
                 skipWhitespace()
                 guard index < bytes.count else { throw notJSON("unexpected end") }
@@ -182,7 +236,21 @@ internal indirect enum NodeJSON: Equatable {
                 }
                 guard bytes[index] == UInt8(ascii: "}") else { throw notJSON("expected ',' or '}'") }
                 index += 1
-                return object
+                return .object(object)
+            }
+        }
+
+        /// The value a private token's string stands for.
+        mutating func tokenValue(_ token: PrivateToken) throws -> NodeJSON {
+            guard index < bytes.count, bytes[index] == UInt8(ascii: "\"") else {
+                throw notJSON("\(token) takes a string")
+            }
+            let text = try string()
+            switch token {
+            case .number:
+                return .number(try NodeJSON.numberText(text))
+            case .rawValue:
+                return try NodeJSON.parse(text)
             }
         }
 
@@ -340,14 +408,6 @@ internal indirect enum NodeJSON: Equatable {
             return value
         }
     }
-
-    /// The keys serde_json reserves: as an object's first key, its `Value`
-    /// reader takes the object for a number (with arbitrary precision) or a
-    /// raw value.
-    static let privateKeys: Set<[UInt8]> = [
-        Array("$serde_json::private::Number".utf8),
-        Array("$serde_json::private::RawValue".utf8),
-    ]
 }
 
 /// A JSON object's members, keyed by their UTF-8 bytes. A repeated key keeps
