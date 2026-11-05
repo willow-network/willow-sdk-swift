@@ -368,8 +368,10 @@ public final class LightClient: @unchecked Sendable {
 
     // MARK: - Root Hash
 
-    /// The trusted header's state, syncing first if there is none.
-    private func currentTrustedState() async throws -> TrustedState {
+    /// The trusted header's state, syncing first if there is none. Verified
+    /// reads call it before fetching a proof, so that the first header this
+    /// client takes is no later than the proof's state.
+    internal func currentTrustedState() async throws -> TrustedState {
         if let state = locked({ trustedState }) {
             return state
         }

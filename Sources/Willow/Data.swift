@@ -49,6 +49,7 @@ public class DataOperations {
         // either the header after the proof's block is above it, or no block
         // with transactions came between and it carries the proof's state.
         let lc = try await client.getOrCreateLightClient()
+        _ = try await lc.currentTrustedState()
 
         let value = try await fetchValue(subgroveId: subgroveId, key: key, client: client)
 
@@ -221,7 +222,10 @@ public class DataOperations {
     public func query(subgroveId: String, query: QueryRequest) async throws -> QueryResponse {
         guard let client = client else { throw NetworkError("Client deallocated") }
         try query.validateForNode()
+        // The light client takes its first header before the proof is read
+        // (see `get`).
         let lc = try await client.getOrCreateLightClient()
+        _ = try await lc.currentTrustedState()
 
         var queryWithProof = query
         queryWithProof.includeProof = true

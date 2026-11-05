@@ -803,6 +803,47 @@ final class VerifiedReadsTests: XCTestCase {
         XCTAssertEqual(stub.requests.filter { $0.url.host == "rpc.test" }.count, 2)
     }
 
+    /// A light client with no header yet takes its first one before the
+    /// proof is read. Taken after, it can be a header above the one after the
+    /// proof's block that carries a later state, and the header after the
+    /// proof's block, below it, can't be checked.
+    func testAVerifiedGetTakesTheFirstHeaderBeforeTheProof() async throws {
+        let f = try GroveDBProofTests.fixture("nested_single_key_user_bob", as: SingleKey.self)
+        let now = Date()
+        // Block 41 changed the state and block 42 didn't; then block 43 did.
+        let before = StubChain(headers: [42: (f.expected_root_hex, now.addingTimeInterval(-20))])
+        let after = StubChain(headers: [
+            42: (f.expected_root_hex, now.addingTimeInterval(-20)), 43: (f.expected_root_hex, now.addingTimeInterval(-10)),
+            44: (String(repeating: "cd", count: 32), now.addingTimeInterval(-5)),
+        ])
+        let proofServed = Locked(false)
+        let stub = StubServer { request in
+            if request.url.host == "rpc.test" {
+                return (proofServed.value ? after : before).answer(request)
+            }
+            switch request.path {
+            case "/data/my-sub/user:bob":
+                return (200, #"{"success":true,"data":{"balance":250}}"#)
+            case "/proof/my-sub/user:bob":
+                proofServed.value = true
+                return (200, #"{"success":true,"data":{"proof":"\#(f.proof_hex)","height":41}}"#)
+            default:
+                return (404, "")
+            }
+        }
+        let client = try stub.client(baseURL: "http://api.test")
+        let lc = try LightClient(LightClientConfig(chainId: "willow-chain", validatorEndpoints: ["http://rpc.test"], autoSync: false))
+        lc.session = stub.session
+        client.setLightClient(lc)
+
+        let response = try await client.data.get(subgroveId: "my-sub", key: "user:bob")
+        XCTAssertEqual(response.data["balance"]?.value as? Int, 250)
+        let first = try XCTUnwrap(stub.requests.firstIndex { $0.url.host == "rpc.test" })
+        let proof = try XCTUnwrap(stub.requests.firstIndex { $0.path == "/proof/my-sub/user:bob" })
+        XCTAssertLessThan(first, proof, "the light client syncs before the proof is fetched")
+        XCTAssertEqual(stub.requests[first].target, "/commit")
+    }
+
     func testAVerifiedGetWaitsForTheNextHeaderThenGivesUp() async throws {
         let f = try GroveDBProofTests.fixture("nested_single_key_user_bob", as: SingleKey.self)
         let stub = StubServer { request in
@@ -901,6 +942,21 @@ final class VerifiedReadsTests: XCTestCase {
         struct Deposits: Decodable { struct Deposit: Decodable { let id: String }; let deposits: [Deposit] }
         let typed = try await client.indexing.executeWithResult(subgroveId: "sg", query: "{ deposits { id } }", resultType: Deposits.self)
         XCTAssertEqual(typed.deposits.map { $0.id }, ["d1"])
+    }
+}
+
+/// A value shared with a stub's handler, which runs on URLSession's threads.
+final class Locked<Value> {
+    private let lock = NSLock()
+    private var current: Value
+
+    init(_ value: Value) {
+        current = value
+    }
+
+    var value: Value {
+        get { lock.lock(); defer { lock.unlock() }; return current }
+        set { lock.lock(); defer { lock.unlock() }; current = newValue }
     }
 }
 
