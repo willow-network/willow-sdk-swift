@@ -218,12 +218,16 @@ public class DataOperations {
     /// read as the number or JSON its string holds):
     ///
     /// - the items that parse as JSON, in key order;
-    /// - the filter: the value at the field's dotted path (object keys
+    /// - every filter: the value at the field's dotted path (object keys
     ///   compared as UTF-8 bytes) must equal the filter's value as JSON
-    ///   values, numbers compared by their text as the node keeps it (so `1`
-    ///   isn't `1.0`, nor `9007199254740993` `9007199254740992`), strings by
-    ///   their UTF-8 bytes;
-    /// - the sort, stable: numbers by value, strings by their UTF-8 bytes;
+    ///   values, numbers compared by their exact decimal value (so `1`,
+    ///   `1.0`, and `1e0` are equal, and `9007199254740993` isn't
+    ///   `9007199254740992`), in arrays and objects too, strings by their
+    ///   UTF-8 bytes;
+    /// - the sort, stable in either direction, in the node's total order: a
+    ///   missing field, `null`, `false`, `true`, numbers (by their `Double`;
+    ///   one out of range first), strings (by their UTF-8 bytes), arrays,
+    ///   then objects;
     /// - the offset and limit (default 100).
     ///
     /// Of the API's answer only the proof and its height are read; the
@@ -233,16 +237,14 @@ public class DataOperations {
     /// fit, else the `Double` whose shortest decimal form is the number. Any
     /// failure throws.
     ///
-    /// Where the node's answer can't be reproduced, the query isn't verified.
-    /// It throws `NotVerifiableError` (type `.notVerifiable`, not `.proof`:
-    /// nothing shows the answer is wrong) when the sort field holds, across
-    /// the matching items, numbers or strings that differ alongside values of
-    /// another kind (or no value), which the node's sort doesn't put in one
-    /// order; and when a result holds a number a `Double` would round (such
-    /// as `0.12345678901234567890`, `18446744073709551615`, or `1e400`; store
-    /// such numbers as strings) or an object two of whose keys differ only as
-    /// Unicode canonical equivalents. `queryUnverified` returns the node's
-    /// answer to such a query, unchecked.
+    /// Where the node's answer can't be returned exactly, the query isn't
+    /// verified. It throws `NotVerifiableError` (type `.notVerifiable`, not
+    /// `.proof`: nothing shows the answer is wrong) when a result holds a
+    /// number a `Double` would round (such as `0.12345678901234567890`,
+    /// `18446744073709551615`, or `1e400`; store such numbers as strings) or
+    /// an object two of whose keys differ only as Unicode canonical
+    /// equivalents. `queryUnverified` returns the node's answer to such a
+    /// query, unchecked.
     ///
     /// The app hash comes from the configured consensus RPC, which the SDK
     /// trusts without verifying validator signatures, as for `get`; with none
@@ -339,28 +341,7 @@ public class DataOperations {
             }
         }
 
-        if let filter = plan.filter {
-            documents = documents.filter { $0.value.value(atPath: filter.field) == filter.value }
-        }
-        if let sort = plan.sort {
-            let keys = documents.map { SortKey($0.value.value(atPath: sort.field)) }
-            guard SortKey.orderIsConsistent(keys) else {
-                throw unverifiable(
-                    "its sort field holds, across the matching items, numbers or strings that differ alongside values of another kind or no value, which the node's sort doesn't put in one order")
-            }
-            // A stable sort: ties keep key order.
-            let order: [Int] = Array(documents.indices).sorted { (i: Int, j: Int) -> Bool in
-                var compared: Int = SortKey.compare(keys[i], keys[j])
-                if sort.descending {
-                    compared = -compared
-                }
-                if compared != 0 {
-                    return compared < 0
-                }
-                return i < j
-            }
-            documents = order.map { documents[$0] }
-        }
+        documents = select(plan, from: documents)
 
         let total = documents.count
         let page = documents.dropFirst(plan.offset).prefix(plan.limit)
@@ -379,35 +360,93 @@ public class DataOperations {
         return (results, total)
     }
 
+    /// The documents the node's query selects from `documents` (in key
+    /// order), in its order: those every filter matches, sorted.
+    internal static func select(_ plan: NodeQueryPlan, from documents: [(key: Data, value: NodeJSON)]) -> [(key: Data, value: NodeJSON)] {
+        var documents = documents
+        for filter in plan.filters {
+            documents = documents.filter { document in
+                guard let value = document.value.value(atPath: filter.field) else { return false }
+                return NodeJSON.valuesEqual(value, filter.value)
+            }
+        }
+        if let sort = plan.sort {
+            let keys = documents.map { SortKey($0.value.value(atPath: sort.field)) }
+            // A stable sort: ties keep key order.
+            let order: [Int] = Array(documents.indices).sorted { (i: Int, j: Int) -> Bool in
+                var compared: Int = SortKey.compare(keys[i], keys[j])
+                if sort.descending {
+                    compared = -compared
+                }
+                if compared != 0 {
+                    return compared < 0
+                }
+                return i < j
+            }
+            documents = order.map { documents[$0] }
+        }
+        return documents
+    }
+
     /// The error for a query whose answer the SDK can't reproduce.
     private static func unverifiable(_ why: String) -> WillowError {
         return NotVerifiableError("This query can't be verified: \(why). queryUnverified returns the node's answer, unchecked")
     }
 
-    /// A sort field's value as the node's comparator sees it: a number as
-    /// `f64` (none when it isn't finite, which sorts first), a string as its
-    /// UTF-8 bytes, anything else (a missing field included) as equal to
-    /// everything.
+    /// A sort field's value as the node's comparator (`SortKey::total_cmp`)
+    /// sees it: its kind, a boolean, a number as `f64` (none when it isn't
+    /// finite), or a string as its UTF-8 bytes.
     internal enum SortKey: Equatable {
+        case missing
+        case null
+        case bool(Bool)
         case number(Double?)
         case string([UInt8])
-        case other
+        case array
+        case object
 
         init(_ value: NodeJSON?) {
             switch value {
+            case nil:
+                self = .missing
+            case .null?:
+                self = .null
+            case .bool(let value)?:
+                self = .bool(value)
             case .number(let text)?:
                 let double = Double(text)
                 self = .number(double.flatMap { $0.isFinite ? ($0 == 0 ? 0 : $0) : nil })
             case .string(let bytes)?:
                 self = .string(bytes)
-            default:
-                self = .other
+            case .array?:
+                self = .array
+            case .object?:
+                self = .object
             }
         }
 
-        /// -1, 0, or 1, as the node compares two values.
+        /// The kind's place in the node's order.
+        private var rank: Int {
+            switch self {
+            case .missing: return 0
+            case .null: return 1
+            case .bool: return 2
+            case .number: return 3
+            case .string: return 4
+            case .array: return 5
+            case .object: return 6
+            }
+        }
+
+        /// -1, 0, or 1, as the node compares two values, a total order: by
+        /// kind (missing, `null`, `false`, `true`, numbers, strings, arrays,
+        /// objects), then numbers by value (one with no finite value first)
+        /// and strings by their bytes. Two arrays, two objects, two `null`s,
+        /// or two missing fields tie.
         static func compare(_ a: SortKey, _ b: SortKey) -> Int {
             switch (a, b) {
+            case let (.bool(x), .bool(y)):
+                return x == y ? 0 : (x ? 1 : -1)
             case let (.number(x), .number(y)):
                 switch (x, y) {
                 case (nil, nil): return 0
@@ -418,38 +457,8 @@ public class DataOperations {
             case let (.string(x), .string(y)):
                 return x == y ? 0 : (x.lexicographicallyPrecedes(y) ? -1 : 1)
             default:
-                return 0
+                return a.rank == b.rank ? 0 : (a.rank < b.rank ? -1 : 1)
             }
-        }
-
-        /// Whether the node's comparator orders `keys` consistently (a strict
-        /// weak order), so that its stable sort has one answer. It does when
-        /// the keys are all numbers, all strings, or all equal to each other;
-        /// numbers (or strings) that differ, alongside a key of another kind,
-        /// are each equal to that key but not to each other.
-        static func orderIsConsistent(_ keys: [SortKey]) -> Bool {
-            var numbers = Set<Double?>()
-            var strings = Set<[UInt8]>()
-            var (numberCount, stringCount, otherCount) = (0, 0, 0)
-            for key in keys {
-                switch key {
-                case .number(let value):
-                    numbers.insert(value)
-                    numberCount += 1
-                case .string(let bytes):
-                    strings.insert(bytes)
-                    stringCount += 1
-                case .other:
-                    otherCount += 1
-                }
-            }
-            if numbers.count > 1, stringCount > 0 || otherCount > 0 {
-                return false
-            }
-            if strings.count > 1, numberCount > 0 || otherCount > 0 {
-                return false
-            }
-            return true
         }
     }
 
@@ -614,12 +623,13 @@ private struct ServedQueryProof: Codable {
     let height: Int64?
 }
 
-/// A query as the node's query route reads it from the request body: the
-/// first member of `filters` as an equality filter unless its value is an
-/// object, the sort's field and order (`desc`, or else ascending), the
-/// offset, and the limit (default 100).
+/// A query as the node's query route reads it from the request body: every
+/// member of `filters` as an equality filter, the sort's field and order
+/// (`desc`, or else ascending), the offset, and the limit (default 100). A
+/// filter whose value is an object (a filter operator) is refused, as the
+/// node refuses it.
 internal struct NodeQueryPlan {
-    let filter: (field: [UInt8], value: NodeJSON)?
+    let filters: [(field: [UInt8], value: NodeJSON)]
     let sort: (field: [UInt8], descending: Bool)?
     let offset: Int
     let limit: Int
@@ -643,22 +653,19 @@ internal struct NodeQueryPlan {
             }
         }
 
-        if case .object(let filters)? = key("filters") {
-            // The node takes the map's first member: one is unambiguous.
-            guard filters.count <= 1 else {
-                throw ValidationError("The node's query route runs one filter; this query has \(filters.count)")
-            }
-            if let field = filters.keys.first, let value = filters[field] {
+        switch key("filters") {
+        case nil, .null?:
+            filters = []
+        case .object(let members)?:
+            filters = try members.keys.map { field in
+                let value = members[field]!
                 if case .object = value {
-                    filter = nil
-                } else {
-                    filter = (field, value)
+                    throw ValidationError("The node's query route refuses a filter whose value is a JSON object")
                 }
-            } else {
-                filter = nil
+                return (field, value)
             }
-        } else {
-            filter = nil
+        default:
+            throw ValidationError("A query's filters must be an object")
         }
 
         switch key("sort") {
@@ -692,8 +699,8 @@ public class QueryBuilder {
 
     public init() {}
 
-    /// Adds an equals filter. The node's query route runs one filter, so a
-    /// query with more than one is refused.
+    /// Adds an equals filter. The node applies every filter (all must
+    /// match); a second filter on the same field is refused.
     @discardableResult
     public func equals(_ field: String, _ value: Any) -> QueryBuilder {
         filters.append(QueryFilter(field: field, operator: "eq", value: value))

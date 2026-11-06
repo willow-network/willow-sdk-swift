@@ -3,15 +3,18 @@ import Foundation
 /// A JSON value as the node's query route reads one: serde_json's `Value`,
 /// built with arbitrary precision, so a number is kept as text.
 ///
-/// The node filters a query with `Value` equality and sorts on a field's
-/// numbers and strings, so a verified query is answered over these values,
-/// read from the proven items and from the request body the SDK sends:
+/// The node filters a query with `json_values_equal` (`valuesEqual`) and
+/// sorts on any value of a field, so a verified query is answered over these
+/// values, read from the proven items and from the request body the SDK
+/// sends:
 ///
 /// - A number is its text as the node keeps it. An integer that fits u64
 ///   (or, negative, i64) is its decimal digits, so `-0` is `0`. Any other
 ///   number is kept as written, except that an exponent is written as `e`
 ///   with an explicit sign (`1E5` is `1e+5`). So `1` and `1.0` are different
-///   numbers, and so are `9007199254740993` and `9007199254740992`.
+///   texts (`==`), and a filter compares them by exact decimal value, equal
+///   (`numbersEqual`); `9007199254740993` and `9007199254740992` differ
+///   either way.
 /// - A string is its UTF-8 bytes, compared byte for byte.
 /// - An object maps keys, compared as UTF-8 bytes, to values; a repeated key
 ///   keeps its last value.
@@ -539,5 +542,169 @@ internal struct NodeJSONObject: Equatable {
     /// Equal when both hold the same keys with equal values, in any order.
     static func == (lhs: NodeJSONObject, rhs: NodeJSONObject) -> Bool {
         return lhs.members == rhs.members
+    }
+}
+
+// MARK: - The node's filter equality and filter value length
+
+extension NodeJSON {
+    /// The node's filter equality (`json_values_equal`): numbers by their
+    /// exact decimal value (`1`, `1.0`, and `1e0` are equal; see
+    /// `numbersEqual`), in arrays and objects too; objects by key; every
+    /// other kind as `==` compares it.
+    static func valuesEqual(_ a: NodeJSON, _ b: NodeJSON) -> Bool {
+        switch (a, b) {
+        case let (.number(x), .number(y)):
+            return numbersEqual(x, y)
+        case let (.array(x), .array(y)):
+            return x.count == y.count && zip(x, y).allSatisfy { valuesEqual($0, $1) }
+        case let (.object(x), .object(y)):
+            return x.count == y.count && x.keys.allSatisfy { key in
+                guard let other = y[key] else { return false }
+                return valuesEqual(x[key]!, other)
+            }
+        default:
+            return a == b
+        }
+    }
+
+    /// The node's number equality (`numbers_equal`): the same text, or the
+    /// same exact decimal value when both texts have one (`exactDecimal`).
+    static func numbersEqual(_ a: String, _ b: String) -> Bool {
+        if a == b {
+            return true
+        }
+        guard let x = exactDecimal(a), let y = exactDecimal(b) else { return false }
+        return x == y
+    }
+
+    /// A number's exact decimal value as the node's `exact_decimal` reads
+    /// its text: its sign, its significant digits (no leading or trailing
+    /// zero; none for zero, which has no sign), and the power of ten of the
+    /// last of them.
+    struct ExactDecimal: Equatable {
+        let negative: Bool
+        let digits: [UInt8]
+        let exponent: I128
+    }
+
+    /// `text`'s exact decimal value as the node reads it, or nil when the
+    /// exponent, or a step of the node's arithmetic on it (`exponent -
+    /// fraction digits`, then `+ trailing zeros`), doesn't fit an i128; the
+    /// node then compares the numbers' texts.
+    static func exactDecimal(_ text: String) -> ExactDecimal? {
+        var rest = Array(text.utf8)[...]
+        let negative = rest.first == UInt8(ascii: "-")
+        if negative {
+            rest = rest.dropFirst()
+        }
+        var exponent = I128.zero
+        if let e = rest.firstIndex(where: { $0 == UInt8(ascii: "e") || $0 == UInt8(ascii: "E") }) {
+            guard let parsed = I128(rest[(e + 1)...]) else { return nil }
+            exponent = parsed
+            rest = rest[..<e]
+        }
+        let parts = rest.split(separator: UInt8(ascii: "."), maxSplits: 1, omittingEmptySubsequences: false)
+        let int = parts[0]
+        let fraction = parts.count > 1 ? parts[1] : ArraySlice<UInt8>()
+        let digits = Array(int) + Array(fraction)
+        guard !int.isEmpty, digits.allSatisfy({ (0x30...0x39).contains($0) }) else { return nil }
+        guard let first = digits.firstIndex(where: { $0 != 0x30 }) else {
+            return ExactDecimal(negative: false, digits: [], exponent: .zero)
+        }
+        let last = digits.lastIndex(where: { $0 != 0x30 })!
+        guard let shifted = exponent.adding(-fraction.count)?.adding(digits.count - 1 - last) else { return nil }
+        return ExactDecimal(negative: negative, digits: Array(digits[first...last]), exponent: shifted)
+    }
+
+    /// The length in bytes of `serde_json::to_string` of the value, as the
+    /// node measures a filter value: compact, a number as its kept text, a
+    /// string with `"`, `\`, and control characters escaped.
+    var serializedLength: Int {
+        switch self {
+        case .null:
+            return 4
+        case .bool(let value):
+            return value ? 4 : 5
+        case .number(let text):
+            return text.utf8.count
+        case .string(let bytes):
+            return NodeJSON.quotedLength(bytes)
+        case .array(let elements):
+            return 2 + Swift.max(elements.count - 1, 0) + elements.reduce(0) { $0 + $1.serializedLength }
+        case .object(let object):
+            return 2 + Swift.max(object.count - 1, 0) + object.keys.reduce(0) { length, key in
+                length + NodeJSON.quotedLength(key) + 1 + object[key]!.serializedLength
+            }
+        }
+    }
+
+    /// A string's length in serde_json's text: quoted, with `"`, `\`, and
+    /// control characters escaped (`\n`, or `\u00XX` where there is no short
+    /// escape).
+    private static func quotedLength(_ bytes: [UInt8]) -> Int {
+        var length = 2
+        for byte in bytes {
+            switch byte {
+            case 0x22, 0x5C, 0x08, 0x09, 0x0A, 0x0C, 0x0D:
+                length += 2
+            case 0x00..<0x20:
+                length += 6
+            default:
+                length += 1
+            }
+        }
+        return length
+    }
+}
+
+/// A signed 128-bit integer, Rust's `i128`, for `exact_decimal`'s exponent
+/// arithmetic: two's complement in two words.
+internal struct I128: Equatable {
+    let high: Int64
+    let low: UInt64
+
+    static let zero = I128(high: 0, low: 0)
+
+    private init(high: Int64, low: UInt64) {
+        self.high = high
+        self.low = low
+    }
+
+    /// An optional sign and decimal digits, as Rust's `str::parse::<i128>`
+    /// reads them; nil for other text or a value past the range.
+    init?<S: Collection>(_ text: S) where S.Element == UInt8 {
+        var digits = text[...]
+        let negative = digits.first == UInt8(ascii: "-")
+        if negative || digits.first == UInt8(ascii: "+") {
+            digits = digits.dropFirst()
+        }
+        guard !digits.isEmpty, digits.allSatisfy({ (0x30...0x39).contains($0) }) else { return nil }
+        // The magnitude, in two words; past 2^127 it fits no i128.
+        var (high, low): (UInt64, UInt64) = (0, 0)
+        for byte in digits {
+            let product = low.multipliedFullWidth(by: 10)
+            let (scaled, scaledOverflow) = high.multipliedReportingOverflow(by: 10)
+            let (carried, carriedOverflow) = scaled.addingReportingOverflow(product.high)
+            let (sum, carry) = product.low.addingReportingOverflow(UInt64(byte - 0x30))
+            let (next, nextOverflow) = carried.addingReportingOverflow(carry ? 1 : 0)
+            guard !scaledOverflow, !carriedOverflow, !nextOverflow, next <= 1 << 63 else { return nil }
+            (high, low) = (next, sum)
+        }
+        guard high < 1 << 63 || (negative && high == 1 << 63 && low == 0) else { return nil }
+        if negative {
+            let (negatedLow, carry) = (~low).addingReportingOverflow(1)
+            self.init(high: Int64(bitPattern: ~high &+ (carry ? 1 : 0)), low: negatedLow)
+        } else {
+            self.init(high: Int64(bitPattern: high), low: low)
+        }
+    }
+
+    /// `self + n`, or nil when it passes the i128 range.
+    func adding(_ n: Int) -> I128? {
+        let (sum, carry) = low.addingReportingOverflow(UInt64(bitPattern: Int64(n)))
+        let delta: Int64 = (n < 0 ? -1 : 0) + (carry ? 1 : 0)
+        let (high, overflow) = self.high.addingReportingOverflow(delta)
+        return overflow ? nil : I128(high: high, low: sum)
     }
 }
