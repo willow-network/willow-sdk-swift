@@ -424,25 +424,22 @@ final class VerifiedReadsTests: XCTestCase {
         XCTAssertEqual(Key.compare(try key(#""b""#), try key(#""a""#)), 1)
         XCTAssertEqual(Key.compare(try key(#""Z""#), try key(#""a""#)), -1)
         XCTAssertEqual(Key.compare(try key(#""é""#), try key(#""f""#)), 1, "by UTF-8 bytes, not by Unicode collation")
-        XCTAssertEqual(Key.compare(try key("1"), try key(#""a""#)), 0)
-        XCTAssertEqual(Key.compare(try key(nil), try key("1")), 0)
-        XCTAssertEqual(Key.compare(try key("true"), try key("false")), 0)
-        // A number outside f64's range has no value, and sorts first.
+        // A total order by kind: missing, null, false, true, numbers, strings, arrays, objects.
+        let ascending: [String?] = [nil, "null", "false", "true", "1e400", "-5", "1", #""a""#, "[2]", "{}"]
+        for (i, a) in ascending.enumerated() {
+            for (j, b) in ascending.enumerated() {
+                XCTAssertEqual(Key.compare(try key(a), try key(b)), i == j ? 0 : (i < j ? -1 : 1), "\(a ?? "missing") vs \(b ?? "missing")")
+            }
+        }
+        XCTAssertEqual(Key.compare(try key("[1]"), try key("[2,3]")), 0, "arrays tie")
+        XCTAssertEqual(Key.compare(try key(#"{"a":1}"#), try key("{}")), 0, "objects tie")
+        XCTAssertEqual(Key.compare(try key("null"), try key("null")), 0)
+        XCTAssertEqual(Key.compare(try key(nil), try key(nil)), 0)
+        // A number outside f64's range has no value, and sorts first among numbers.
         XCTAssertEqual(Key.compare(try key("1e400"), try key("-5")), -1)
         XCTAssertEqual(Key.compare(try key("1e400"), try key("-1e400")), 0)
-
-        // The comparator is one order only when the keys are all numbers,
-        // all strings, or all equal.
-        let consistent: [[String?]] = [
-            ["1", "3", "2"], [#""a""#, #""c""#], [nil, nil, "true"], ["1", "1.0", #""a""#, nil], ["1", #""a""#], [],
-        ]
-        for keys in consistent {
-            XCTAssertTrue(Key.orderIsConsistent(try keys.map(key)), "\(keys)")
-        }
-        let inconsistent: [[String?]] = [["1", "2", #""a""#], ["1", "2", nil], [#""a""#, #""b""#, "1"], [#""a""#, #""b""#, "null"]]
-        for keys in inconsistent {
-            XCTAssertFalse(Key.orderIsConsistent(try keys.map(key)), "\(keys)")
-        }
+        XCTAssertEqual(Key.compare(try key("1e400"), try key("true")), 1)
+        XCTAssertEqual(Key.compare(try key("-0"), try key("0.0")), 0)
     }
 
     /// A data tree of `items` at `subgroves/sg/data`.
@@ -451,30 +448,31 @@ final class VerifiedReadsTests: XCTestCase {
         return ProofBuilder.layer(trees: [("subgroves", ProofBuilder.layer(trees: [("sg", ProofBuilder.layer(trees: [("data", data)]))]))])
     }
 
-    func testAQueryFiltersByTheNumberTextTheNodeCompares() throws {
+    func testAQueryFiltersNumbersByExactDecimalValue() throws {
         let root = Self.dataTree([
             ("a", #"{"n":1}"#), ("b", #"{"n":1.0}"#), ("c", #"{"n":9007199254740993}"#),
-            ("d", #"{"n":9007199254740992}"#), ("e", #"{"n":1E2}"#), ("f", #"{"n":-0}"#),
+            ("d", #"{"n":9007199254740992}"#), ("e", #"{"n":1E2}"#), ("f", #"{"n":-0}"#), ("g", #"{"n":"1"}"#),
         ])
         let path = DataOperations.dataPath("sg")
         func keys(_ request: QueryRequest) throws -> [String] {
             return try DataOperations.answer(request, proof: root.proof, path: path).results.map { $0.key }
         }
-        XCTAssertEqual(try keys(QueryBuilder().equals("n", 1).build()), ["a"])
+        XCTAssertEqual(try keys(QueryBuilder().equals("n", 1).build()), ["a", "b"])
         XCTAssertEqual(try keys(QueryBuilder().equals("n", 9007199254740993).build()), ["c"])
         XCTAssertEqual(try keys(QueryBuilder().equals("n", 9007199254740992).build()), ["d"])
         XCTAssertEqual(try keys(QueryBuilder().equals("n", 0).build()), ["f"])
-        XCTAssertEqual(try keys(QueryBuilder().equals("n", 100).build()), [], "1E2 is kept as 1e+2, not 100")
-        XCTAssertEqual(try keys(QueryBuilder().equals("n", NSNumber(value: 1)).build()), ["a"], "an NSNumber 1 is a number, not true")
+        XCTAssertEqual(try keys(QueryBuilder().equals("n", 100).build()), ["e"], "1E2 is 100")
+        XCTAssertEqual(try keys(QueryBuilder().equals("n", "1").build()), ["g"])
+        XCTAssertEqual(try keys(QueryBuilder().equals("n", NSNumber(value: 1)).build()), ["a", "b"], "an NSNumber 1 is a number, not true")
 
         // A Double goes out in its shortest form, 1.0 as 1.0, as data.store
-        // writes it, and is compared as that text.
+        // writes it, and matches 1 and 1.0 alike.
         let request = QueryBuilder().equals("n", 1.0).build()
         XCTAssertEqual(String(decoding: try request.nodeBody(), as: UTF8.self), #"{"filters":{"n":1.0},"include_proof":false}"#)
-        XCTAssertEqual(try keys(request), ["b"])
+        XCTAssertEqual(try keys(request), ["a", "b"])
         let one = try DataOperations.answer(QueryBuilder().equals("n", 1).build(), proof: root.proof, path: path)
         XCTAssertEqual(one.results.first?.data["n"]?.value as? Int, 1)
-        XCTAssertEqual(one.total, 1)
+        XCTAssertEqual(one.total, 2)
     }
 
     func testAQueryFiltersOnFieldBytes() throws {
@@ -565,22 +563,23 @@ final class VerifiedReadsTests: XCTestCase {
         }
     }
 
-    func testASortTheNodeDoesntOrderIsNotVerified() throws {
+    func testASortOverMixedKindsFollowsTheNodesTotalOrder() throws {
         let root = Self.dataTree([("a", #"{"r":2,"t":"x"}"#), ("b", #"{"r":"z","t":"y"}"#), ("c", #"{"r":1,"t":"x"}"#), ("d", #"{"t":"x"}"#)])
         let path = DataOperations.dataPath("sg")
-        for request in [QueryBuilder().sortAsc("r").build(), QueryBuilder().equals("t", "x").sortDesc("r").build()] {
-            XCTAssertThrowsError(try DataOperations.answer(request, proof: root.proof, path: path)) { error in
-                XCTAssertEqual((error as? WillowError)?.type, .notVerifiable)
-                XCTAssertTrue((error as? WillowError)?.message.contains("can't be verified") ?? false, "\(error)")
-            }
+        func keys(_ request: QueryRequest) throws -> [String] {
+            return try DataOperations.answer(request, proof: root.proof, path: path).results.map { $0.key }
         }
-        // Over the items that match, the sort field is all numbers.
-        let numbers = Self.dataTree([("a", #"{"r":2,"t":"x"}"#), ("b", #"{"r":"z","t":"y"}"#), ("c", #"{"r":1,"t":"x"}"#)])
-        let answer = try DataOperations.answer(QueryBuilder().equals("t", "x").sortAsc("r").build(), proof: numbers.proof, path: path)
-        XCTAssertEqual(answer.results.map { $0.key }, ["c", "a"])
-        // A field no item has leaves key order.
-        let missing = try DataOperations.answer(QueryBuilder().sortDesc("nope").build(), proof: root.proof, path: path)
-        XCTAssertEqual(missing.results.map { $0.key }, ["a", "b", "c", "d"])
+        XCTAssertEqual(try keys(QueryBuilder().sortAsc("r").build()), ["d", "c", "a", "b"])
+        XCTAssertEqual(try keys(QueryBuilder().sortDesc("r").build()), ["b", "a", "c", "d"])
+        XCTAssertEqual(try keys(QueryBuilder().equals("t", "x").sortDesc("r").build()), ["a", "c", "d"])
+        // A field no item has leaves key order, in either direction.
+        XCTAssertEqual(try keys(QueryBuilder().sortDesc("nope").build()), ["a", "b", "c", "d"])
+        // Booleans: false before true, ties in key order.
+        let flags = Self.dataTree([("a", #"{"f":true}"#), ("b", #"{"f":false}"#), ("c", #"{"f":true}"#), ("d", #"{"f":null}"#)])
+        let sorted = try DataOperations.answer(QueryBuilder().sortAsc("f").build(), proof: flags.proof, path: path)
+        XCTAssertEqual(sorted.results.map { $0.key }, ["d", "b", "a", "c"])
+        let reversed = try DataOperations.answer(QueryBuilder().sortDesc("f").build(), proof: flags.proof, path: path)
+        XCTAssertEqual(reversed.results.map { $0.key }, ["a", "c", "b", "d"])
     }
 
     // MARK: - Requests the node can and can't run
@@ -607,12 +606,12 @@ final class VerifiedReadsTests: XCTestCase {
         client.setLightClient(try Self.pinnedLightClient(height: 2, appHash: "00", stub: stub))
 
         let refused: [QueryRequest] = [
-            QueryBuilder().equals("a", 1).equals("b", 2).build(),
+            QueryBuilder().equals("a", 1).equals("a", 2).build(),
             QueryBuilder().greaterThan("a", 1).build(),
             QueryBuilder().search(fields: ["a"], query: "x").build(),
             QueryBuilder().equals("a", ["nested": 1]).build(),
             QueryRequest(limit: -1),
-        ]
+        ] + QuerySelectionTests.refusedByTheNode.map { $0.1 }
         for request in refused {
             for verified in [true, false] {
                 do {

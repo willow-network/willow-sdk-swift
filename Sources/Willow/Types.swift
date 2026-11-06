@@ -543,13 +543,13 @@ public struct QuerySearch: Codable {
 
 /// A query request for `POST /query/{subgroveId}`.
 ///
-/// The node runs at most one filter, an equality (`eq`) on a field (a dotted
-/// path into the document), whose value isn't a JSON object; a sort on one
-/// field; and an offset and limit (default 100). It has no full-text search.
-/// It is sent in the node's form: `filters` as `{"<field>": <value>}`, `sort`
-/// as `{"field": "<field>", "order": "asc" | "desc"}`. `data.query` and
-/// `data.queryUnverified` refuse anything else with a validation error before
-/// sending, and encoding one throws.
+/// The node runs equality (`eq`) filters on fields (each a dotted path into
+/// the document), all of which must match; a sort on one field; and an
+/// offset and limit (default 100). It has no full-text search. It is sent in
+/// the node's form: `filters` as `{"<field>": <value>, ...}`, `sort` as
+/// `{"field": "<field>", "order": "asc" | "desc"}`. `data.query` and
+/// `data.queryUnverified` refuse what the node refuses with a validation
+/// error before sending (see `validateForNode()`), and encoding one throws.
 public struct QueryRequest: Codable {
     public var filters: [QueryFilter]
     public var search: QuerySearch?
@@ -602,8 +602,8 @@ public struct QueryRequest: Codable {
             throw EncodingError.invalidValue(self, EncodingError.Context(codingPath: encoder.codingPath, debugDescription: "\(error.localizedDescription)"))
         }
         var container = encoder.container(keyedBy: CodingKeys.self)
-        if let filter = filters.first {
-            try container.encode([filter.field: filter.value], forKey: .filters)
+        if !filters.isEmpty {
+            try container.encode(Dictionary(uniqueKeysWithValues: filters.map { ($0.field, $0.value) }), forKey: .filters)
         }
         try container.encodeIfPresent(sort.map { NodeSort(field: $0.field, order: $0.ascending ? "asc" : "desc") }, forKey: .sort)
         try container.encodeIfPresent(limit, forKey: .limit)
@@ -612,16 +612,16 @@ public struct QueryRequest: Codable {
     }
 
     /// The body `data.query` and `data.queryUnverified` send: the node's form,
-    /// as `encode(to:)` writes it, with sorted keys and the filter's value
+    /// as `encode(to:)` writes it, with sorted keys and each filter's value
     /// written as `data.store` writes a value (`WireJSON.foundation`: a
     /// `Double` in its shortest form), so `equals(field, 0.1)` sends the text
-    /// a stored `0.1` holds and the node's comparison of number text matches
-    /// it. Throws for a request the node can't run (`validateForNode()`).
+    /// a stored `0.1` holds, which the node's exact decimal comparison
+    /// matches. Throws for a request the node can't run (`validateForNode()`).
     internal func nodeBody() throws -> Data {
         try validateForNode()
         var members: [WireJSON.Member] = []
-        if let filter = filters.first {
-            members.append(WireJSON.Member("filters", .object([WireJSON.Member(filter.field, try WireJSON.foundation(filter.value.value))])))
+        if !filters.isEmpty {
+            members.append(WireJSON.Member("filters", .object(try filters.map { WireJSON.Member($0.field, try WireJSON.foundation($0.value.value)) })))
         }
         members.append(WireJSON.Member("include_proof", .bool(includeProof)))
         if let limit = limit {
@@ -639,24 +639,55 @@ public struct QueryRequest: Codable {
         return WireJSON.object(members).serialized
     }
 
-    /// Throws a validation error for a request the node's query route can't
-    /// run as asked: more than one filter, a filter other than `eq` or whose
-    /// value is a JSON object (the node would drop it), a search, or a
-    /// negative or out-of-range offset or limit.
+    /// The most filters the node's query route takes.
+    static let maxFilters = 32
+    /// The longest a filter's value may be, as the node writes it back as JSON.
+    static let maxFilterValueBytes = 4096
+    /// The longest a filter's field or the sort's field may be, in UTF-8 bytes.
+    static let maxFieldBytes = 256
+
+    /// Throws a validation error for a request the node's query route
+    /// refuses or can't run as asked: a filter other than `eq`, more than 32
+    /// filters, two on one field (the node would keep only the last; two
+    /// canonically equivalent field names count as one field), a field
+    /// named `$and`, `$or`, `$not`, or `$nor`, a filter or sort field longer
+    /// than 256 bytes, a filter value that is a JSON object (a filter
+    /// operator) or longer than 4,096 bytes as the node writes it as JSON, a
+    /// search, or a negative or out-of-range offset or limit.
     public func validateForNode() throws {
-        if filters.count > 1 {
-            throw ValidationError("The node's query route runs one filter; this query has \(filters.count)")
+        if filters.count > Self.maxFilters {
+            throw ValidationError("The node's query route takes at most \(Self.maxFilters) filters; this query has \(filters.count)")
         }
-        if let filter = filters.first {
+        // Fields compared as Swift strings, as `encode(to:)` keys them: two
+        // canonically equivalent names are one key there.
+        var fields = Set<String>()
+        for filter in filters {
             guard filter.operator == "eq" else {
                 throw ValidationError("The node's query route runs only an equality (eq) filter, not \(filter.operator)")
             }
             guard !filter.field.isEmpty else {
                 throw ValidationError("A query filter needs a field")
             }
-            if filter.value.value is [String: Any] {
-                throw ValidationError("The node's query route drops a filter whose value is a JSON object")
+            guard fields.insert(filter.field).inserted else {
+                throw ValidationError("This query filters on \(filter.field) twice; the node would keep only the last value")
             }
+            if ["$and", "$or", "$not", "$nor"].contains(filter.field) {
+                throw ValidationError("The node's query route has no logical operators (\(filter.field)): every filter must match")
+            }
+            if filter.field.utf8.count > Self.maxFieldBytes {
+                throw ValidationError("A query filter's field is longer than \(Self.maxFieldBytes) bytes")
+            }
+            if filter.value.value is [String: Any] {
+                throw ValidationError("The node's query route refuses a filter whose value is a JSON object (a filter operator): a filter matches a field's exact value")
+            }
+            // The node measures the value as it reads it from the body, written back as JSON.
+            if let text = try? WireJSON.foundation(filter.value.value).serialized,
+               let value = try? NodeJSON.parse(text), value.serializedLength > Self.maxFilterValueBytes {
+                throw ValidationError("The filter value for \(filter.field) is longer than \(Self.maxFilterValueBytes) bytes")
+            }
+        }
+        if let sort = sort, sort.field.utf8.count > Self.maxFieldBytes {
+            throw ValidationError("A query's sort field is longer than \(Self.maxFieldBytes) bytes")
         }
         if search != nil {
             throw ValidationError("The node's query route has no full-text search")
